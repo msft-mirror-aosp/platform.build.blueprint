@@ -68,6 +68,13 @@ func (l *liveTracker) AddBuildDefDeps(def *buildDef) error {
 		return err
 	}
 
+	for _, value := range def.Variables {
+		err = l.addNinjaStringDeps(value)
+		if err != nil {
+			return err
+		}
+	}
+
 	for _, value := range def.Args {
 		err = l.addNinjaStringDeps(value)
 		if err != nil {
@@ -98,6 +105,11 @@ func (l *liveTracker) addRule(r Rule) (def *ruleDef, err error) {
 		}
 
 		err = l.addNinjaStringListDeps(def.CommandDeps)
+		if err != nil {
+			return nil, err
+		}
+
+		err = l.addNinjaStringListDeps(def.CommandOrderOnly)
 		if err != nil {
 			return nil, err
 		}

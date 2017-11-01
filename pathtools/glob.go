@@ -28,35 +28,25 @@ import (
 var GlobMultipleRecursiveErr = errors.New("pattern contains multiple **")
 var GlobLastRecursiveErr = errors.New("pattern ** as last path element")
 
-// Glob returns the list of files that match the given pattern along with the
-// list of directories that were searched to construct the file list.
-// The supported glob patterns are equivalent to filepath.Glob, with an
-// extension that recursive glob (** matching zero or more complete path
-// entries) is supported. Glob also returns a list of directories that were
-// searched.
+// Glob returns the list of files that match the given pattern but do not match
+// the given exclude patterns, along with the list of directories and other
+// dependencies that were searched to construct the file list.  The supported
+// glob and exclude patterns are equivalent to filepath.Glob, with an extension
+// that recursive glob (** matching zero or more complete path entries) is
+// supported.  Glob also returns a list of directories that were searched.
 //
 // In general ModuleContext.GlobWithDeps or SingletonContext.GlobWithDeps
 // should be used instead, as they will automatically set up dependencies
 // to rerun the primary builder when the list of matching files changes.
-func Glob(pattern string) (matches, dirs []string, err error) {
-	return GlobWithExcludes(pattern, nil)
+func Glob(pattern string, excludes []string) (matches, deps []string, err error) {
+	return startGlob(OsFs, pattern, excludes)
 }
 
-// GlobWithExcludes returns the list of files that match the given pattern but
-// do not match the given exclude patterns, along with the list of directories
-// that were searched to construct the file list.  The supported glob and
-// exclude patterns are equivalent to filepath.Glob, with an extension that
-// recursive glob (** matching zero or more complete path entries) is supported.
-// GlobWithExcludes also returns a list of directories that were searched.
-//
-// In general ModuleContext.GlobWithDeps or SingletonContext.GlobWithDeps
-// should be used instead, as they will automatically set up dependencies
-// to rerun the primary builder when the list of matching files changes.
-func GlobWithExcludes(pattern string, excludes []string) (matches, dirs []string, err error) {
+func startGlob(fs FileSystem, pattern string, excludes []string) (matches, deps []string, err error) {
 	if filepath.Base(pattern) == "**" {
 		return nil, nil, GlobLastRecursiveErr
 	} else {
-		matches, dirs, err = glob(pattern, false)
+		matches, deps, err = glob(fs, pattern, false)
 	}
 
 	if err != nil {
@@ -68,17 +58,30 @@ func GlobWithExcludes(pattern string, excludes []string) (matches, dirs []string
 		return nil, nil, err
 	}
 
-	return matches, dirs, nil
+	// If the pattern has wildcards, we added dependencies on the
+	// containing directories to know about changes.
+	//
+	// If the pattern didn't have wildcards, and didn't find matches, the
+	// most specific found directories were added.
+	//
+	// But if it didn't have wildcards, and did find a match, no
+	// dependencies were added, so add the match itself to detect when it
+	// is removed.
+	if !isWild(pattern) {
+		deps = append(deps, matches...)
+	}
+
+	return matches, deps, nil
 }
 
 // glob is a recursive helper function to handle globbing each level of the pattern individually,
 // allowing searched directories to be tracked.  Also handles the recursive glob pattern, **.
-func glob(pattern string, hasRecursive bool) (matches, dirs []string, err error) {
+func glob(fs FileSystem, pattern string, hasRecursive bool) (matches, dirs []string, err error) {
 	if !isWild(pattern) {
 		// If there are no wilds in the pattern, check whether the file exists or not.
 		// Uses filepath.Glob instead of manually statting to get consistent results.
 		pattern = filepath.Clean(pattern)
-		matches, err = filepath.Glob(pattern)
+		matches, err = fs.glob(pattern)
 		if err != nil {
 			return matches, dirs, err
 		}
@@ -89,7 +92,7 @@ func glob(pattern string, hasRecursive bool) (matches, dirs []string, err error)
 			var matchDirs []string
 			for len(matchDirs) == 0 {
 				pattern, _ = saneSplit(pattern)
-				matchDirs, err = filepath.Glob(pattern)
+				matchDirs, err = fs.glob(pattern)
 				if err != nil {
 					return matches, dirs, err
 				}
@@ -108,26 +111,24 @@ func glob(pattern string, hasRecursive bool) (matches, dirs []string, err error)
 		hasRecursive = true
 	}
 
-	dirMatches, dirs, err := glob(dir, hasRecursive)
+	dirMatches, dirs, err := glob(fs, dir, hasRecursive)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	for _, m := range dirMatches {
-		info, err := os.Stat(m)
-		if err != nil {
+		if isDir, err := fs.IsDir(m); err != nil {
 			return nil, nil, fmt.Errorf("unexpected error after glob: %s", err)
-		}
-		if info.IsDir() {
+		} else if isDir {
 			if file == "**" {
-				recurseDirs, err := walkAllDirs(m)
+				recurseDirs, err := fs.ListDirsRecursive(m)
 				if err != nil {
 					return nil, nil, err
 				}
 				matches = append(matches, recurseDirs...)
 			} else {
 				dirs = append(dirs, m)
-				newMatches, err := filepath.Glob(filepath.Join(m, file))
+				newMatches, err := fs.glob(filepath.Join(m, file))
 				if err != nil {
 					return nil, nil, err
 				}
@@ -163,27 +164,6 @@ func saneSplit(path string) (dir, file string) {
 
 func isWild(pattern string) bool {
 	return strings.ContainsAny(pattern, "*?[")
-}
-
-// Returns a list of all directories under dir
-func walkAllDirs(dir string) (dirs []string, err error) {
-	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if info.Mode().IsDir() {
-			name := info.Name()
-			if name[0] == '.' && name != "." {
-				return filepath.SkipDir
-			}
-
-			dirs = append(dirs, path)
-		}
-		return nil
-	})
-
-	return dirs, err
 }
 
 // Filters the strings in matches based on the glob patterns in excludes.  Hierarchical (a/*) and
@@ -316,7 +296,7 @@ func GlobPatternList(patterns []string, prefix string) (globedList []string, dep
 
 	for _, pattern := range patterns {
 		if isWild(pattern) {
-			matches, deps, err = Glob(filepath.Join(prefix, pattern))
+			matches, deps, err = Glob(filepath.Join(prefix, pattern), nil)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -358,7 +338,7 @@ func HasGlob(in []string) bool {
 // should be used instead, as they will automatically set up dependencies
 // to rerun the primary builder when the list of matching files changes.
 func GlobWithDepFile(glob, fileListFile, depFile string, excludes []string) (files []string, err error) {
-	files, dirs, err := GlobWithExcludes(glob, excludes)
+	files, deps, err := Glob(glob, excludes)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +346,7 @@ func GlobWithDepFile(glob, fileListFile, depFile string, excludes []string) (fil
 	fileList := strings.Join(files, "\n") + "\n"
 
 	WriteFileIfChanged(fileListFile, []byte(fileList), 0666)
-	deptools.WriteDepFile(depFile, fileListFile, dirs)
+	deptools.WriteDepFile(depFile, fileListFile, deps)
 
 	return
 }

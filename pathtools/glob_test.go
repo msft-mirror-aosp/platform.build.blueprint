@@ -18,77 +18,80 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"testing"
 )
 
 var pwd, _ = os.Getwd()
 
-var globTestCases = []struct {
+type globTestCase struct {
 	pattern  string
 	matches  []string
 	excludes []string
-	dirs     []string
+	deps     []string
 	err      error
-}{
+}
+
+var globTestCases = []globTestCase{
 	// Current directory tests
 	{
 		pattern: "*",
 		matches: []string{"a", "b", "c", "d.ext", "e.ext"},
-		dirs:    []string{"."},
+		deps:    []string{"."},
 	},
 	{
 		pattern: "*.ext",
 		matches: []string{"d.ext", "e.ext"},
-		dirs:    []string{"."},
+		deps:    []string{"."},
 	},
 	{
 		pattern: "*/a",
 		matches: []string{"a/a", "b/a"},
-		dirs:    []string{".", "a", "b", "c"},
+		deps:    []string{".", "a", "b", "c"},
 	},
 	{
 		pattern: "*/*/a",
 		matches: []string{"a/a/a"},
-		dirs:    []string{".", "a", "b", "c", "a/a", "a/b", "c/f", "c/g", "c/h"},
+		deps:    []string{".", "a", "b", "c", "a/a", "a/b", "c/f", "c/g", "c/h"},
 	},
 	{
 		pattern: "*/a/a",
 		matches: []string{"a/a/a"},
-		dirs:    []string{".", "a", "b", "c", "a/a"},
+		deps:    []string{".", "a", "b", "c", "a/a"},
 	},
 
 	// ./ directory tests
 	{
 		pattern: "./*",
 		matches: []string{"a", "b", "c", "d.ext", "e.ext"},
-		dirs:    []string{"."},
+		deps:    []string{"."},
 	},
 	{
 		pattern: "./*.ext",
 		matches: []string{"d.ext", "e.ext"},
-		dirs:    []string{"."},
+		deps:    []string{"."},
 	},
 	{
 		pattern: "./*/a",
 		matches: []string{"a/a", "b/a"},
-		dirs:    []string{".", "a", "b", "c"},
+		deps:    []string{".", "a", "b", "c"},
 	},
 	{
 		pattern: "./[ac]/a",
 		matches: []string{"a/a"},
-		dirs:    []string{".", "a", "c"},
+		deps:    []string{".", "a", "c"},
 	},
 
 	// subdirectory tests
 	{
 		pattern: "c/*/*.ext",
 		matches: []string{"c/f/f.ext", "c/g/g.ext"},
-		dirs:    []string{"c", "c/f", "c/g", "c/h"},
+		deps:    []string{"c", "c/f", "c/g", "c/h"},
 	},
 	{
 		pattern: "a/*/a",
 		matches: []string{"a/a/a"},
-		dirs:    []string{"a", "a/a", "a/b"},
+		deps:    []string{"a", "a/a", "a/b"},
 	},
 
 	// absolute tests
@@ -98,7 +101,7 @@ var globTestCases = []struct {
 			filepath.Join(pwd, "testdata/c/f/f.ext"),
 			filepath.Join(pwd, "testdata/c/g/g.ext"),
 		},
-		dirs: []string{
+		deps: []string{
 			filepath.Join(pwd, "testdata/c"),
 			filepath.Join(pwd, "testdata/c/f"),
 			filepath.Join(pwd, "testdata/c/g"),
@@ -110,41 +113,41 @@ var globTestCases = []struct {
 	{
 		pattern: "a",
 		matches: []string{"a"},
-		dirs:    nil,
+		deps:    []string{"a"},
 	},
 	{
 		pattern: "a/a",
 		matches: []string{"a/a"},
-		dirs:    nil,
+		deps:    []string{"a/a"},
 	},
 
 	// clean tests
 	{
 		pattern: "./c/*/*.ext",
 		matches: []string{"c/f/f.ext", "c/g/g.ext"},
-		dirs:    []string{"c", "c/f", "c/g", "c/h"},
+		deps:    []string{"c", "c/f", "c/g", "c/h"},
 	},
 	{
 		pattern: "c/../c/*/*.ext",
 		matches: []string{"c/f/f.ext", "c/g/g.ext"},
-		dirs:    []string{"c", "c/f", "c/g", "c/h"},
+		deps:    []string{"c", "c/f", "c/g", "c/h"},
 	},
 
 	// recursive tests
 	{
 		pattern: "**/a",
 		matches: []string{"a", "a/a", "a/a/a", "b/a"},
-		dirs:    []string{".", "a", "a/a", "a/b", "b", "c", "c/f", "c/g", "c/h"},
+		deps:    []string{".", "a", "a/a", "a/b", "b", "c", "c/f", "c/g", "c/h"},
 	},
 	{
 		pattern: "a/**/a",
 		matches: []string{"a/a", "a/a/a"},
-		dirs:    []string{"a", "a/a", "a/b"},
+		deps:    []string{"a", "a/a", "a/b"},
 	},
 	{
 		pattern: "a/**/*",
 		matches: []string{"a/a", "a/b", "a/a/a", "a/b/b"},
-		dirs:    []string{"a", "a/a", "a/b"},
+		deps:    []string{"a", "a/a", "a/b"},
 	},
 
 	// absolute recursive tests
@@ -156,7 +159,7 @@ var globTestCases = []struct {
 			filepath.Join(pwd, "testdata/c/f/f.ext"),
 			filepath.Join(pwd, "testdata/c/g/g.ext"),
 		},
-		dirs: []string{
+		deps: []string{
 			filepath.Join(pwd, "testdata"),
 			filepath.Join(pwd, "testdata/a"),
 			filepath.Join(pwd, "testdata/a/a"),
@@ -200,31 +203,31 @@ var globTestCases = []struct {
 		pattern:  "*.ext",
 		excludes: []string{"d.ext"},
 		matches:  []string{"e.ext"},
-		dirs:     []string{"."},
+		deps:     []string{"."},
 	},
 	{
 		pattern:  "*/*",
 		excludes: []string{"a/b"},
 		matches:  []string{"a/a", "b/a", "c/c", "c/f", "c/g", "c/h"},
-		dirs:     []string{".", "a", "b", "c"},
+		deps:     []string{".", "a", "b", "c"},
 	},
 	{
 		pattern:  "*/*",
 		excludes: []string{"a/b", "c/c"},
 		matches:  []string{"a/a", "b/a", "c/f", "c/g", "c/h"},
-		dirs:     []string{".", "a", "b", "c"},
+		deps:     []string{".", "a", "b", "c"},
 	},
 	{
 		pattern:  "*/*",
 		excludes: []string{"c/*", "*/a"},
 		matches:  []string{"a/b"},
-		dirs:     []string{".", "a", "b", "c"},
+		deps:     []string{".", "a", "b", "c"},
 	},
 	{
 		pattern:  "*/*",
 		excludes: []string{"*/*"},
 		matches:  nil,
-		dirs:     []string{".", "a", "b", "c"},
+		deps:     []string{".", "a", "b", "c"},
 	},
 
 	// absolute exclude tests
@@ -234,7 +237,7 @@ var globTestCases = []struct {
 		matches: []string{
 			filepath.Join(pwd, "testdata/c/g/g.ext"),
 		},
-		dirs: []string{
+		deps: []string{
 			filepath.Join(pwd, "testdata/c"),
 			filepath.Join(pwd, "testdata/c/f"),
 			filepath.Join(pwd, "testdata/c/g"),
@@ -247,7 +250,7 @@ var globTestCases = []struct {
 		matches: []string{
 			filepath.Join(pwd, "testdata/c/g/g.ext"),
 		},
-		dirs: []string{
+		deps: []string{
 			filepath.Join(pwd, "testdata/c"),
 			filepath.Join(pwd, "testdata/c/f"),
 			filepath.Join(pwd, "testdata/c/g"),
@@ -260,43 +263,43 @@ var globTestCases = []struct {
 		pattern:  "*.ext",
 		excludes: []string{"**/*.ext"},
 		matches:  nil,
-		dirs:     []string{"."},
+		deps:     []string{"."},
 	},
 	{
 		pattern:  "*/*",
 		excludes: []string{"**/b"},
 		matches:  []string{"a/a", "b/a", "c/c", "c/f", "c/g", "c/h"},
-		dirs:     []string{".", "a", "b", "c"},
+		deps:     []string{".", "a", "b", "c"},
 	},
 	{
 		pattern:  "*/*",
 		excludes: []string{"a/**/*"},
 		matches:  []string{"b/a", "c/c", "c/f", "c/g", "c/h"},
-		dirs:     []string{".", "a", "b", "c"},
+		deps:     []string{".", "a", "b", "c"},
 	},
 	{
 		pattern:  "**/*",
 		excludes: []string{"**/*"},
 		matches:  nil,
-		dirs:     []string{".", "a", "a/a", "a/b", "b", "c", "c/f", "c/g", "c/h"},
+		deps:     []string{".", "a", "a/a", "a/b", "b", "c", "c/f", "c/g", "c/h"},
 	},
 	{
 		pattern:  "*/*/*",
 		excludes: []string{"a/**/a"},
 		matches:  []string{"a/b/b", "c/f/f.ext", "c/g/g.ext", "c/h/h"},
-		dirs:     []string{".", "a", "b", "c", "a/a", "a/b", "c/f", "c/g", "c/h"},
+		deps:     []string{".", "a", "b", "c", "a/a", "a/b", "c/f", "c/g", "c/h"},
 	},
 	{
 		pattern:  "*/*/*",
 		excludes: []string{"**/a"},
 		matches:  []string{"a/b/b", "c/f/f.ext", "c/g/g.ext", "c/h/h"},
-		dirs:     []string{".", "a", "b", "c", "a/a", "a/b", "c/f", "c/g", "c/h"},
+		deps:     []string{".", "a", "b", "c", "a/a", "a/b", "c/f", "c/g", "c/h"},
 	},
 	{
 		pattern:  "c/*/*.ext",
 		excludes: []string{"c/**/f.ext"},
 		matches:  []string{"c/g/g.ext"},
-		dirs:     []string{"c", "c/f", "c/g", "c/h"},
+		deps:     []string{"c", "c/f", "c/g", "c/h"},
 	},
 
 	// absoulte recursive exclude tests
@@ -306,7 +309,7 @@ var globTestCases = []struct {
 		matches: []string{
 			filepath.Join(pwd, "testdata/c/g/g.ext"),
 		},
-		dirs: []string{
+		deps: []string{
 			filepath.Join(pwd, "testdata/c"),
 			filepath.Join(pwd, "testdata/c/f"),
 			filepath.Join(pwd, "testdata/c/g"),
@@ -319,71 +322,71 @@ var globTestCases = []struct {
 		pattern:  "./c/*/*.ext",
 		excludes: []string{"./c/*/f.ext"},
 		matches:  []string{"c/g/g.ext"},
-		dirs:     []string{"c", "c/f", "c/g", "c/h"},
+		deps:     []string{"c", "c/f", "c/g", "c/h"},
 	},
 	{
 		pattern:  "c/*/*.ext",
 		excludes: []string{"./c/*/f.ext"},
 		matches:  []string{"c/g/g.ext"},
-		dirs:     []string{"c", "c/f", "c/g", "c/h"},
+		deps:     []string{"c", "c/f", "c/g", "c/h"},
 	},
 	{
 		pattern:  "./c/*/*.ext",
 		excludes: []string{"c/*/f.ext"},
 		matches:  []string{"c/g/g.ext"},
-		dirs:     []string{"c", "c/f", "c/g", "c/h"},
+		deps:     []string{"c", "c/f", "c/g", "c/h"},
 	},
 
 	// non-existant non-wild path tests
 	{
 		pattern: "d/*",
 		matches: nil,
-		dirs:    []string{"."},
+		deps:    []string{"."},
 	},
 	{
 		pattern: "d",
 		matches: nil,
-		dirs:    []string{"."},
+		deps:    []string{"."},
 	},
 	{
 		pattern: "a/d/*",
 		matches: nil,
-		dirs:    []string{"a"},
+		deps:    []string{"a"},
 	},
 	{
 		pattern: "a/d",
 		matches: nil,
-		dirs:    []string{"a"},
+		deps:    []string{"a"},
 	},
 	{
 		pattern: "a/a/d/*",
 		matches: nil,
-		dirs:    []string{"a/a"},
+		deps:    []string{"a/a"},
 	},
 	{
 		pattern: "a/a/d",
 		matches: nil,
-		dirs:    []string{"a/a"},
+		deps:    []string{"a/a"},
 	},
 	{
 		pattern: "a/d/a/*",
 		matches: nil,
-		dirs:    []string{"a"},
+		deps:    []string{"a"},
 	},
 	{
 		pattern: "a/d/a",
 		matches: nil,
-		dirs:    []string{"a"},
+		deps:    []string{"a"},
 	},
 	{
 		pattern: "a/d/a/*/a",
 		matches: nil,
-		dirs:    []string{"a"},
+		deps:    []string{"a"},
 	},
 	{
 		pattern: "a/d/a/**/a",
 		matches: nil,
-		dirs:    []string{"a"},
+		deps:    []string{"a"},
 	},
 
 	// recursive exclude error tests
@@ -422,56 +425,94 @@ var globTestCases = []struct {
 	{
 		pattern: ".test/*",
 		matches: []string{".test/a"},
-		dirs:    []string{".test"},
+		deps:    []string{".test"},
 	},
 	{
 		pattern: ".t*/a",
 		matches: []string{".test/a"},
-		dirs:    []string{".", ".test"},
+		deps:    []string{".", ".test"},
 	},
 	{
 		pattern: ".*/.*",
 		matches: []string{".test/.ing"},
-		dirs:    []string{".", ".test"},
+		deps:    []string{".", ".test"},
 	},
 	{
 		pattern: ".t*",
 		matches: []string{".test", ".testing"},
-		dirs:    []string{"."},
+		deps:    []string{"."},
 	},
+}
+
+func TestMockGlob(t *testing.T) {
+	files := []string{
+		"a/a/a",
+		"a/b/b",
+		"b/a",
+		"c/c",
+		"c/f/f.ext",
+		"c/g/g.ext",
+		"c/h/h",
+		"d.ext",
+		"e.ext",
+		".test/a",
+		".testing",
+		".test/.ing",
+	}
+
+	mockFiles := make(map[string][]byte)
+
+	for _, f := range files {
+		mockFiles[f] = nil
+		mockFiles[filepath.Join(pwd, "testdata", f)] = nil
+	}
+
+	mock := MockFs(mockFiles)
+
+	for i, testCase := range globTestCases {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			testGlob(t, mock, testCase)
+		})
+	}
 }
 
 func TestGlob(t *testing.T) {
 	os.Chdir("testdata")
 	defer os.Chdir("..")
-	for _, testCase := range globTestCases {
-		matches, dirs, err := GlobWithExcludes(testCase.pattern, testCase.excludes)
-		if err != testCase.err {
-			t.Errorf(" pattern: %q", testCase.pattern)
-			if testCase.excludes != nil {
-				t.Errorf("excludes: %q", testCase.excludes)
-			}
-			t.Errorf("   error: %s", err)
-			continue
-		}
+	for i, testCase := range globTestCases {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			testGlob(t, OsFs, testCase)
+		})
+	}
+}
 
-		if !reflect.DeepEqual(matches, testCase.matches) {
-			t.Errorf("incorrect matches list:")
-			t.Errorf(" pattern: %q", testCase.pattern)
-			if testCase.excludes != nil {
-				t.Errorf("excludes: %q", testCase.excludes)
-			}
-			t.Errorf("     got: %#v", matches)
-			t.Errorf("expected: %#v", testCase.matches)
+func testGlob(t *testing.T, fs FileSystem, testCase globTestCase) {
+	matches, deps, err := fs.Glob(testCase.pattern, testCase.excludes)
+	if err != testCase.err {
+		t.Errorf(" pattern: %q", testCase.pattern)
+		if testCase.excludes != nil {
+			t.Errorf("excludes: %q", testCase.excludes)
 		}
-		if !reflect.DeepEqual(dirs, testCase.dirs) {
-			t.Errorf("incorrect dirs list:")
-			t.Errorf(" pattern: %q", testCase.pattern)
-			if testCase.excludes != nil {
-				t.Errorf("excludes: %q", testCase.excludes)
-			}
-			t.Errorf("     got: %#v", dirs)
-			t.Errorf("expected: %#v", testCase.dirs)
+		t.Errorf("   error: %s", err)
+		return
+	}
+
+	if !reflect.DeepEqual(matches, testCase.matches) {
+		t.Errorf("incorrect matches list:")
+		t.Errorf(" pattern: %q", testCase.pattern)
+		if testCase.excludes != nil {
+			t.Errorf("excludes: %q", testCase.excludes)
 		}
+		t.Errorf("     got: %#v", matches)
+		t.Errorf("expected: %#v", testCase.matches)
+	}
+	if !reflect.DeepEqual(deps, testCase.deps) {
+		t.Errorf("incorrect deps list:")
+		t.Errorf(" pattern: %q", testCase.pattern)
+		if testCase.excludes != nil {
+			t.Errorf("excludes: %q", testCase.excludes)
+		}
+		t.Errorf("     got: %#v", deps)
+		t.Errorf("expected: %#v", testCase.deps)
 	}
 }
