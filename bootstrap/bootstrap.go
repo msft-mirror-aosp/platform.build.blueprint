@@ -39,7 +39,15 @@ var (
 		// Parallel compilation is only supported on >= go1.9
 		for _, r := range build.Default.ReleaseTags {
 			if r == "go1.9" {
-				return fmt.Sprintf("-c %d", runtime.NumCPU())
+				numCpu := runtime.NumCPU()
+				// This will cause us to recompile all go programs if the
+				// number of cpus changes. We don't get a lot of benefit from
+				// higher values, so cap this to make it cheaper to move trees
+				// between machines.
+				if numCpu > 8 {
+					numCpu = 8
+				}
+				return fmt.Sprintf("-c %d", numCpu)
 			}
 		}
 		return ""
@@ -113,6 +121,7 @@ var (
 			Command:     "$builder $extra -b $buildDir -n $ninjaBuildDir -d $out.d -o $out $in",
 			CommandDeps: []string{"$builder"},
 			Description: "$builder $out",
+			Deps:        blueprint.DepsGCC,
 			Depfile:     "$out.d",
 			Restat:      true,
 		},
@@ -661,7 +670,6 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 
 	mainNinjaFile := filepath.Join("$buildDir", "build.ninja")
 	primaryBuilderNinjaFile := filepath.Join(bootstrapDir, "build.ninja")
-	docsFile := filepath.Join(docsDir, primaryBuilderName+".html")
 
 	ctx.SetNinjaBuildDir(pctx, "${ninjaBuildDir}")
 
@@ -674,24 +682,6 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 			"builder": primaryBuilderFile,
 			"extra":   primaryBuilderExtraFlags,
 		},
-	})
-
-	// Generate build system docs for the primary builder.  Generating docs reads the source
-	// files used to build the primary builder, but that dependency will be picked up through
-	// the dependency on the primary builder itself.  There are no dependencies on the
-	// Blueprints files, as any relevant changes to the Blueprints files would have caused
-	// a rebuild of the primary builder.
-	bigbpDocs := ctx.Rule(pctx, "bigbpDocs",
-		blueprint.RuleParams{
-			Command: fmt.Sprintf("%s %s -b $buildDir --docs $out %s", primaryBuilderFile,
-				primaryBuilderExtraFlags, topLevelBlueprints),
-			CommandDeps: []string{primaryBuilderFile},
-			Description: fmt.Sprintf("%s docs $out", primaryBuilderName),
-		})
-
-	ctx.Build(pctx, blueprint.BuildParams{
-		Rule:    bigbpDocs,
-		Outputs: []string{docsFile},
 	})
 
 	// Add a way to rebuild the primary build.ninja so that globs works
@@ -717,6 +707,33 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 			})
 		}
 
+		// Generate build system docs for the primary builder.  Generating docs reads the source
+		// files used to build the primary builder, but that dependency will be picked up through
+		// the dependency on the primary builder itself.  There are no dependencies on the
+		// Blueprints files, as any relevant changes to the Blueprints files would have caused
+		// a rebuild of the primary builder.
+		docsFile := filepath.Join(docsDir, primaryBuilderName+".html")
+		bigbpDocs := ctx.Rule(pctx, "bigbpDocs",
+			blueprint.RuleParams{
+				Command: fmt.Sprintf("%s %s -b $buildDir --docs $out %s", primaryBuilderFile,
+					primaryBuilderExtraFlags, topLevelBlueprints),
+				CommandDeps: []string{primaryBuilderFile},
+				Description: fmt.Sprintf("%s docs $out", primaryBuilderName),
+			})
+
+		ctx.Build(pctx, blueprint.BuildParams{
+			Rule:    bigbpDocs,
+			Outputs: []string{docsFile},
+		})
+
+		// Add a phony target for building the documentation
+		ctx.Build(pctx, blueprint.BuildParams{
+			Rule:    blueprint.Phony,
+			Outputs: []string{"blueprint_docs"},
+			Inputs:  []string{docsFile},
+		})
+
+		// Add a phony target for building various tools that are part of blueprint
 		ctx.Build(pctx, blueprint.BuildParams{
 			Rule:    blueprint.Phony,
 			Outputs: []string{"blueprint_tools"},
