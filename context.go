@@ -719,7 +719,6 @@ func (c *Context) WalkBlueprintsFiles(rootDir string, filePaths []string,
 	descendantsMap, err := findBlueprintDescendants(filePaths)
 	if err != nil {
 		panic(err.Error())
-		return nil, []error{err}
 	}
 	blueprintsSet := make(map[string]bool)
 
@@ -1293,6 +1292,14 @@ func (c *Context) processModuleDef(moduleDef *parser.Module,
 
 func (c *Context) addModule(module *moduleInfo) []error {
 	name := module.logicModule.Name()
+	if name == "" {
+		return []error{
+			&BlueprintError{
+				Err: fmt.Errorf("property 'name' is missing from a module"),
+				Pos: module.pos,
+			},
+		}
+	}
 	c.moduleInfo[module.logicModule] = module
 
 	group := &moduleGroup{
