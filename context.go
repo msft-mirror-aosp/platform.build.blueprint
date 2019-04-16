@@ -604,15 +604,6 @@ type fileParseContext struct {
 	doneVisiting chan struct{}
 }
 
-func (c *Context) ParseBlueprintsFiles(rootFile string) (deps []string, errs []error) {
-	baseDir := filepath.Dir(rootFile)
-	pathsToParse, err := c.ListModulePaths(baseDir)
-	if err != nil {
-		return nil, []error{err}
-	}
-	return c.ParseFileList(baseDir, pathsToParse)
-}
-
 // ParseBlueprintsFiles parses a set of Blueprints files starting with the file
 // at rootFile.  When it encounters a Blueprints file with a set of subdirs
 // listed it recursively parses any Blueprints files found in those
@@ -622,6 +613,15 @@ func (c *Context) ParseBlueprintsFiles(rootFile string) (deps []string, errs []e
 // which the future output will depend is returned.  This list will include both
 // Blueprints file paths as well as directory paths for cases where wildcard
 // subdirs are found.
+func (c *Context) ParseBlueprintsFiles(rootFile string) (deps []string, errs []error) {
+	baseDir := filepath.Dir(rootFile)
+	pathsToParse, err := c.ListModulePaths(baseDir)
+	if err != nil {
+		return nil, []error{err}
+	}
+	return c.ParseFileList(baseDir, pathsToParse)
+}
+
 func (c *Context) ParseFileList(rootDir string, filePaths []string) (deps []string,
 	errs []error) {
 
@@ -2347,6 +2347,7 @@ func (c *Context) generateSingletonBuildActions(config interface{},
 		scope := newLocalScope(nil, singletonNamespacePrefix(info.name))
 
 		sctx := &singletonContext{
+			name:    info.name,
 			context: c,
 			config:  config,
 			scope:   scope,
@@ -2829,6 +2830,14 @@ func (c *Context) ModuleTypePropertyStructs() map[string][]interface{} {
 	return ret
 }
 
+func (c *Context) ModuleTypeFactories() map[string]ModuleFactory {
+	ret := make(map[string]ModuleFactory)
+	for k, v := range c.moduleFactories {
+		ret[k] = v
+	}
+	return ret
+}
+
 func (c *Context) ModuleName(logicModule Module) string {
 	module := c.moduleInfo[logicModule]
 	return module.Name()
@@ -2967,6 +2976,25 @@ func (c *Context) VisitAllModuleVariants(module Module,
 	visit func(Module)) {
 
 	c.visitAllModuleVariants(c.moduleInfo[module], visit)
+}
+
+// Singletons returns a list of all registered Singletons.
+func (c *Context) Singletons() []Singleton {
+	var ret []Singleton
+	for _, s := range c.singletonInfo {
+		ret = append(ret, s.singleton)
+	}
+	return ret
+}
+
+// SingletonName returns the name that the given singleton was registered with.
+func (c *Context) SingletonName(singleton Singleton) string {
+	for _, s := range c.singletonInfo {
+		if s.singleton == singleton {
+			return s.name
+		}
+	}
+	return ""
 }
 
 // WriteBuildFile writes the Ninja manifeset text for the generated build

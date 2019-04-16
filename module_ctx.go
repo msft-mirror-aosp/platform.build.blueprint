@@ -123,6 +123,7 @@ type DynamicDependerModule interface {
 type BaseModuleContext interface {
 	ModuleName() string
 	ModuleDir() string
+	ModuleType() string
 	Config() interface{}
 
 	ContainsProperty(name string) bool
@@ -154,6 +155,9 @@ type ModuleContext interface {
 	BaseModuleContext
 
 	OtherModuleName(m Module) string
+	OtherModuleDir(m Module) string
+	OtherModuleSubDir(m Module) string
+	OtherModuleType(m Module) string
 	OtherModuleErrorf(m Module, fmt string, args ...interface{})
 	OtherModuleDependencyTag(m Module) DependencyTag
 
@@ -197,6 +201,10 @@ func (d *baseModuleContext) moduleInfo() *moduleInfo {
 
 func (d *baseModuleContext) ModuleName() string {
 	return d.module.Name()
+}
+
+func (d *baseModuleContext) ModuleType() string {
+	return d.module.typeName
 }
 
 func (d *baseModuleContext) ContainsProperty(name string) bool {
@@ -291,6 +299,21 @@ func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
 	return module.Name()
 }
 
+func (m *baseModuleContext) OtherModuleDir(logicModule Module) string {
+	module := m.context.moduleInfo[logicModule]
+	return filepath.Dir(module.relBlueprintsFile)
+}
+
+func (m *baseModuleContext) OtherModuleSubDir(logicModule Module) string {
+	module := m.context.moduleInfo[logicModule]
+	return module.variantName
+}
+
+func (m *baseModuleContext) OtherModuleType(logicModule Module) string {
+	module := m.context.moduleInfo[logicModule]
+	return module.typeName
+}
+
 func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 	args ...interface{}) {
 
@@ -338,14 +361,18 @@ func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
 // GetDirectDepWithTag returns the Module the direct dependency with the specified name, or nil if
 // none exists.  It panics if the dependency does not have the specified tag.
 func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) Module {
+	var deps []depInfo
 	for _, dep := range m.module.directDeps {
 		if dep.module.Name() == name {
-			if dep.tag != tag {
-				panic(fmt.Errorf("found dependency %q with tag %#v, expected tag %#v",
-					dep.module, dep.tag, tag))
+			if dep.tag == tag {
+				return dep.module.logicModule
 			}
-			return dep.module.logicModule
+			deps = append(deps, dep)
 		}
+	}
+
+	if len(deps) != 0 {
+		panic(fmt.Errorf("Unable to find dependency %q with requested tag %#v. Found: %#v", deps[0].module, tag, deps))
 	}
 
 	return nil
@@ -555,6 +582,9 @@ type TopDownMutatorContext interface {
 	baseMutatorContext
 
 	OtherModuleName(m Module) string
+	OtherModuleDir(m Module) string
+	OtherModuleSubDir(m Module) string
+	OtherModuleType(m Module) string
 	OtherModuleErrorf(m Module, fmt string, args ...interface{})
 	OtherModuleDependencyTag(m Module) DependencyTag
 
