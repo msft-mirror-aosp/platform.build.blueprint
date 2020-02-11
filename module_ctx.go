@@ -17,6 +17,7 @@ package blueprint
 import (
 	"fmt"
 	"path/filepath"
+	"sync"
 	"text/scanner"
 
 	"github.com/google/blueprint/pathtools"
@@ -120,7 +121,7 @@ type DynamicDependerModule interface {
 	DynamicDependencies(DynamicDependerModuleContext) []string
 }
 
-type BaseModuleContext interface {
+type EarlyModuleContext interface {
 	// Module returns the current module as a Module.  It should rarely be necessary, as the module already has a
 	// reference to itself.
 	Module() Module
@@ -135,6 +136,10 @@ type BaseModuleContext interface {
 	// ModuleType returns the name of the module type that was used to create the module, as specified in
 	// RegisterModuleType.
 	ModuleType() string
+
+	// BlueprintFile returns the name of the blueprint file that contains the definition of this
+	// module.
+	BlueprintsFile() string
 
 	// Config returns the config object that was passed to Context.PrepareBuildActions.
 	Config() interface{}
@@ -178,6 +183,13 @@ type BaseModuleContext interface {
 	// Namespace returns the Namespace object provided by the NameInterface set by Context.SetNameInterface, or the
 	// default SimpleNameInterface if Context.SetNameInterface was not called.
 	Namespace() Namespace
+
+	// ModuleFactories returns a map of all of the global ModuleFactories by name.
+	ModuleFactories() map[string]ModuleFactory
+}
+
+type BaseModuleContext interface {
+	EarlyModuleContext
 
 	// GetDirectDepWithTag returns the Module the direct dependency with the specified name, or nil if
 	// none exists.  It panics if the dependency does not have the specified tag.
@@ -341,6 +353,10 @@ func (d *baseModuleContext) ContainsProperty(name string) bool {
 
 func (d *baseModuleContext) ModuleDir() string {
 	return filepath.Dir(d.module.relBlueprintsFile)
+}
+
+func (d *baseModuleContext) BlueprintsFile() string {
+	return d.module.relBlueprintsFile
 }
 
 func (d *baseModuleContext) Config() interface{} {
@@ -597,6 +613,14 @@ func (m *baseModuleContext) AddNinjaFileDeps(deps ...string) {
 	m.ninjaFileDeps = append(m.ninjaFileDeps, deps...)
 }
 
+func (m *baseModuleContext) ModuleFactories() map[string]ModuleFactory {
+	ret := make(map[string]ModuleFactory)
+	for k, v := range m.context.moduleFactories {
+		ret[k] = v
+	}
+	return ret
+}
+
 func (m *moduleContext) ModuleSubDir() string {
 	return m.module.variantName
 }
@@ -785,6 +809,13 @@ type BottomUpMutatorContext interface {
 	// specified name with the current variant of this module.  Replacements don't take effect until
 	// after the mutator pass is finished.
 	ReplaceDependencies(string)
+
+	// AliasVariation takes a variationName that was passed to CreateVariations for this module, and creates an
+	// alias from the current variant to the new variant.  The alias will be valid until the next time a mutator
+	// calls CreateVariations or CreateLocalVariations on this module without also calling AliasVariation.  The
+	// alias can be used to add dependencies on the newly created variant using the variant map from before
+	// CreateVariations was run.
+	AliasVariation(variationName string)
 }
 
 // A Mutator function is called for each Module, and can use
@@ -838,6 +869,9 @@ func (mctx *mutatorContext) createVariations(variationNames []string, local bool
 	for i, module := range modules {
 		ret = append(ret, module.logicModule)
 		if !local {
+			if module.dependencyVariant == nil {
+				module.dependencyVariant = make(variationMap)
+			}
 			module.dependencyVariant[mctx.name] = variationNames[i]
 		}
 	}
@@ -852,6 +886,25 @@ func (mctx *mutatorContext) createVariations(variationNames []string, local bool
 	}
 
 	return ret
+}
+
+func (mctx *mutatorContext) AliasVariation(variationName string) {
+	if mctx.module.aliasTarget != nil {
+		panic(fmt.Errorf("AliasVariation already called"))
+	}
+
+	for _, variant := range mctx.newVariations {
+		if variant.variant[mctx.name] == variationName {
+			mctx.module.aliasTarget = variant
+			return
+		}
+	}
+
+	var foundVariations []string
+	for _, variant := range mctx.newVariations {
+		foundVariations = append(foundVariations, variant.variant[mctx.name])
+	}
+	panic(fmt.Errorf("no %q variation in module variations %q", variationName, foundVariations))
 }
 
 func (mctx *mutatorContext) SetDependencyVariation(variationName string) {
@@ -965,4 +1018,108 @@ type SimpleName struct {
 
 func (s *SimpleName) Name() string {
 	return s.Properties.Name
+}
+
+// Load Hooks
+
+type LoadHookContext interface {
+	EarlyModuleContext
+
+	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
+	// the specified property structs to it as if the properties were set in a blueprint file.
+	CreateModule(ModuleFactory, ...interface{}) Module
+
+	// RegisterScopedModuleType creates a new module type that is scoped to the current Blueprints
+	// file.
+	RegisterScopedModuleType(name string, factory ModuleFactory)
+}
+
+func (l *loadHookContext) CreateModule(factory ModuleFactory, props ...interface{}) Module {
+	module := l.context.newModule(factory)
+
+	module.relBlueprintsFile = l.module.relBlueprintsFile
+	module.pos = l.module.pos
+	module.propertyPos = l.module.propertyPos
+	module.createdBy = l.module
+
+	for _, p := range props {
+		err := proptools.AppendMatchingProperties(module.properties, p, nil)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	l.newModules = append(l.newModules, module)
+
+	return module.logicModule
+}
+
+func (l *loadHookContext) RegisterScopedModuleType(name string, factory ModuleFactory) {
+	if _, exists := l.context.moduleFactories[name]; exists {
+		panic(fmt.Errorf("A global module type named %q already exists", name))
+	}
+
+	if _, exists := (*l.scopedModuleFactories)[name]; exists {
+		panic(fmt.Errorf("A module type named %q already exists in this scope", name))
+	}
+
+	if *l.scopedModuleFactories == nil {
+		(*l.scopedModuleFactories) = make(map[string]ModuleFactory)
+	}
+
+	(*l.scopedModuleFactories)[name] = factory
+}
+
+type loadHookContext struct {
+	baseModuleContext
+	newModules            []*moduleInfo
+	scopedModuleFactories *map[string]ModuleFactory
+}
+
+type LoadHook func(ctx LoadHookContext)
+
+// Load hooks need to be added by module factories, which don't have any parameter to get to the
+// Context, and only produce a Module interface with no base implementation, so the load hooks
+// must be stored in a global map.  The key is a pointer allocated by the module factory, so there
+// is no chance of collisions even if tests are running in parallel with multiple contexts.  The
+// contents should be short-lived, they are added during a module factory and removed immediately
+// after the module factory returns.
+var pendingHooks sync.Map
+
+func AddLoadHook(module Module, hook LoadHook) {
+	// Only one goroutine can be processing a given module, so no additional locking is required
+	// for the slice stored in the sync.Map.
+	v, exists := pendingHooks.Load(module)
+	if !exists {
+		v, _ = pendingHooks.LoadOrStore(module, new([]LoadHook))
+	}
+	hooks := v.(*[]LoadHook)
+	*hooks = append(*hooks, hook)
+}
+
+func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
+	scopedModuleFactories *map[string]ModuleFactory) (newModules []*moduleInfo, errs []error) {
+
+	if v, exists := pendingHooks.Load(module.logicModule); exists {
+		hooks := v.(*[]LoadHook)
+		mctx := &loadHookContext{
+			baseModuleContext: baseModuleContext{
+				context: ctx,
+				config:  config,
+				module:  module,
+			},
+			scopedModuleFactories: scopedModuleFactories,
+		}
+
+		for _, hook := range *hooks {
+			hook(mctx)
+			newModules = append(newModules, mctx.newModules...)
+			errs = append(errs, mctx.errs...)
+		}
+		pendingHooks.Delete(module.logicModule)
+
+		return newModules, errs
+	}
+
+	return nil, nil
 }
