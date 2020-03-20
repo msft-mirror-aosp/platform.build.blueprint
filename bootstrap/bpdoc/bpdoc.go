@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 )
 
@@ -144,14 +143,6 @@ func assembleModuleTypeInfo(r *Reader, name string, factory reflect.Value,
 			nestPoint := ps.GetByName(nestedName)
 			if nestPoint == nil {
 				return nil, fmt.Errorf("nesting point %q not found", nestedName)
-			}
-
-			key, value, err := blueprint.HasFilter(nestPoint.Tag)
-			if err != nil {
-				return nil, err
-			}
-			if key != "" {
-				nested.IncludeByTag(key, value)
 			}
 
 			nestPoint.Nest(nested)

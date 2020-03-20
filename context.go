@@ -96,15 +96,15 @@ type Context struct {
 	// set during PrepareBuildActions
 	pkgNames        map[*packageContext]string
 	liveGlobals     *liveTracker
-	globalVariables map[Variable]*ninjaString
+	globalVariables map[Variable]ninjaString
 	globalPools     map[Pool]*poolDef
 	globalRules     map[Rule]*ruleDef
 
 	// set during PrepareBuildActions
-	ninjaBuildDir      *ninjaString // The builddir special Ninja variable
-	requiredNinjaMajor int          // For the ninja_required_version variable
-	requiredNinjaMinor int          // For the ninja_required_version variable
-	requiredNinjaMicro int          // For the ninja_required_version variable
+	ninjaBuildDir      ninjaString // The builddir special Ninja variable
+	requiredNinjaMajor int         // For the ninja_required_version variable
+	requiredNinjaMinor int         // For the ninja_required_version variable
+	requiredNinjaMicro int         // For the ninja_required_version variable
 
 	subninjas []string
 
@@ -114,6 +114,7 @@ type Context struct {
 	globs    map[string]GlobPath
 	globLock sync.Mutex
 
+	srcDir         string
 	fs             pathtools.FileSystem
 	moduleListFile string
 }
@@ -448,6 +449,15 @@ func (c *Context) SetNameInterface(i NameInterface) {
 	c.nameInterface = i
 }
 
+func (c *Context) SetSrcDir(path string) {
+	c.srcDir = path
+	c.fs = pathtools.NewOsFs(path)
+}
+
+func (c *Context) SrcDir() string {
+	return c.srcDir
+}
+
 func singletonPkgPath(singleton Singleton) string {
 	typ := reflect.TypeOf(singleton)
 	for typ.Kind() == reflect.Ptr {
@@ -631,17 +641,19 @@ type fileParseContext struct {
 // which the future output will depend is returned.  This list will include both
 // Blueprints file paths as well as directory paths for cases where wildcard
 // subdirs are found.
-func (c *Context) ParseBlueprintsFiles(rootFile string) (deps []string, errs []error) {
+func (c *Context) ParseBlueprintsFiles(rootFile string,
+	config interface{}) (deps []string, errs []error) {
+
 	baseDir := filepath.Dir(rootFile)
 	pathsToParse, err := c.ListModulePaths(baseDir)
 	if err != nil {
 		return nil, []error{err}
 	}
-	return c.ParseFileList(baseDir, pathsToParse)
+	return c.ParseFileList(baseDir, pathsToParse, config)
 }
 
-func (c *Context) ParseFileList(rootDir string, filePaths []string) (deps []string,
-	errs []error) {
+func (c *Context) ParseFileList(rootDir string, filePaths []string,
+	config interface{}) (deps []string, errs []error) {
 
 	if len(filePaths) < 1 {
 		return nil, []error{fmt.Errorf("no paths provided to parse")}
@@ -649,7 +661,12 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string) (deps []stri
 
 	c.dependenciesReady = false
 
-	moduleCh := make(chan *moduleInfo)
+	type newModuleInfo struct {
+		*moduleInfo
+		added chan<- struct{}
+	}
+
+	moduleCh := make(chan newModuleInfo)
 	errsCh := make(chan []error)
 	doneCh := make(chan struct{})
 	var numErrs uint32
@@ -661,24 +678,47 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string) (deps []stri
 			return
 		}
 
+		addedCh := make(chan struct{})
+
+		var scopedModuleFactories map[string]ModuleFactory
+
+		var addModule func(module *moduleInfo) []error
+		addModule = func(module *moduleInfo) (errs []error) {
+			moduleCh <- newModuleInfo{module, addedCh}
+			<-addedCh
+			var newModules []*moduleInfo
+			newModules, errs = runAndRemoveLoadHooks(c, config, module, &scopedModuleFactories)
+			if len(errs) > 0 {
+				return errs
+			}
+			for _, n := range newModules {
+				errs = addModule(n)
+				if len(errs) > 0 {
+					return errs
+				}
+			}
+			return nil
+		}
+
 		for _, def := range file.Defs {
-			var module *moduleInfo
-			var errs []error
 			switch def := def.(type) {
 			case *parser.Module:
-				module, errs = c.processModuleDef(def, file.Name)
+				module, errs := c.processModuleDef(def, file.Name, scopedModuleFactories)
+				if len(errs) == 0 && module != nil {
+					errs = addModule(module)
+				}
+
+				if len(errs) > 0 {
+					atomic.AddUint32(&numErrs, uint32(len(errs)))
+					errsCh <- errs
+				}
+
 			case *parser.Assignment:
 				// Already handled via Scope object
 			default:
 				panic("unknown definition type")
 			}
 
-			if len(errs) > 0 {
-				atomic.AddUint32(&numErrs, uint32(len(errs)))
-				errsCh <- errs
-			} else if module != nil {
-				moduleCh <- module
-			}
 		}
 	}
 
@@ -698,7 +738,10 @@ loop:
 		case newErrs := <-errsCh:
 			errs = append(errs, newErrs...)
 		case module := <-moduleCh:
-			newErrs := c.addModule(module)
+			newErrs := c.addModule(module.moduleInfo)
+			if module.added != nil {
+				module.added <- struct{}{}
+			}
 			if len(newErrs) > 0 {
 				errs = append(errs, newErrs...)
 			}
@@ -1159,8 +1202,8 @@ func (c *Context) cloneLogicModule(origModule *moduleInfo) (Module, []interface{
 	}
 
 	for i := range newProperties {
-		dst := reflect.ValueOf(newProperties[i]).Elem()
-		src := reflect.ValueOf(origModule.properties[i]).Elem()
+		dst := reflect.ValueOf(newProperties[i])
+		src := reflect.ValueOf(origModule.properties[i])
 
 		proptools.CopyProperties(dst, src)
 	}
@@ -1307,9 +1350,12 @@ func (c *Context) newModule(factory ModuleFactory) *moduleInfo {
 }
 
 func (c *Context) processModuleDef(moduleDef *parser.Module,
-	relBlueprintsFile string) (*moduleInfo, []error) {
+	relBlueprintsFile string, scopedModuleFactories map[string]ModuleFactory) (*moduleInfo, []error) {
 
 	factory, ok := c.moduleFactories[moduleDef.Type]
+	if !ok && scopedModuleFactories != nil {
+		factory, ok = scopedModuleFactories[moduleDef.Type]
+	}
 	if !ok {
 		if c.ignoreUnknownModuleTypes {
 			return nil, nil
@@ -1328,8 +1374,17 @@ func (c *Context) processModuleDef(moduleDef *parser.Module,
 
 	module.relBlueprintsFile = relBlueprintsFile
 
-	propertyMap, errs := unpackProperties(moduleDef.Properties, module.properties...)
+	propertyMap, errs := proptools.UnpackProperties(moduleDef.Properties, module.properties...)
 	if len(errs) > 0 {
+		for i, err := range errs {
+			if unpackErr, ok := err.(*proptools.UnpackError); ok {
+				err = &BlueprintError{
+					Err: unpackErr.Err,
+					Pos: unpackErr.Pos,
+				}
+				errs[i] = err
+			}
+		}
 		return nil, errs
 	}
 
@@ -2143,7 +2198,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 			newVariationsCh <- mctx.newVariations
 		}
 
-		if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 {
+		if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 {
 			globalStateCh <- globalStateChange{
 				reverse:    mctx.reverseDeps,
 				replace:    mctx.replace,
@@ -2733,7 +2788,7 @@ func (c *Context) requireNinjaVersion(major, minor, micro int) {
 	}
 }
 
-func (c *Context) setNinjaBuildDir(value *ninjaString) {
+func (c *Context) setNinjaBuildDir(value ninjaString) {
 	if c.ninjaBuildDir == nil {
 		c.ninjaBuildDir = value
 	}
@@ -2799,7 +2854,7 @@ func (c *Context) makeUniquePackageNames(
 }
 
 func (c *Context) checkForVariableReferenceCycles(
-	variables map[Variable]*ninjaString, pkgNames map[*packageContext]string) {
+	variables map[Variable]ninjaString, pkgNames map[*packageContext]string) {
 
 	visited := make(map[Variable]bool)  // variables that were already checked
 	checking := make(map[Variable]bool) // variables actively being checked
@@ -2812,7 +2867,7 @@ func (c *Context) checkForVariableReferenceCycles(
 		defer delete(checking, v)
 
 		value := variables[v]
-		for _, dep := range value.variables {
+		for _, dep := range value.Variables() {
 			if checking[dep] {
 				// This is a cycle.
 				return []Variable{dep, v}
@@ -3297,7 +3352,7 @@ func (c *Context) writeGlobalVariables(nw *ninjaWriter) error {
 
 		// First visit variables on which this variable depends.
 		value := c.globalVariables[v]
-		for _, dep := range value.variables {
+		for _, dep := range value.Variables() {
 			if !visited[dep] {
 				err := walk(dep)
 				if err != nil {

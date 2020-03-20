@@ -12,17 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package blueprint
+package proptools
 
 import (
 	"bytes"
-	"fmt"
 	"reflect"
+
 	"testing"
-	"text/scanner"
 
 	"github.com/google/blueprint/parser"
-	"github.com/google/blueprint/proptools"
 )
 
 var validUnpackTestCases = []struct {
@@ -34,18 +32,18 @@ var validUnpackTestCases = []struct {
 	{
 		input: `
 			m {
-				name: "abc",
+				s: "abc",
 				blank: "",
 			}
 		`,
 		output: []interface{}{
-			struct {
-				Name  *string
+			&struct {
+				S     *string
 				Blank *string
 				Unset *string
 			}{
-				Name:  proptools.StringPtr("abc"),
-				Blank: proptools.StringPtr(""),
+				S:     StringPtr("abc"),
+				Blank: StringPtr(""),
 				Unset: nil,
 			},
 		},
@@ -54,14 +52,14 @@ var validUnpackTestCases = []struct {
 	{
 		input: `
 			m {
-				name: "abc",
+				s: "abc",
 			}
 		`,
 		output: []interface{}{
-			struct {
-				Name string
+			&struct {
+				S string
 			}{
-				Name: "abc",
+				S: "abc",
 			},
 		},
 	},
@@ -73,7 +71,7 @@ var validUnpackTestCases = []struct {
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				IsGood bool
 			}{
 				IsGood: true,
@@ -89,13 +87,13 @@ var validUnpackTestCases = []struct {
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				IsGood *bool
 				IsBad  *bool
 				IsUgly *bool
 			}{
-				IsGood: proptools.BoolPtr(true),
-				IsBad:  proptools.BoolPtr(false),
+				IsGood: BoolPtr(true),
+				IsBad:  BoolPtr(false),
 				IsUgly: nil,
 			},
 		},
@@ -110,7 +108,7 @@ var validUnpackTestCases = []struct {
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				Stuff     []string
 				Empty     []string
 				Nil       []string
@@ -128,18 +126,18 @@ var validUnpackTestCases = []struct {
 		input: `
 			m {
 				nested: {
-					name: "abc",
+					s: "abc",
 				}
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				Nested struct {
-					Name string
+					S string
 				}
 			}{
-				Nested: struct{ Name string }{
-					Name: "abc",
+				Nested: struct{ S string }{
+					S: "abc",
 				},
 			},
 		},
@@ -149,16 +147,16 @@ var validUnpackTestCases = []struct {
 		input: `
 			m {
 				nested: {
-					name: "def",
+					s: "def",
 				}
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				Nested interface{}
 			}{
-				Nested: &struct{ Name string }{
-					Name: "def",
+				Nested: &struct{ S string }{
+					S: "def",
 				},
 			},
 		},
@@ -175,7 +173,7 @@ var validUnpackTestCases = []struct {
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				Nested struct {
 					Foo string
 				}
@@ -202,7 +200,7 @@ var validUnpackTestCases = []struct {
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				Nested struct {
 					Foo string `allowNested:"true"`
 				} `blueprint:"filter(allowNested:\"true\")"`
@@ -220,64 +218,169 @@ var validUnpackTestCases = []struct {
 		},
 	},
 
+	// List of maps
 	{
 		input: `
 			m {
-				nested: {
-					foo: "abc",
-				},
-				bar: false,
-				baz: ["def", "ghi"],
+				mapslist: [
+					{
+						foo: "abc",
+						bar: true,
+					},
+					{
+						foo: "def",
+						bar: false,
+					}
+				],
 			}
 		`,
 		output: []interface{}{
-			struct {
-				Nested struct {
+			&struct {
+				Mapslist []struct {
 					Foo string
-				} `blueprint:"filter(allowNested:\"true\")"`
-				Bar bool
-				Baz []string
+					Bar bool
+				}
 			}{
-				Nested: struct{ Foo string }{
-					Foo: "",
+				Mapslist: []struct {
+					Foo string
+					Bar bool
+				}{
+					{Foo: "abc", Bar: true},
+					{Foo: "def", Bar: false},
 				},
-				Bar: false,
-				Baz: []string{"def", "ghi"},
-			},
-		},
-		errs: []error{
-			&BlueprintError{
-				Err: fmt.Errorf("filtered field nested.foo cannot be set in a Blueprint file"),
-				Pos: mkpos(30, 4, 9),
 			},
 		},
 	},
 
+	// List of pointers to structs
+	{
+		input: `
+			m {
+				mapslist: [
+					{
+						foo: "abc",
+						bar: true,
+					},
+					{
+						foo: "def",
+						bar: false,
+					}
+				],
+			}
+		`,
+		output: []interface{}{
+			&struct {
+				Mapslist []*struct {
+					Foo string
+					Bar bool
+				}
+			}{
+				Mapslist: []*struct {
+					Foo string
+					Bar bool
+				}{
+					{Foo: "abc", Bar: true},
+					{Foo: "def", Bar: false},
+				},
+			},
+		},
+	},
+
+	// List of lists
+	{
+		input: `
+			m {
+				listoflists: [
+					["abc",],
+					["def",],
+				],
+			}
+		`,
+		output: []interface{}{
+			&struct {
+				Listoflists [][]string
+			}{
+				Listoflists: [][]string{
+					[]string{"abc"},
+					[]string{"def"},
+				},
+			},
+		},
+	},
+
+	// Multilevel
+	{
+		input: `
+			m {
+				name: "mymodule",
+				flag: true,
+				settings: ["foo1", "foo2", "foo3",],
+				perarch: {
+					arm: "32",
+					arm64: "64",
+				},
+				configvars: [
+					{ var: "var1", values: ["1.1", "1.2", ], },
+					{ var: "var2", values: ["2.1", ], },
+				],
+            }
+        `,
+		output: []interface{}{
+			&struct {
+				Name     string
+				Flag     bool
+				Settings []string
+				Perarch  *struct {
+					Arm   string
+					Arm64 string
+				}
+				Configvars []struct {
+					Var    string
+					Values []string
+				}
+			}{
+				Name:     "mymodule",
+				Flag:     true,
+				Settings: []string{"foo1", "foo2", "foo3"},
+				Perarch: &struct {
+					Arm   string
+					Arm64 string
+				}{Arm: "32", Arm64: "64"},
+				Configvars: []struct {
+					Var    string
+					Values []string
+				}{
+					{Var: "var1", Values: []string{"1.1", "1.2"}},
+					{Var: "var2", Values: []string{"2.1"}},
+				},
+			},
+		},
+	},
 	// Anonymous struct
 	{
 		input: `
 			m {
-				name: "abc",
+				s: "abc",
 				nested: {
-					name: "def",
+					s: "def",
 				},
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				EmbeddedStruct
 				Nested struct {
 					EmbeddedStruct
 				}
 			}{
 				EmbeddedStruct: EmbeddedStruct{
-					Name: "abc",
+					S: "abc",
 				},
 				Nested: struct {
 					EmbeddedStruct
 				}{
 					EmbeddedStruct: EmbeddedStruct{
-						Name: "def",
+						S: "def",
 					},
 				},
 			},
@@ -288,27 +391,27 @@ var validUnpackTestCases = []struct {
 	{
 		input: `
 			m {
-				name: "abc",
+				s: "abc",
 				nested: {
-					name: "def",
+					s: "def",
 				},
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				EmbeddedInterface
 				Nested struct {
 					EmbeddedInterface
 				}
 			}{
-				EmbeddedInterface: &struct{ Name string }{
-					Name: "abc",
+				EmbeddedInterface: &struct{ S string }{
+					S: "abc",
 				},
 				Nested: struct {
 					EmbeddedInterface
 				}{
-					EmbeddedInterface: &struct{ Name string }{
-						Name: "def",
+					EmbeddedInterface: &struct{ S string }{
+						S: "def",
 					},
 				},
 			},
@@ -319,32 +422,32 @@ var validUnpackTestCases = []struct {
 	{
 		input: `
 			m {
-				name: "abc",
+				s: "abc",
 				nested: {
-					name: "def",
+					s: "def",
 				},
 			}
 		`,
 		output: []interface{}{
-			struct {
-				Name string
+			&struct {
+				S string
 				EmbeddedStruct
 				Nested struct {
-					Name string
+					S string
 					EmbeddedStruct
 				}
 			}{
-				Name: "abc",
+				S: "abc",
 				EmbeddedStruct: EmbeddedStruct{
-					Name: "abc",
+					S: "abc",
 				},
 				Nested: struct {
-					Name string
+					S string
 					EmbeddedStruct
 				}{
-					Name: "def",
+					S: "def",
 					EmbeddedStruct: EmbeddedStruct{
-						Name: "def",
+						S: "def",
 					},
 				},
 			},
@@ -355,32 +458,32 @@ var validUnpackTestCases = []struct {
 	{
 		input: `
 			m {
-				name: "abc",
+				s: "abc",
 				nested: {
-					name: "def",
+					s: "def",
 				},
 			}
 		`,
 		output: []interface{}{
-			struct {
-				Name string
+			&struct {
+				S string
 				EmbeddedInterface
 				Nested struct {
-					Name string
+					S string
 					EmbeddedInterface
 				}
 			}{
-				Name: "abc",
-				EmbeddedInterface: &struct{ Name string }{
-					Name: "abc",
+				S: "abc",
+				EmbeddedInterface: &struct{ S string }{
+					S: "abc",
 				},
 				Nested: struct {
-					Name string
+					S string
 					EmbeddedInterface
 				}{
-					Name: "def",
-					EmbeddedInterface: &struct{ Name string }{
-						Name: "def",
+					S: "def",
+					EmbeddedInterface: &struct{ S string }{
+						S: "def",
 					},
 				},
 			},
@@ -393,21 +496,31 @@ var validUnpackTestCases = []struct {
 			list = ["abc"]
 			string = "def"
 			list_with_variable = [string]
+			struct_value = { name: "foo" }
 			m {
-				name: string,
+				s: string,
 				list: list,
 				list2: list_with_variable,
+				structattr: struct_value,
 			}
 		`,
 		output: []interface{}{
-			struct {
-				Name  string
-				List  []string
-				List2 []string
+			&struct {
+				S          string
+				List       []string
+				List2      []string
+				Structattr struct {
+					Name string
+				}
 			}{
-				Name:  "def",
+				S:     "def",
 				List:  []string{"abc"},
 				List2: []string{"def"},
+				Structattr: struct {
+					Name string
+				}{
+					Name: "foo",
+				},
 			},
 		},
 	},
@@ -417,30 +530,30 @@ var validUnpackTestCases = []struct {
 		input: `
 			m {
 				nested: {
-					name: "abc",
+					s: "abc",
 				}
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				Nested struct {
-					Name string
+					S string
 				}
 			}{
-				Nested: struct{ Name string }{
-					Name: "abc",
+				Nested: struct{ S string }{
+					S: "abc",
 				},
 			},
-			struct {
+			&struct {
 				Nested struct {
-					Name string
+					S string
 				}
 			}{
-				Nested: struct{ Name string }{
-					Name: "abc",
+				Nested: struct{ S string }{
+					S: "abc",
 				},
 			},
-			struct {
+			&struct {
 			}{},
 		},
 	},
@@ -450,25 +563,25 @@ var validUnpackTestCases = []struct {
 		input: `
 			m {
 				nested: {
-					name: "abc",
+					s: "abc",
 				}
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				Nested *struct {
-					Name string
+					S string
 				}
 			}{
-				Nested: &struct{ Name string }{
-					Name: "abc",
+				Nested: &struct{ S string }{
+					S: "abc",
 				},
 			},
 		},
 		empty: []interface{}{
 			&struct {
 				Nested *struct {
-					Name string
+					S string
 				}
 			}{},
 		},
@@ -479,16 +592,16 @@ var validUnpackTestCases = []struct {
 		input: `
 			m {
 				nested: {
-					name: "abc",
+					s: "abc",
 				}
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				Nested interface{}
 			}{
 				Nested: &EmbeddedStruct{
-					Name: "abc",
+					S: "abc",
 				},
 			},
 		},
@@ -513,7 +626,7 @@ var validUnpackTestCases = []struct {
 			}
 		`,
 		output: []interface{}{
-			struct {
+			&struct {
 				String     string
 				String_ptr *string
 				Bool       bool
@@ -521,9 +634,9 @@ var validUnpackTestCases = []struct {
 				List       []string
 			}{
 				String:     "012abc",
-				String_ptr: proptools.StringPtr("abc"),
+				String_ptr: StringPtr("abc"),
 				Bool:       true,
-				Bool_ptr:   proptools.BoolPtr(false),
+				Bool_ptr:   BoolPtr(false),
 				List:       []string{"0", "1", "2", "a", "b", "c"},
 			},
 		},
@@ -536,17 +649,29 @@ var validUnpackTestCases = []struct {
 				List       []string
 			}{
 				String:     "012",
-				String_ptr: proptools.StringPtr("012"),
+				String_ptr: StringPtr("012"),
 				Bool:       true,
-				Bool_ptr:   proptools.BoolPtr(true),
+				Bool_ptr:   BoolPtr(true),
 				List:       []string{"0", "1", "2"},
 			},
 		},
 	},
+	// Captitalized property
+	{
+		input: `
+			m {
+				CAPITALIZED: "foo",
+			}
+		`,
+		output: []interface{}{
+			&struct {
+				CAPITALIZED string
+			}{
+				CAPITALIZED: "foo",
+			},
+		},
+	},
 }
-
-type EmbeddedStruct struct{ Name string }
-type EmbeddedInterface interface{}
 
 func TestUnpackProperties(t *testing.T) {
 	for _, testCase := range validUnpackTestCases {
@@ -572,10 +697,10 @@ func TestUnpackProperties(t *testing.T) {
 				output = testCase.empty
 			} else {
 				for _, p := range testCase.output {
-					output = append(output, proptools.CloneEmptyProperties(reflect.ValueOf(p)).Interface())
+					output = append(output, CloneEmptyProperties(reflect.ValueOf(p)).Interface())
 				}
 			}
-			_, errs = unpackProperties(module.Properties, output...)
+			_, errs = UnpackProperties(module.Properties, output...)
 			if len(errs) != 0 && len(testCase.errs) == 0 {
 				t.Errorf("test case: %s", testCase.input)
 				t.Errorf("unexpected unpack errors:")
@@ -596,7 +721,7 @@ func TestUnpackProperties(t *testing.T) {
 			}
 
 			for i := range output {
-				got := reflect.ValueOf(output[i]).Elem().Interface()
+				got := reflect.ValueOf(output[i]).Interface()
 				if !reflect.DeepEqual(got, testCase.output[i]) {
 					t.Errorf("test case: %s", testCase.input)
 					t.Errorf("incorrect output:")
@@ -608,10 +733,185 @@ func TestUnpackProperties(t *testing.T) {
 	}
 }
 
-func mkpos(offset, line, column int) scanner.Position {
-	return scanner.Position{
-		Offset: offset,
-		Line:   line,
-		Column: column,
+func BenchmarkUnpackProperties(b *testing.B) {
+	run := func(b *testing.B, props []interface{}, input string) {
+		b.ReportAllocs()
+		b.StopTimer()
+		r := bytes.NewBufferString(input)
+		file, errs := parser.ParseAndEval("", r, parser.NewScope(nil))
+		if len(errs) != 0 {
+			b.Errorf("test case: %s", input)
+			b.Errorf("unexpected parse errors:")
+			for _, err := range errs {
+				b.Errorf("  %s", err)
+			}
+			b.FailNow()
+		}
+
+		for i := 0; i < b.N; i++ {
+			for _, def := range file.Defs {
+				module, ok := def.(*parser.Module)
+				if !ok {
+					continue
+				}
+
+				var output []interface{}
+				for _, p := range props {
+					output = append(output, CloneProperties(reflect.ValueOf(p)).Interface())
+				}
+
+				b.StartTimer()
+				_, errs = UnpackProperties(module.Properties, output...)
+				b.StopTimer()
+				if len(errs) > 0 {
+					b.Errorf("unexpected unpack errors:")
+					for _, err := range errs {
+						b.Errorf("  %s", err)
+					}
+				}
+			}
+		}
 	}
+
+	b.Run("basic", func(b *testing.B) {
+		props := []interface{}{
+			&struct {
+				Nested struct {
+					S string
+				}
+			}{},
+		}
+		bp := `
+			m {
+				nested: {
+					s: "abc",
+				},
+			}
+		`
+		run(b, props, bp)
+	})
+
+	b.Run("interface", func(b *testing.B) {
+		props := []interface{}{
+			&struct {
+				Nested interface{}
+			}{
+				Nested: (*struct {
+					S string
+				})(nil),
+			},
+		}
+		bp := `
+			m {
+				nested: {
+					s: "abc",
+				},
+			}
+		`
+		run(b, props, bp)
+	})
+
+	b.Run("many", func(b *testing.B) {
+		props := []interface{}{
+			&struct {
+				A *string
+				B *string
+				C *string
+				D *string
+				E *string
+				F *string
+				G *string
+				H *string
+				I *string
+				J *string
+			}{},
+		}
+		bp := `
+			m {
+				a: "a",
+				b: "b",
+				c: "c",
+				d: "d",
+				e: "e",
+				f: "f",
+				g: "g",
+				h: "h",
+				i: "i",
+				j: "j",
+			}
+		`
+		run(b, props, bp)
+	})
+
+	b.Run("deep", func(b *testing.B) {
+		props := []interface{}{
+			&struct {
+				Nested struct {
+					Nested struct {
+						Nested struct {
+							Nested struct {
+								Nested struct {
+									Nested struct {
+										Nested struct {
+											Nested struct {
+												Nested struct {
+													Nested struct {
+														S string
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}{},
+		}
+		bp := `
+			m {
+				nested: { nested: { nested: { nested: { nested: {
+					nested: { nested: { nested: { nested: { nested: {
+						s: "abc",
+					}, }, }, }, },
+				}, }, }, }, },
+			}
+		`
+		run(b, props, bp)
+	})
+
+	b.Run("mix", func(b *testing.B) {
+		props := []interface{}{
+			&struct {
+				Name     string
+				Flag     bool
+				Settings []string
+				Perarch  *struct {
+					Arm   string
+					Arm64 string
+				}
+				Configvars []struct {
+					Name   string
+					Values []string
+				}
+			}{},
+		}
+		bp := `
+			m {
+				name: "mymodule",
+				flag: true,
+				settings: ["foo1", "foo2", "foo3",],
+				perarch: {
+					arm: "32",
+					arm64: "64",
+				},
+				configvars: [
+					{ name: "var1", values: ["var1:1", "var1:2", ], },
+					{ name: "var2", values: ["var2:1", "var2:2", ], },
+				],
+            }
+        `
+		run(b, props, bp)
+	})
 }
