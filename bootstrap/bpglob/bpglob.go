@@ -21,9 +21,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"time"
 
 	"github.com/google/blueprint/pathtools"
 )
@@ -73,15 +71,7 @@ func main() {
 
 	_, err := pathtools.GlobWithDepFile(flag.Arg(0), *out, *out+".d", excludes)
 	if err != nil {
-		// Globs here were already run in the primary builder without error.  The only errors here should be if the glob
-		// pattern was made invalid by a change in the pathtools glob implementation, in which case the primary builder
-		// needs to be rerun anyways.  Update the output file with something that will always cause the primary builder
-		// to rerun.
-		s := fmt.Sprintf("%s: error: %s\n", time.Now().Format(time.StampNano), err.Error())
-		err := ioutil.WriteFile(*out, []byte(s), 0666)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
-			os.Exit(1)
-		}
+		fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
+		os.Exit(1)
 	}
 }

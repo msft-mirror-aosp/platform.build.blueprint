@@ -173,7 +173,6 @@ type moduleInfo struct {
 	relBlueprintsFile string
 	pos               scanner.Position
 	propertyPos       map[string]scanner.Position
-	createdBy         *moduleInfo
 
 	variantName       string
 	variant           variationMap
@@ -184,13 +183,12 @@ type moduleInfo struct {
 	properties  []interface{}
 
 	// set during ResolveDependencies
-	missingDeps   []string
-	newDirectDeps []depInfo
+	directDeps  []depInfo
+	missingDeps []string
 
 	// set during updateDependencies
 	reverseDeps []*moduleInfo
 	forwardDeps []*moduleInfo
-	directDeps  []depInfo
 
 	// used by parallelVisitAllBottomUp
 	waitingCount int
@@ -216,10 +214,6 @@ func (module *moduleInfo) String() string {
 	if module.variantName != "" {
 		s += fmt.Sprintf(" variant %q", module.variantName)
 	}
-	if module.createdBy != nil {
-		s += fmt.Sprintf(" (created by %s)", module.createdBy)
-	}
-
 	return s
 }
 
@@ -1410,21 +1404,12 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 
 // findMatchingVariant searches the moduleGroup for a module with the same variant as module,
 // and returns the matching module, or nil if one is not found.
-func (c *Context) findMatchingVariant(module *moduleInfo, possible []*moduleInfo, reverse bool) *moduleInfo {
+func (c *Context) findMatchingVariant(module *moduleInfo, possible []*moduleInfo) *moduleInfo {
 	if len(possible) == 1 {
 		return possible[0]
 	} else {
-		var variantToMatch variationMap
-		if !reverse {
-			// For forward dependency, ignore local variants by matching against
-			// dependencyVariant which doesn't have the local variants
-			variantToMatch = module.dependencyVariant
-		} else {
-			// For reverse dependency, use all the variants
-			variantToMatch = module.variant
-		}
 		for _, m := range possible {
-			if m.variant.equal(variantToMatch) {
+			if m.variant.equal(module.dependencyVariant) {
 				return m
 			}
 		}
@@ -1450,8 +1435,8 @@ func (c *Context) addDependency(module *moduleInfo, tag DependencyTag, depName s
 		return c.discoveredMissingDependencies(module, depName)
 	}
 
-	if m := c.findMatchingVariant(module, possibleDeps, false); m != nil {
-		module.newDirectDeps = append(module.newDirectDeps, depInfo{m, tag})
+	if m := c.findMatchingVariant(module, possibleDeps); m != nil {
+		module.directDeps = append(module.directDeps, depInfo{m, tag})
 		atomic.AddUint32(&c.depsModified, 1)
 		return nil
 	}
@@ -1488,7 +1473,7 @@ func (c *Context) findReverseDependency(module *moduleInfo, destName string) (*m
 		}}
 	}
 
-	if m := c.findMatchingVariant(module, possibleDeps, true); m != nil {
+	if m := c.findMatchingVariant(module, possibleDeps); m != nil {
 		return m, nil
 	}
 
@@ -1554,7 +1539,7 @@ func (c *Context) addVariationDependency(module *moduleInfo, variations []Variat
 					Pos: module.pos,
 				}}
 			}
-			module.newDirectDeps = append(module.newDirectDeps, depInfo{m, tag})
+			module.directDeps = append(module.directDeps, depInfo{m, tag})
 			atomic.AddUint32(&c.depsModified, 1)
 			return nil
 		}
@@ -1599,7 +1584,7 @@ func (c *Context) addInterVariantDependency(origModule *moduleInfo, tag Dependen
 			origModule.Name()))
 	}
 
-	fromInfo.newDirectDeps = append(fromInfo.newDirectDeps, depInfo{toInfo, tag})
+	fromInfo.directDeps = append(fromInfo.directDeps, depInfo{toInfo, tag})
 	atomic.AddUint32(&c.depsModified, 1)
 }
 
@@ -2173,18 +2158,9 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 					module.directDeps[j].module = dep.module.splitModules[0]
 				}
 			}
-
-			if module.createdBy != nil && module.createdBy.logicModule == nil {
-				module.createdBy = module.createdBy.splitModules[0]
-			}
-
-			// Add in any new direct dependencies that were added by the mutator
-			module.directDeps = append(module.directDeps, module.newDirectDeps...)
-			module.newDirectDeps = nil
 		}
 	}
 
-	// Add in any new reverse dependencies that were added by the mutator
 	for module, deps := range reverseDeps {
 		sort.Sort(depSorter(deps))
 		module.directDeps = append(module.directDeps, deps...)

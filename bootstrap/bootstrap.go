@@ -27,7 +27,6 @@ import (
 	"github.com/google/blueprint/pathtools"
 )
 
-const mainSubDir = ".primary"
 const bootstrapSubDir = ".bootstrap"
 const miniBootstrapSubDir = ".minibootstrap"
 
@@ -144,16 +143,15 @@ var (
 		"depfile")
 
 	_ = pctx.VariableFunc("BinDir", func(config interface{}) (string, error) {
-		return bootstrapBinDir(), nil
+		return binDir(), nil
 	})
 
 	_ = pctx.VariableFunc("ToolDir", func(config interface{}) (string, error) {
 		return toolDir(config), nil
 	})
 
-	docsDir = filepath.Join(mainDir, "docs")
+	docsDir = filepath.Join(bootstrapDir, "docs")
 
-	mainDir          = filepath.Join("$buildDir", mainSubDir)
 	bootstrapDir     = filepath.Join("$buildDir", bootstrapSubDir)
 	miniBootstrapDir = filepath.Join("$buildDir", miniBootstrapSubDir)
 
@@ -167,7 +165,7 @@ type GoBinaryTool interface {
 	isGoBinary()
 }
 
-func bootstrapBinDir() string {
+func binDir() string {
 	return filepath.Join(BuildDir, bootstrapSubDir, "bin")
 }
 
@@ -309,14 +307,14 @@ func (g *goPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		return
 	}
 
-	g.pkgRoot = packageRoot(ctx, g.config)
+	g.pkgRoot = packageRoot(ctx)
 	g.archiveFile = filepath.Join(g.pkgRoot,
 		filepath.FromSlash(g.properties.PkgPath)+".a")
 
 	ctx.VisitDepsDepthFirstIf(isGoPluginFor(name),
 		func(module blueprint.Module) { hasPlugins = true })
 	if hasPlugins {
-		pluginSrc = filepath.Join(moduleGenSrcDir(ctx, g.config), "plugin.go")
+		pluginSrc = filepath.Join(moduleGenSrcDir(ctx), "plugin.go")
 		genSrcs = append(genSrcs, pluginSrc)
 	}
 
@@ -334,9 +332,9 @@ func (g *goPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	}
 
 	if g.config.runGoTests {
-		testArchiveFile := filepath.Join(testRoot(ctx, g.config),
+		testArchiveFile := filepath.Join(testRoot(ctx),
 			filepath.FromSlash(g.properties.PkgPath)+".a")
-		g.testResultFile = buildGoTest(ctx, testRoot(ctx, g.config), testArchiveFile,
+		g.testResultFile = buildGoTest(ctx, testRoot(ctx), testArchiveFile,
 			g.properties.PkgPath, srcs, genSrcs,
 			testSrcs)
 	}
@@ -397,9 +395,9 @@ func (g *goBinary) InstallPath() string {
 func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	var (
 		name            = ctx.ModuleName()
-		objDir          = moduleObjDir(ctx, g.config)
+		objDir          = moduleObjDir(ctx)
 		archiveFile     = filepath.Join(objDir, name+".a")
-		testArchiveFile = filepath.Join(testRoot(ctx, g.config), name+".a")
+		testArchiveFile = filepath.Join(testRoot(ctx), name+".a")
 		aoutFile        = filepath.Join(objDir, "a.out")
 		hasPlugins      = false
 		pluginSrc       = ""
@@ -408,16 +406,14 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 
 	if g.properties.Tool_dir {
 		g.installPath = filepath.Join(toolDir(ctx.Config()), name)
-	} else if g.config.stage == StageMain {
-		g.installPath = filepath.Join(mainDir, "bin", name)
 	} else {
-		g.installPath = filepath.Join(bootstrapDir, "bin", name)
+		g.installPath = filepath.Join(binDir(), name)
 	}
 
 	ctx.VisitDepsDepthFirstIf(isGoPluginFor(name),
 		func(module blueprint.Module) { hasPlugins = true })
 	if hasPlugins {
-		pluginSrc = filepath.Join(moduleGenSrcDir(ctx, g.config), "plugin.go")
+		pluginSrc = filepath.Join(moduleGenSrcDir(ctx), "plugin.go")
 		genSrcs = append(genSrcs, pluginSrc)
 	}
 
@@ -437,11 +433,11 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	}
 
 	if g.config.runGoTests {
-		deps = buildGoTest(ctx, testRoot(ctx, g.config), testArchiveFile,
+		deps = buildGoTest(ctx, testRoot(ctx), testArchiveFile,
 			name, srcs, genSrcs, testSrcs)
 	}
 
-	buildGoPackage(ctx, objDir, "main", archiveFile, srcs, genSrcs)
+	buildGoPackage(ctx, objDir, name, archiveFile, srcs, genSrcs)
 
 	var linkDeps []string
 	var libDirFlags []string
@@ -762,26 +758,18 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	}
 }
 
-func stageDir(config *Config) string {
-	if config.stage == StageMain {
-		return mainDir
-	} else {
-		return bootstrapDir
-	}
-}
-
 // packageRoot returns the module-specific package root directory path.  This
 // directory is where the final package .a files are output and where dependant
 // modules search for this package via -I arguments.
-func packageRoot(ctx blueprint.ModuleContext, config *Config) string {
-	return filepath.Join(stageDir(config), ctx.ModuleName(), "pkg")
+func packageRoot(ctx blueprint.ModuleContext) string {
+	return filepath.Join(bootstrapDir, ctx.ModuleName(), "pkg")
 }
 
 // testRoot returns the module-specific package root directory path used for
 // building tests. The .a files generated here will include everything from
 // packageRoot, plus the test-only code.
-func testRoot(ctx blueprint.ModuleContext, config *Config) string {
-	return filepath.Join(stageDir(config), ctx.ModuleName(), "test")
+func testRoot(ctx blueprint.ModuleContext) string {
+	return filepath.Join(bootstrapDir, ctx.ModuleName(), "test")
 }
 
 // moduleSrcDir returns the path of the directory that all source file paths are
@@ -791,11 +779,11 @@ func moduleSrcDir(ctx blueprint.ModuleContext) string {
 }
 
 // moduleObjDir returns the module-specific object directory path.
-func moduleObjDir(ctx blueprint.ModuleContext, config *Config) string {
-	return filepath.Join(stageDir(config), ctx.ModuleName(), "obj")
+func moduleObjDir(ctx blueprint.ModuleContext) string {
+	return filepath.Join(bootstrapDir, ctx.ModuleName(), "obj")
 }
 
 // moduleGenSrcDir returns the module-specific generated sources path.
-func moduleGenSrcDir(ctx blueprint.ModuleContext, config *Config) string {
-	return filepath.Join(stageDir(config), ctx.ModuleName(), "gen")
+func moduleGenSrcDir(ctx blueprint.ModuleContext) string {
+	return filepath.Join(bootstrapDir, ctx.ModuleName(), "gen")
 }
