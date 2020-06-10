@@ -17,9 +17,11 @@ package blueprint
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"text/scanner"
 
+	"github.com/google/blueprint/parser"
 	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
 )
@@ -273,6 +275,19 @@ type BaseModuleContext interface {
 	// OtherModuleExists returns true if a module with the specified name exists, as determined by the NameInterface
 	// passed to Context.SetNameInterface, or SimpleNameInterface if it was not called.
 	OtherModuleExists(name string) bool
+
+	// OtherModuleDependencyVariantExists returns true if a module with the
+	// specified name and variant exists. The variant must match the given
+	// variations. It must also match all the non-local variations of the current
+	// module. In other words, it checks for the module AddVariationDependencies
+	// would add a dependency on with the same arguments.
+	OtherModuleDependencyVariantExists(variations []Variation, name string) bool
+
+	// OtherModuleReverseDependencyVariantExists returns true if a module with the
+	// specified name exists with the same variations as the current module. In
+	// other words, it checks for the module AddReverseDependency would add a
+	// dependency on with the same argument.
+	OtherModuleReverseDependencyVariantExists(name string) bool
 }
 
 type DynamicDependerModuleContext BottomUpMutatorContext
@@ -488,6 +503,24 @@ func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) Depende
 func (m *baseModuleContext) OtherModuleExists(name string) bool {
 	_, exists := m.context.nameInterface.ModuleFromName(name, m.module.namespace())
 	return exists
+}
+
+func (m *baseModuleContext) OtherModuleDependencyVariantExists(variations []Variation, name string) bool {
+	possibleDeps := m.context.moduleGroupFromName(name, m.module.namespace())
+	if possibleDeps == nil {
+		return false
+	}
+	found, _ := m.context.findVariant(m.module, possibleDeps, variations, false, false)
+	return found != nil
+}
+
+func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name string) bool {
+	possibleDeps := m.context.moduleGroupFromName(name, m.module.namespace())
+	if possibleDeps == nil {
+		return false
+	}
+	found, _ := m.context.findVariant(m.module, possibleDeps, nil, false, true)
+	return found != nil
 }
 
 func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
@@ -988,7 +1021,7 @@ func (mctx *mutatorContext) Rename(name string) {
 }
 
 func (mctx *mutatorContext) CreateModule(factory ModuleFactory, props ...interface{}) Module {
-	module := mctx.context.newModule(factory)
+	module := newModule(factory)
 
 	module.relBlueprintsFile = mctx.module.relBlueprintsFile
 	module.pos = mctx.module.pos
@@ -1035,7 +1068,7 @@ type LoadHookContext interface {
 }
 
 func (l *loadHookContext) CreateModule(factory ModuleFactory, props ...interface{}) Module {
-	module := l.context.newModule(factory)
+	module := newModule(factory)
 
 	module.relBlueprintsFile = l.module.relBlueprintsFile
 	module.pos = l.module.pos
@@ -1122,4 +1155,45 @@ func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
 	}
 
 	return nil, nil
+}
+
+// Check the syntax of a generated blueprint file.
+//
+// This is intended to perform a quick sanity check for generated blueprint
+// code to ensure that it is syntactically correct, where syntactically correct
+// means:
+// * No variable definitions.
+// * Valid module types.
+// * Valid property names.
+// * Valid values for the property type.
+//
+// It does not perform any semantic checking of properties, existence of referenced
+// files, or dependencies.
+//
+// At a low level it:
+// * Parses the contents.
+// * Invokes relevant factory to create Module instances.
+// * Unpacks the properties into the Module.
+// * Does not invoke load hooks or any mutators.
+//
+// The filename is only used for reporting errors.
+func CheckBlueprintSyntax(moduleFactories map[string]ModuleFactory, filename string, contents string) []error {
+	scope := parser.NewScope(nil)
+	file, errs := parser.Parse(filename, strings.NewReader(contents), scope)
+	if len(errs) != 0 {
+		return errs
+	}
+
+	for _, def := range file.Defs {
+		switch def := def.(type) {
+		case *parser.Module:
+			_, moduleErrs := processModuleDef(def, filename, moduleFactories, nil, false)
+			errs = append(errs, moduleErrs...)
+
+		default:
+			panic(fmt.Errorf("unknown definition type: %T", def))
+		}
+	}
+
+	return errs
 }
