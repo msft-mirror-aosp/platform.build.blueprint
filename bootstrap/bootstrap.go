@@ -180,8 +180,10 @@ func toolDir(config interface{}) string {
 
 func pluginDeps(ctx blueprint.BottomUpMutatorContext) {
 	if pkg, ok := ctx.Module().(*goPackage); ok {
-		for _, plugin := range pkg.properties.PluginFor {
-			ctx.AddReverseDependency(ctx.Module(), nil, plugin)
+		if ctx.PrimaryModule() == ctx.Module() {
+			for _, plugin := range pkg.properties.PluginFor {
+				ctx.AddReverseDependency(ctx.Module(), nil, plugin)
+			}
 		}
 	}
 }
@@ -211,7 +213,7 @@ func isGoPluginFor(name string) func(blueprint.Module) bool {
 	}
 }
 
-func isBootstrapModule(module blueprint.Module) bool {
+func IsBootstrapModule(module blueprint.Module) bool {
 	_, isPackage := module.(*goPackage)
 	_, isBinary := module.(*goBinary)
 	return isPackage || isBinary
@@ -268,6 +270,9 @@ func newGoPackageModuleFactory(config *Config) func() (blueprint.Module, []inter
 }
 
 func (g *goPackage) DynamicDependencies(ctx blueprint.DynamicDependerModuleContext) []string {
+	if ctx.Module() != ctx.PrimaryModule() {
+		return nil
+	}
 	return g.properties.Deps
 }
 
@@ -297,6 +302,16 @@ func (g *goPackage) IsPluginFor(name string) bool {
 }
 
 func (g *goPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
+	// Allow the primary builder to create multiple variants.  Any variants after the first
+	// will copy outputs from the first.
+	if ctx.Module() != ctx.PrimaryModule() {
+		primary := ctx.PrimaryModule().(*goPackage)
+		g.pkgRoot = primary.pkgRoot
+		g.archiveFile = primary.archiveFile
+		g.testResultFile = primary.testResultFile
+		return
+	}
+
 	var (
 		name       = ctx.ModuleName()
 		hasPlugins = false
@@ -338,7 +353,7 @@ func (g *goPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 			filepath.FromSlash(g.properties.PkgPath)+".a")
 		g.testResultFile = buildGoTest(ctx, testRoot(ctx, g.config), testArchiveFile,
 			g.properties.PkgPath, srcs, genSrcs,
-			testSrcs)
+			testSrcs, g.config.useValidations)
 	}
 
 	buildGoPackage(ctx, g.pkgRoot, g.properties.PkgPath, g.archiveFile,
@@ -386,6 +401,9 @@ func newGoBinaryModuleFactory(config *Config, tooldir bool) func() (blueprint.Mo
 }
 
 func (g *goBinary) DynamicDependencies(ctx blueprint.DynamicDependerModuleContext) []string {
+	if ctx.Module() != ctx.PrimaryModule() {
+		return nil
+	}
 	return g.properties.Deps
 }
 
@@ -395,6 +413,14 @@ func (g *goBinary) InstallPath() string {
 }
 
 func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
+	// Allow the primary builder to create multiple variants.  Any variants after the first
+	// will copy outputs from the first.
+	if ctx.Module() != ctx.PrimaryModule() {
+		primary := ctx.PrimaryModule().(*goBinary)
+		g.installPath = primary.installPath
+		return
+	}
+
 	var (
 		name            = ctx.ModuleName()
 		objDir          = moduleObjDir(ctx, g.config)
@@ -421,7 +447,7 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		genSrcs = append(genSrcs, pluginSrc)
 	}
 
-	var deps []string
+	var testDeps []string
 
 	if hasPlugins && !buildGoPluginLoader(ctx, "main", pluginSrc) {
 		return
@@ -437,8 +463,8 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	}
 
 	if g.config.runGoTests {
-		deps = buildGoTest(ctx, testRoot(ctx, g.config), testArchiveFile,
-			name, srcs, genSrcs, testSrcs)
+		testDeps = buildGoTest(ctx, testRoot(ctx, g.config), testArchiveFile,
+			name, srcs, genSrcs, testSrcs, g.config.useValidations)
 	}
 
 	buildGoPackage(ctx, objDir, "main", archiveFile, srcs, genSrcs)
@@ -451,7 +477,7 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 			linkDeps = append(linkDeps, dep.GoPackageTarget())
 			libDir := dep.GoPkgRoot()
 			libDirFlags = append(libDirFlags, "-L "+libDir)
-			deps = append(deps, dep.GoTestTargets()...)
+			testDeps = append(testDeps, dep.GoTestTargets()...)
 		})
 
 	linkArgs := map[string]string{}
@@ -468,12 +494,20 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		Optional:  true,
 	})
 
+	var orderOnlyDeps, validationDeps []string
+	if g.config.useValidations {
+		validationDeps = testDeps
+	} else {
+		orderOnlyDeps = testDeps
+	}
+
 	ctx.Build(pctx, blueprint.BuildParams{
-		Rule:      cp,
-		Outputs:   []string{g.installPath},
-		Inputs:    []string{aoutFile},
-		OrderOnly: deps,
-		Optional:  !g.properties.Default,
+		Rule:        cp,
+		Outputs:     []string{g.installPath},
+		Inputs:      []string{aoutFile},
+		OrderOnly:   orderOnlyDeps,
+		Validations: validationDeps,
+		Optional:    !g.properties.Default,
 	})
 }
 
@@ -538,7 +572,7 @@ func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
 }
 
 func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
-	pkgPath string, srcs, genSrcs, testSrcs []string) []string {
+	pkgPath string, srcs, genSrcs, testSrcs []string, useValidations bool) []string {
 
 	if len(testSrcs) == 0 {
 		return nil
@@ -600,11 +634,19 @@ func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
 		Optional: true,
 	})
 
+	var orderOnlyDeps, validationDeps []string
+	if useValidations {
+		validationDeps = testDeps
+	} else {
+		orderOnlyDeps = testDeps
+	}
+
 	ctx.Build(pctx, blueprint.BuildParams{
-		Rule:      test,
-		Outputs:   []string{testPassed},
-		Inputs:    []string{testFile},
-		OrderOnly: testDeps,
+		Rule:        test,
+		Outputs:     []string{testPassed},
+		Inputs:      []string{testFile},
+		OrderOnly:   orderOnlyDeps,
+		Validations: validationDeps,
 		Args: map[string]string{
 			"pkg":       pkgPath,
 			"pkgSrcDir": filepath.Dir(testFiles[0]),
@@ -637,13 +679,15 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	var blueprintTools []string
 	ctx.VisitAllModulesIf(isBootstrapBinaryModule,
 		func(module blueprint.Module) {
-			binaryModule := module.(*goBinary)
+			if ctx.PrimaryModule(module) == module {
+				binaryModule := module.(*goBinary)
 
-			if binaryModule.properties.Tool_dir {
-				blueprintTools = append(blueprintTools, binaryModule.InstallPath())
-			}
-			if binaryModule.properties.PrimaryBuilder {
-				primaryBuilders = append(primaryBuilders, binaryModule)
+				if binaryModule.properties.Tool_dir {
+					blueprintTools = append(blueprintTools, binaryModule.InstallPath())
+				}
+				if binaryModule.properties.PrimaryBuilder {
+					primaryBuilders = append(primaryBuilders, binaryModule)
+				}
 			}
 		})
 
