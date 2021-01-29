@@ -1102,7 +1102,9 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
-		depInfos = append(depInfos, maybeLogicModule(depInfo))
+		if mctx.pause(depInfo) {
+			depInfos = append(depInfos, maybeLogicModule(depInfo))
+		}
 	}
 	return depInfos
 }
@@ -1133,7 +1135,9 @@ func (mctx *mutatorContext) AddVariationDependencies(variations []Variation, tag
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
-		depInfos = append(depInfos, maybeLogicModule(depInfo))
+		if mctx.pause(depInfo) {
+			depInfos = append(depInfos, maybeLogicModule(depInfo))
+		}
 	}
 	return depInfos
 }
@@ -1147,7 +1151,9 @@ func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, 
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
-		depInfos = append(depInfos, maybeLogicModule(depInfo))
+		if mctx.pause(depInfo) {
+			depInfos = append(depInfos, maybeLogicModule(depInfo))
+		}
 	}
 	return depInfos
 }
@@ -1166,8 +1172,11 @@ func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate Replace
 	target := mctx.context.moduleMatchingVariant(mctx.module, name)
 
 	if target == nil {
-		panic(fmt.Errorf("ReplaceDependencies could not find identical variant %q for module %q",
-			mctx.module.variant.name, name))
+		panic(fmt.Errorf("ReplaceDependencies could not find identical variant {%s} for module %s\n"+
+			"available variants:\n  %s",
+			mctx.context.prettyPrintVariant(mctx.module.variant.variations),
+			name,
+			mctx.context.prettyPrintGroupVariants(mctx.context.moduleGroupFromName(name, mctx.module.namespace()))))
 	}
 
 	mctx.replace = append(mctx.replace, replace{target, mctx.module, predicate})
@@ -1199,16 +1208,19 @@ func (mctx *mutatorContext) CreateModule(factory ModuleFactory, props ...interfa
 
 // pause waits until the given dependency has been visited by the mutator's parallelVisit call.
 // It returns true if the pause was supported, false if the pause was not supported and did not
-// occur, which will happen when the mutator is not parallelizable.
+// occur, which will happen when the mutator is not parallelizable.  If the dependency is nil
+// it returns true if pausing is supported or false if it is not.
 func (mctx *mutatorContext) pause(dep *moduleInfo) bool {
 	if mctx.pauseCh != nil {
-		unpause := make(unpause)
-		mctx.pauseCh <- pauseSpec{
-			paused:  mctx.module,
-			until:   dep,
-			unpause: unpause,
+		if dep != nil {
+			unpause := make(unpause)
+			mctx.pauseCh <- pauseSpec{
+				paused:  mctx.module,
+				until:   dep,
+				unpause: unpause,
+			}
+			<-unpause
 		}
-		<-unpause
 		return true
 	}
 	return false

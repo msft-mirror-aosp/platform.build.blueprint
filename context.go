@@ -110,6 +110,8 @@ type Context struct {
 
 	// set lazily by sortedModuleGroups
 	cachedSortedModuleGroups []*moduleGroup
+	// cache deps modified to determine whether cachedSortedModuleGroups needs to be recalculated
+	cachedDepsModified bool
 
 	globs    map[string]GlobPath
 	globLock sync.Mutex
@@ -1353,6 +1355,8 @@ func (c *Context) createVariations(origModule *moduleInfo, mutatorName string,
 		m := *origModule
 		newModule := &m
 		newModule.directDeps = append([]depInfo(nil), origModule.directDeps...)
+		newModule.reverseDeps = nil
+		newModule.forwardDeps = nil
 		newModule.logicModule = newLogicModule
 		newModule.variant = newVariant(origModule, mutatorName, variationName, local)
 		newModule.properties = newProperties
@@ -1420,7 +1424,7 @@ func (c *Context) prettyPrintVariant(variations variationMap) string {
 		}
 	}
 
-	return strings.Join(names, ", ")
+	return strings.Join(names, ",")
 }
 
 func (c *Context) prettyPrintGroupVariants(group *moduleGroup) string {
@@ -1430,7 +1434,7 @@ func (c *Context) prettyPrintGroupVariants(group *moduleGroup) string {
 			variants = append(variants, c.prettyPrintVariant(mod.variant.variations))
 		} else if alias := moduleOrAlias.alias(); alias != nil {
 			variants = append(variants, c.prettyPrintVariant(alias.variant.variations)+
-				"(alias to "+c.prettyPrintVariant(alias.target.variant.variations)+")")
+				" (alias to "+c.prettyPrintVariant(alias.target.variant.variations)+")")
 		}
 	}
 	return strings.Join(variants, "\n  ")
@@ -1632,7 +1636,7 @@ func (c *Context) addDependency(module *moduleInfo, tag DependencyTag, depName s
 
 	possibleDeps := c.moduleGroupFromName(depName, module.namespace())
 	if possibleDeps == nil {
-		return nil, c.discoveredMissingDependencies(module, depName)
+		return nil, c.discoveredMissingDependencies(module, depName, nil)
 	}
 
 	if m := findExactVariantOrSingle(module, possibleDeps, false); m != nil {
@@ -1643,7 +1647,7 @@ func (c *Context) addDependency(module *moduleInfo, tag DependencyTag, depName s
 
 	if c.allowMissingDependencies {
 		// Allow missing variants.
-		return nil, c.discoveredMissingDependencies(module, depName+c.prettyPrintVariant(module.variant.dependencyVariations))
+		return nil, c.discoveredMissingDependencies(module, depName, module.variant.dependencyVariations)
 	}
 
 	return nil, []error{&BlueprintError{
@@ -1678,7 +1682,7 @@ func (c *Context) findReverseDependency(module *moduleInfo, destName string) (*m
 
 	if c.allowMissingDependencies {
 		// Allow missing variants.
-		return module, c.discoveredMissingDependencies(module, destName+c.prettyPrintVariant(module.variant.dependencyVariations))
+		return module, c.discoveredMissingDependencies(module, destName, module.variant.dependencyVariations)
 	}
 
 	return nil, []error{&BlueprintError{
@@ -1739,7 +1743,7 @@ func (c *Context) addVariationDependency(module *moduleInfo, variations []Variat
 
 	possibleDeps := c.moduleGroupFromName(depName, module.namespace())
 	if possibleDeps == nil {
-		return nil, c.discoveredMissingDependencies(module, depName)
+		return nil, c.discoveredMissingDependencies(module, depName, nil)
 	}
 
 	foundDep, newVariant := findVariant(module, possibleDeps, variations, far, false)
@@ -1747,7 +1751,7 @@ func (c *Context) addVariationDependency(module *moduleInfo, variations []Variat
 	if foundDep == nil {
 		if c.allowMissingDependencies {
 			// Allow missing variants.
-			return nil, c.discoveredMissingDependencies(module, depName+c.prettyPrintVariant(newVariant))
+			return nil, c.discoveredMissingDependencies(module, depName, newVariant)
 		}
 		return nil, []error{&BlueprintError{
 			Err: fmt.Errorf("dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
@@ -2165,6 +2169,7 @@ func cycleError(cycle []*moduleInfo) (errs []error) {
 // it encounters dependency cycles.  This should called after resolveDependencies,
 // as well as after any mutator pass has called addDependency
 func (c *Context) updateDependencies() (errs []error) {
+	c.cachedDepsModified = true
 	visited := make(map[*moduleInfo]bool)  // modules that were already checked
 	checking := make(map[*moduleInfo]bool) // modules actively being checked
 
@@ -2177,7 +2182,9 @@ func (c *Context) updateDependencies() (errs []error) {
 		checking[module] = true
 		defer delete(checking, module)
 
-		deps := make(map[*moduleInfo]bool)
+		// Reset the forward and reverse deps without reducing their capacity to avoid reallocation.
+		module.reverseDeps = module.reverseDeps[:0]
+		module.forwardDeps = module.forwardDeps[:0]
 
 		// Add an implicit dependency ordering on all earlier modules in the same module group
 		for _, dep := range module.group.modules {
@@ -2185,18 +2192,22 @@ func (c *Context) updateDependencies() (errs []error) {
 				break
 			}
 			if depModule := dep.module(); depModule != nil {
-				deps[depModule] = true
+				module.forwardDeps = append(module.forwardDeps, depModule)
 			}
 		}
 
+	outer:
 		for _, dep := range module.directDeps {
-			deps[dep.module] = true
+			// use a loop to check for duplicates, average number of directDeps measured to be 9.5.
+			for _, exists := range module.forwardDeps {
+				if dep.module == exists {
+					continue outer
+				}
+			}
+			module.forwardDeps = append(module.forwardDeps, dep.module)
 		}
 
-		module.reverseDeps = []*moduleInfo{}
-		module.forwardDeps = []*moduleInfo{}
-
-		for dep := range deps {
+		for _, dep := range module.forwardDeps {
 			if checking[dep] {
 				// This is a cycle.
 				return []*moduleInfo{dep, module}
@@ -2222,7 +2233,6 @@ func (c *Context) updateDependencies() (errs []error) {
 				}
 			}
 
-			module.forwardDeps = append(module.forwardDeps, dep)
 			dep.reverseDeps = append(dep.reverseDeps, module)
 		}
 
@@ -2305,6 +2315,8 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 		pkgNames, depsPackages := c.makeUniquePackageNames(c.liveGlobals)
 
 		deps = append(deps, depsPackages...)
+
+		c.memoizeFullNames(c.liveGlobals, pkgNames)
 
 		// This will panic if it finds a problem since it's a programming error.
 		c.checkForVariableReferenceCycles(c.liveGlobals.variables, pkgNames)
@@ -2986,7 +2998,10 @@ func (c *Context) handleReplacements(replacements []replace) []error {
 	return errs
 }
 
-func (c *Context) discoveredMissingDependencies(module *moduleInfo, depName string) (errs []error) {
+func (c *Context) discoveredMissingDependencies(module *moduleInfo, depName string, depVariations variationMap) (errs []error) {
+	if depVariations != nil {
+		depName = depName + "{" + c.prettyPrintVariant(depVariations) + "}"
+	}
 	if c.allowMissingDependencies {
 		module.missingDeps = append(module.missingDeps, depName)
 		return nil
@@ -3012,7 +3027,7 @@ func (c *Context) moduleGroupFromName(name string, namespace Namespace) *moduleG
 }
 
 func (c *Context) sortedModuleGroups() []*moduleGroup {
-	if c.cachedSortedModuleGroups == nil {
+	if c.cachedSortedModuleGroups == nil || c.cachedDepsModified {
 		unwrap := func(wrappers []ModuleGroup) []*moduleGroup {
 			result := make([]*moduleGroup, 0, len(wrappers))
 			for _, group := range wrappers {
@@ -3022,6 +3037,7 @@ func (c *Context) sortedModuleGroups() []*moduleGroup {
 		}
 
 		c.cachedSortedModuleGroups = unwrap(c.nameInterface.AllModules())
+		c.cachedDepsModified = false
 	}
 
 	return c.cachedSortedModuleGroups
@@ -3164,6 +3180,21 @@ func (c *Context) makeUniquePackageNames(
 	}
 
 	return pkgNames, deps
+}
+
+// memoizeFullNames stores the full name of each live global variable, rule and pool since each is
+// guaranteed to be used at least twice, once in the definition and once for each usage, and many
+// are used much more than once.
+func (c *Context) memoizeFullNames(liveGlobals *liveTracker, pkgNames map[*packageContext]string) {
+	for v := range liveGlobals.variables {
+		v.memoizeFullName(pkgNames)
+	}
+	for r := range liveGlobals.rules {
+		r.memoizeFullName(pkgNames)
+	}
+	for p := range liveGlobals.pools {
+		p.memoizeFullName(pkgNames)
+	}
 }
 
 func (c *Context) checkForVariableReferenceCycles(
@@ -3482,7 +3513,7 @@ func (c *Context) SingletonName(singleton Singleton) string {
 // WriteBuildFile writes the Ninja manifeset text for the generated build
 // actions to w.  If this is called before PrepareBuildActions successfully
 // completes then ErrBuildActionsNotReady is returned.
-func (c *Context) WriteBuildFile(w io.Writer) error {
+func (c *Context) WriteBuildFile(w io.StringWriter) error {
 	var err error
 	pprof.Do(c.Context, pprof.Labels("blueprint", "WriteBuildFile"), func(ctx context.Context) {
 		if !c.buildActionsReady {
