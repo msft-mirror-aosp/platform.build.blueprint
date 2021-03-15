@@ -125,7 +125,26 @@ var (
 
 	generateBuildNinja = pctx.StaticRule("build.ninja",
 		blueprint.RuleParams{
-			Command:     "$builder $extra -b $buildDir -n $ninjaBuildDir -d $out.d -globFile $globFile -o $out $in",
+			// TODO: it's kinda ugly that some parameters are computed from
+			// environment variables and some from Ninja parameters, but it's probably
+			// better to not to touch that while Blueprint and Soong are separate
+			// NOTE: The spaces at EOL are important because otherwise Ninja would
+			// omit all spaces between the different options.
+			Command: `cd "$$(dirname "$builder")" && ` +
+				`BUILDER="$$PWD/$$(basename "$builder")" && ` +
+				`cd / && ` +
+				`env -i "$$BUILDER" ` +
+				`    $extra ` +
+				`    --top "$$TOP" ` +
+				`    --out "$$SOONG_OUTDIR" ` +
+				`    --delve_listen "$$SOONG_DELVE" ` +
+				`    --delve_path "$$SOONG_DELVE_PATH" ` +
+				`    -b "$buildDir" ` +
+				`    -n "$ninjaBuildDir" ` +
+				`    -d "$out.d" ` +
+				`    -globFile "$globFile" ` +
+				`    -o "$out" ` +
+				`    "$in" `,
 			CommandDeps: []string{"$builder"},
 			Description: "$builder $out",
 			Deps:        blueprint.DepsGCC,
@@ -434,10 +453,8 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 
 	if g.properties.Tool_dir {
 		g.installPath = filepath.Join(toolDir(ctx.Config()), name)
-	} else if g.config.stage == StageMain {
-		g.installPath = filepath.Join(mainDir, "bin", name)
 	} else {
-		g.installPath = filepath.Join(bootstrapDir, "bin", name)
+		g.installPath = filepath.Join(stageDir(g.config), "bin", name)
 	}
 
 	ctx.VisitDepsDepthFirstIf(isGoPluginFor(name),
@@ -730,7 +747,6 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	// Get the filename of the top-level Blueprints file to pass to minibp.
 	topLevelBlueprints := filepath.Join("$srcDir",
 		filepath.Base(s.config.topLevelBlueprintsFile))
-
 	ctx.SetNinjaBuildDir(pctx, "${ninjaBuildDir}")
 
 	if s.config.stage == StagePrimary {
