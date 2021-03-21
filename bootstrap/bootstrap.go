@@ -59,7 +59,7 @@ var (
 	compile = pctx.StaticRule("compile",
 		blueprint.RuleParams{
 			Command: "GOROOT='$goRoot' $compileCmd $parallelCompile -o $out.tmp " +
-				"-p $pkgPath -complete $incFlags -pack $in && " +
+				"$debugFlags -p $pkgPath -complete $incFlags -pack $in && " +
 				"if cmp --quiet $out.tmp $out; then rm $out.tmp; else mv -f $out.tmp $out; fi",
 			CommandDeps: []string{"$compileCmd"},
 			Description: "compile $out",
@@ -128,7 +128,23 @@ var (
 			// TODO: it's kinda ugly that some parameters are computed from
 			// environment variables and some from Ninja parameters, but it's probably
 			// better to not to touch that while Blueprint and Soong are separate
-			Command:     "cd $$(dirname $builder) && BUILDER=$$PWD/$$(basename $builder) && cd / && env -i $$BUILDER $extra --top \"$$TOP\" --out \"$$SOONG_OUTDIR\" -b $buildDir -n $ninjaBuildDir -d $out.d -globFile $globFile -o $out $in",
+			// NOTE: The spaces at EOL are important because otherwise Ninja would
+			// omit all spaces between the different options.
+			Command: `cd "$$(dirname "$builder")" && ` +
+				`BUILDER="$$PWD/$$(basename "$builder")" && ` +
+				`cd / && ` +
+				`env -i "$$BUILDER" ` +
+				`    $extra ` +
+				`    --top "$$TOP" ` +
+				`    --out "$$SOONG_OUTDIR" ` +
+				`    --delve_listen "$$SOONG_DELVE" ` +
+				`    --delve_path "$$SOONG_DELVE_PATH" ` +
+				`    -b "$buildDir" ` +
+				`    -n "$ninjaBuildDir" ` +
+				`    -d "$out.d" ` +
+				`    -globFile "$globFile" ` +
+				`    -o "$out" ` +
+				`    "$in" `,
 			CommandDeps: []string{"$builder"},
 			Description: "$builder $out",
 			Deps:        blueprint.DepsGCC,
@@ -147,7 +163,7 @@ var (
 		"depfile")
 
 	_ = pctx.VariableFunc("BinDir", func(config interface{}) (string, error) {
-		return bootstrapBinDir(), nil
+		return bootstrapBinDir(config), nil
 	})
 
 	_ = pctx.VariableFunc("ToolDir", func(config interface{}) (string, error) {
@@ -170,15 +186,15 @@ type GoBinaryTool interface {
 	isGoBinary()
 }
 
-func bootstrapBinDir() string {
-	return filepath.Join(BuildDir, bootstrapSubDir, "bin")
+func bootstrapBinDir(config interface{}) string {
+	return filepath.Join(config.(BootstrapConfig).BuildDir(), bootstrapSubDir, "bin")
 }
 
 func toolDir(config interface{}) string {
 	if c, ok := config.(ConfigBlueprintToolLocation); ok {
 		return filepath.Join(c.BlueprintToolLocation())
 	}
-	return filepath.Join(BuildDir, "bin")
+	return filepath.Join(config.(BootstrapConfig).BuildDir(), "bin")
 }
 
 func pluginDeps(ctx blueprint.BottomUpMutatorContext) {
@@ -437,10 +453,8 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 
 	if g.properties.Tool_dir {
 		g.installPath = filepath.Join(toolDir(ctx.Config()), name)
-	} else if g.config.stage == StageMain {
-		g.installPath = filepath.Join(mainDir, "bin", name)
 	} else {
-		g.installPath = filepath.Join(bootstrapDir, "bin", name)
+		g.installPath = filepath.Join(stageDir(g.config), "bin", name)
 	}
 
 	ctx.VisitDepsDepthFirstIf(isGoPluginFor(name),
@@ -735,9 +749,11 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 		filepath.Base(s.config.topLevelBlueprintsFile))
 	ctx.SetNinjaBuildDir(pctx, "${ninjaBuildDir}")
 
+	buildDir := ctx.Config().(BootstrapConfig).BuildDir()
+
 	if s.config.stage == StagePrimary {
 		mainNinjaFile := filepath.Join("$buildDir", "build.ninja")
-		primaryBuilderNinjaGlobFile := absolutePath(filepath.Join(BuildDir, bootstrapSubDir, "build-globs.ninja"))
+		primaryBuilderNinjaGlobFile := absolutePath(filepath.Join(buildDir, bootstrapSubDir, "build-globs.ninja"))
 
 		if _, err := os.Stat(primaryBuilderNinjaGlobFile); os.IsNotExist(err) {
 			err = ioutil.WriteFile(primaryBuilderNinjaGlobFile, nil, 0666)
