@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"fmt"
 	"path/filepath"
-	"strings"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/pathtools"
@@ -46,7 +45,8 @@ var (
 	// and writes it to $out if it has changed, and writes the directories to $out.d
 	GlobRule = pctx.StaticRule("GlobRule",
 		blueprint.RuleParams{
-			Command:     fmt.Sprintf(`%s -o $out $excludes "$glob"`, globCmd),
+			Command: fmt.Sprintf(`%s -o $out -v %d $excludes "$glob"`,
+				globCmd, pathtools.BPGlobArgumentVersion),
 			CommandDeps: []string{globCmd},
 			Description: "glob $glob",
 
@@ -122,7 +122,7 @@ func globSingletonFactory(ctx *blueprint.Context) func() blueprint.Singleton {
 
 func (s *globSingleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	for _, g := range s.globLister() {
-		fileListFile := filepath.Join(ctx.Config().(BootstrapConfig).BuildDir(), ".glob", g.Name)
+		fileListFile := g.FileListFile(ctx.Config().(BootstrapConfig).BuildDir())
 
 		if s.writeRule {
 			// We need to write the file list here so that it has an older modified date
@@ -132,8 +132,7 @@ func (s *globSingleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 			// We don't need to write the depfile because we're guaranteed that ninja
 			// will run the command at least once (to record it into the ninja_log), so
 			// the depfile will be loaded from that execution.
-			fileList := strings.Join(g.Files, "\n") + "\n"
-			err := pathtools.WriteFileIfChanged(absolutePath(fileListFile), []byte(fileList), 0666)
+			err := pathtools.WriteFileIfChanged(absolutePath(fileListFile), g.FileList(), 0666)
 			if err != nil {
 				panic(fmt.Errorf("error writing %s: %s", fileListFile, err))
 			}

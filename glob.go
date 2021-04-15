@@ -17,6 +17,7 @@ package blueprint
 import (
 	"crypto/md5"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -24,11 +25,12 @@ import (
 )
 
 type GlobPath struct {
-	Pattern  string
-	Excludes []string
-	Files    []string
-	Deps     []string
-	Name     string
+	pathtools.GlobResult
+	Name string
+}
+
+func (g *GlobPath) FileListFile(buildDir string) string {
+	return filepath.Join(buildDir, ".glob", g.Name)
 }
 
 func verifyGlob(fileName, pattern string, excludes []string, g GlobPath) {
@@ -58,11 +60,11 @@ func (c *Context) glob(pattern string, excludes []string) ([]string, error) {
 		// Glob has already been done, double check it is identical
 		verifyGlob(fileName, pattern, excludes, g)
 		// Return a copy so that modifications don't affect the cached value.
-		return append([]string(nil), g.Files...), nil
+		return append([]string(nil), g.Matches...), nil
 	}
 
 	// Get a globbed file list
-	files, deps, err := c.fs.Glob(pattern, excludes, pathtools.FollowSymlinks)
+	result, err := c.fs.Glob(pattern, excludes, pathtools.FollowSymlinks)
 	if err != nil {
 		return nil, err
 	}
@@ -70,19 +72,19 @@ func (c *Context) glob(pattern string, excludes []string) ([]string, error) {
 	// Store the results
 	c.globLock.Lock()
 	if g, exists = c.globs[fileName]; !exists {
-		c.globs[fileName] = GlobPath{pattern, excludes, files, deps, fileName}
+		c.globs[fileName] = GlobPath{result, fileName}
 	}
 	c.globLock.Unlock()
 
-	// Getting the list raced with another goroutine, throw away the results and use theirs
 	if exists {
+		// Getting the list raced with another goroutine, throw away the results and use theirs
 		verifyGlob(fileName, pattern, excludes, g)
 		// Return a copy so that modifications don't affect the cached value.
-		return append([]string(nil), g.Files...), nil
+		return append([]string(nil), g.Matches...), nil
 	}
 
 	// Return a copy so that modifications don't affect the cached value.
-	return append([]string(nil), files...), nil
+	return append([]string(nil), result.Matches...), nil
 }
 
 func (c *Context) Globs() []GlobPath {
