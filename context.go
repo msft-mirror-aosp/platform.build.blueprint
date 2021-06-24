@@ -114,7 +114,7 @@ type Context struct {
 	// cache deps modified to determine whether cachedSortedModuleGroups needs to be recalculated
 	cachedDepsModified bool
 
-	globs    map[string]GlobPath
+	globs    map[globKey]pathtools.GlobResult
 	globLock sync.Mutex
 
 	srcDir         string
@@ -385,7 +385,7 @@ func newContext() *Context {
 		moduleFactories:    make(map[string]ModuleFactory),
 		nameInterface:      NewSimpleNameInterface(),
 		moduleInfo:         make(map[Module]*moduleInfo),
-		globs:              make(map[string]GlobPath),
+		globs:              make(map[globKey]pathtools.GlobResult),
 		fs:                 pathtools.OsFs,
 		finishedMutators:   make(map[*mutatorInfo]bool),
 		ninjaBuildDir:      nil,
@@ -747,6 +747,7 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string,
 
 	type newModuleInfo struct {
 		*moduleInfo
+		deps  []string
 		added chan<- struct{}
 	}
 
@@ -772,12 +773,12 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string,
 			// registered by name. This allows load hooks to set and/or modify any aspect
 			// of the module (including names) using information that is not available when
 			// the module factory is called.
-			newModules, errs := runAndRemoveLoadHooks(c, config, module, &scopedModuleFactories)
+			newModules, newDeps, errs := runAndRemoveLoadHooks(c, config, module, &scopedModuleFactories)
 			if len(errs) > 0 {
 				return errs
 			}
 
-			moduleCh <- newModuleInfo{module, addedCh}
+			moduleCh <- newModuleInfo{module, newDeps, addedCh}
 			<-addedCh
 			for _, n := range newModules {
 				errs = addModule(n)
@@ -820,6 +821,7 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string,
 		doneCh <- struct{}{}
 	}()
 
+	var hookDeps []string
 loop:
 	for {
 		select {
@@ -827,6 +829,7 @@ loop:
 			errs = append(errs, newErrs...)
 		case module := <-moduleCh:
 			newErrs := c.addModule(module.moduleInfo)
+			hookDeps = append(hookDeps, module.deps...)
 			if module.added != nil {
 				module.added <- struct{}{}
 			}
@@ -841,6 +844,7 @@ loop:
 		}
 	}
 
+	deps = append(deps, hookDeps...)
 	return deps, errs
 }
 
@@ -2081,6 +2085,11 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 			// modules to the modules that would have been unblocked when that module finished, i.e
 			// the reverse of the visitOrderer.
 
+			// In order to reduce duplicated work, once a module has been checked and determined
+			// not to be part of a cycle add it and everything that depends on it to the checked
+			// map.
+			checked := make(map[*moduleInfo]struct{})
+
 			var check func(module, end *moduleInfo) []*moduleInfo
 			check = func(module, end *moduleInfo) []*moduleInfo {
 				if module.waitingCount == -1 {
@@ -2090,6 +2099,10 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 				if module == end {
 					// This module is the end of the loop, start rolling up the cycle.
 					return []*moduleInfo{module}
+				}
+
+				if _, alreadyChecked := checked[module]; alreadyChecked {
+					return nil
 				}
 
 				for _, dep := range order.propagate(module) {
@@ -2105,6 +2118,7 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 					}
 				}
 
+				checked[module] = struct{}{}
 				return nil
 			}
 
@@ -2148,9 +2162,8 @@ func cycleError(cycle []*moduleInfo) (errs []error) {
 	for i := len(cycle) - 1; i >= 0; i-- {
 		nextModule := cycle[i]
 		errs = append(errs, &BlueprintError{
-			Err: fmt.Errorf("    %q depends on %q",
-				curModule.Name(),
-				nextModule.Name()),
+			Err: fmt.Errorf("    %s depends on %s",
+				curModule, nextModule),
 			Pos: curModule.pos,
 		})
 		curModule = nextModule
