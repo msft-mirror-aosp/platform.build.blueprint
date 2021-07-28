@@ -747,6 +747,7 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string,
 
 	type newModuleInfo struct {
 		*moduleInfo
+		deps  []string
 		added chan<- struct{}
 	}
 
@@ -772,12 +773,12 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string,
 			// registered by name. This allows load hooks to set and/or modify any aspect
 			// of the module (including names) using information that is not available when
 			// the module factory is called.
-			newModules, errs := runAndRemoveLoadHooks(c, config, module, &scopedModuleFactories)
+			newModules, newDeps, errs := runAndRemoveLoadHooks(c, config, module, &scopedModuleFactories)
 			if len(errs) > 0 {
 				return errs
 			}
 
-			moduleCh <- newModuleInfo{module, addedCh}
+			moduleCh <- newModuleInfo{module, newDeps, addedCh}
 			<-addedCh
 			for _, n := range newModules {
 				errs = addModule(n)
@@ -820,6 +821,7 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string,
 		doneCh <- struct{}{}
 	}()
 
+	var hookDeps []string
 loop:
 	for {
 		select {
@@ -827,6 +829,7 @@ loop:
 			errs = append(errs, newErrs...)
 		case module := <-moduleCh:
 			newErrs := c.addModule(module.moduleInfo)
+			hookDeps = append(hookDeps, module.deps...)
 			if module.added != nil {
 				module.added <- struct{}{}
 			}
@@ -841,6 +844,7 @@ loop:
 		}
 	}
 
+	deps = append(deps, hookDeps...)
 	return deps, errs
 }
 
@@ -2277,11 +2281,12 @@ type jsonDep struct {
 	Tag string
 }
 
-type jsonModule struct {
+type JsonModule struct {
 	jsonModuleName
 	Deps      []jsonDep
 	Type      string
 	Blueprint string
+	Module    map[string]interface{}
 }
 
 func toJsonVariationMap(vm variationMap) jsonVariationMap {
@@ -2296,17 +2301,33 @@ func jsonModuleNameFromModuleInfo(m *moduleInfo) *jsonModuleName {
 	}
 }
 
-func jsonModuleFromModuleInfo(m *moduleInfo) *jsonModule {
-	return &jsonModule{
+type JSONDataSupplier interface {
+	AddJSONData(d *map[string]interface{})
+}
+
+func jsonModuleFromModuleInfo(m *moduleInfo) *JsonModule {
+	result := &JsonModule{
 		jsonModuleName: *jsonModuleNameFromModuleInfo(m),
 		Deps:           make([]jsonDep, 0),
 		Type:           m.typeName,
 		Blueprint:      m.relBlueprintsFile,
+		Module:         make(map[string]interface{}),
 	}
+
+	if j, ok := m.logicModule.(JSONDataSupplier); ok {
+		j.AddJSONData(&result.Module)
+	}
+
+	for _, p := range m.providers {
+		if j, ok := p.(JSONDataSupplier); ok {
+			j.AddJSONData(&result.Module)
+		}
+	}
+	return result
 }
 
 func (c *Context) PrintJSONGraph(w io.Writer) {
-	modules := make([]*jsonModule, 0)
+	modules := make([]*JsonModule, 0)
 	for _, m := range c.modulesSorted {
 		jm := jsonModuleFromModuleInfo(m)
 		for _, d := range m.directDeps {
