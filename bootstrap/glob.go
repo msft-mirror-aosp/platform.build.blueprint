@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"io/ioutil"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -43,7 +44,7 @@ import (
 // in a build failure with a "missing and no known rule to make it" error.
 
 var (
-	globCmd = filepath.Join(miniBootstrapDir, "bpglob")
+	globCmd = filepath.Join(bootstrapDir, "bpglob")
 
 	// globRule rule traverses directories to produce a list of files that match $glob
 	// and writes it to $out if it has changed, and writes the directories to $out.d
@@ -148,16 +149,18 @@ func joinWithPrefixAndQuote(strs []string, prefix string) string {
 // re-evaluate them whenever the contents of the searched directories change, and retrigger the
 // primary builder if the results change.
 type globSingleton struct {
-	config     *Config
-	globLister func() pathtools.MultipleGlobResults
-	writeRule  bool
+	globListDir string
+	globLister  func() pathtools.MultipleGlobResults
+	srcDir      string
+	writeRule   bool
 }
 
-func globSingletonFactory(config *Config, ctx *blueprint.Context) func() blueprint.Singleton {
+func globSingletonFactory(globListDir string, ctx *blueprint.Context) func() blueprint.Singleton {
 	return func() blueprint.Singleton {
 		return &globSingleton{
-			config:     config,
-			globLister: ctx.Globs,
+			globListDir: globListDir,
+			globLister:  ctx.Globs,
+			srcDir:      ctx.SrcDir(),
 		}
 	}
 }
@@ -173,7 +176,8 @@ func (s *globSingleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 
 	// The directory for the intermediates needs to be different for bootstrap and the primary
 	// builder.
-	globsDir := globsDir(ctx.Config().(BootstrapConfig), s.config.stage)
+	bootstrapConfig := ctx.Config().(BootstrapConfig)
+	globsDir := globsDir(bootstrapConfig, s.globListDir)
 
 	for i, globs := range globBuckets {
 		fileListFile := filepath.Join(globsDir, strconv.Itoa(i))
@@ -191,7 +195,8 @@ func (s *globSingleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 			// We don't need to write the depfile because we're guaranteed that ninja
 			// will run the command at least once (to record it into the ninja_log), so
 			// the depfile will be loaded from that execution.
-			err := pathtools.WriteFileIfChanged(absolutePath(fileListFile), globs.FileList(), 0666)
+			absoluteFileListFile := joinPath(s.srcDir, fileListFile)
+			err := pathtools.WriteFileIfChanged(absoluteFileListFile, globs.FileList(), 0666)
 			if err != nil {
 				panic(fmt.Errorf("error writing %s: %s", fileListFile, err))
 			}
@@ -205,15 +210,28 @@ func (s *globSingleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	}
 }
 
-func generateGlobNinjaFile(bootstrapConfig *Config, config interface{},
+func WriteBuildGlobsNinjaFile(globListDir string, ctx *blueprint.Context, args Args, config interface{}) {
+	buffer, errs := generateGlobNinjaFile(ctx.SrcDir(), globListDir, config, ctx.Globs)
+	if len(errs) > 0 {
+		fatalErrors(errs)
+	}
+
+	const outFilePermissions = 0666
+	err := ioutil.WriteFile(joinPath(ctx.SrcDir(), args.GlobFile), buffer, outFilePermissions)
+	if err != nil {
+		fatalf("error writing %s: %s", args.GlobFile, err)
+	}
+}
+func generateGlobNinjaFile(srcDir, globListDir string, config interface{},
 	globLister func() pathtools.MultipleGlobResults) ([]byte, []error) {
 
 	ctx := blueprint.NewContext()
 	ctx.RegisterSingletonType("glob", func() blueprint.Singleton {
 		return &globSingleton{
-			config:     bootstrapConfig,
-			globLister: globLister,
-			writeRule:  true,
+			globListDir: globListDir,
+			globLister:  globLister,
+			srcDir:      srcDir,
+			writeRule:   true,
 		}
 	})
 
@@ -244,18 +262,14 @@ func generateGlobNinjaFile(bootstrapConfig *Config, config interface{},
 
 // globsDir returns a different directory to store glob intermediates for the bootstrap and
 // primary builder executions.
-func globsDir(config BootstrapConfig, stage Stage) string {
+func globsDir(config BootstrapConfig, globsDir string) string {
 	buildDir := config.BuildDir()
-	if stage == StageMain {
-		return filepath.Join(buildDir, mainSubDir, "globs")
-	} else {
-		return filepath.Join(buildDir, bootstrapSubDir, "globs")
-	}
+	return filepath.Join(buildDir, bootstrapSubDir, globsDir)
 }
 
 // GlobFileListFiles returns the list of sharded glob file list files for the main stage.
-func GlobFileListFiles(config BootstrapConfig) []string {
-	globsDir := globsDir(config, StageMain)
+func GlobFileListFiles(config BootstrapConfig, globListDir string) []string {
+	globsDir := globsDir(config, globListDir)
 	var fileListFiles []string
 	for i := 0; i < numGlobBuckets; i++ {
 		fileListFiles = append(fileListFiles, filepath.Join(globsDir, strconv.Itoa(i)))
