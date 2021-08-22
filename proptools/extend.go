@@ -247,6 +247,8 @@ func extendPropertiesRecursive(dstValues []reflect.Value, srcValue reflect.Value
 	prefix string, filter ExtendPropertyFilterFunc, sameTypes bool,
 	orderFunc ExtendPropertyOrderFunc) error {
 
+	dstValuesCopied := false
+
 	srcType := srcValue.Type()
 	for i, srcField := range typeFields(srcType) {
 		if srcField.PkgPath != "" {
@@ -284,7 +286,9 @@ func extendPropertiesRecursive(dstValues []reflect.Value, srcValue reflect.Value
 
 		found := false
 		var recurse []reflect.Value
-		for _, dstValue := range dstValues {
+		// Use an iteration loop so elements can be added to the end of dstValues inside the loop.
+		for j := 0; j < len(dstValues); j++ {
+			dstValue := dstValues[j]
 			dstType := dstValue.Type()
 			var dstField reflect.StructField
 
@@ -297,6 +301,27 @@ func extendPropertiesRecursive(dstValues []reflect.Value, srcValue reflect.Value
 					if field.Name == srcField.Name {
 						dstField = field
 						ok = true
+					} else if field.Name == "BlueprintEmbed" || field.Anonymous {
+						embeddedDstValue := dstValue.FieldByIndex(field.Index)
+						if isStructPtr(embeddedDstValue.Type()) {
+							if embeddedDstValue.IsNil() {
+								newEmbeddedDstValue := reflect.New(embeddedDstValue.Type().Elem())
+								embeddedDstValue.Set(newEmbeddedDstValue)
+							}
+							embeddedDstValue = embeddedDstValue.Elem()
+						}
+						if !isStruct(embeddedDstValue.Type()) {
+							return extendPropertyErrorf(propertyName, "%s is not a struct (%s)",
+								prefix+field.Name, embeddedDstValue.Type())
+						}
+						// The destination struct contains an embedded struct, add it to the list
+						// of destinations to consider.  Make a copy of dstValues if necessary
+						// to avoid modifying the backing array of an input parameter.
+						if !dstValuesCopied {
+							dstValues = append([]reflect.Value(nil), dstValues...)
+							dstValuesCopied = true
+						}
+						dstValues = append(dstValues, embeddedDstValue)
 					}
 				}
 				if !ok {
@@ -342,7 +367,7 @@ func extendPropertiesRecursive(dstValues []reflect.Value, srcValue reflect.Value
 				// Recursively extend the struct's fields.
 				recurse = append(recurse, dstFieldValue)
 				continue
-			case reflect.Bool, reflect.String, reflect.Slice:
+			case reflect.Bool, reflect.String, reflect.Slice, reflect.Map:
 				if srcFieldValue.Type() != dstFieldValue.Type() {
 					return extendPropertyErrorf(propertyName, "mismatched types %s and %s",
 						dstFieldValue.Type(), srcFieldValue.Type())
@@ -443,6 +468,34 @@ func ExtendBasicType(dstFieldValue, srcFieldValue reflect.Value, order Order) {
 			newSlice = reflect.AppendSlice(newSlice, srcFieldValue)
 		}
 		dstFieldValue.Set(newSlice)
+	case reflect.Map:
+		if srcFieldValue.IsNil() {
+			break
+		}
+		var mapValue reflect.Value
+		// for append/prepend, maintain keys from original value
+		// for replace, replace entire map
+		if order == Replace || dstFieldValue.IsNil() {
+			mapValue = srcFieldValue
+		} else {
+			mapValue = dstFieldValue
+
+			iter := srcFieldValue.MapRange()
+			for iter.Next() {
+				dstValue := dstFieldValue.MapIndex(iter.Key())
+				if prepend {
+					// if the key exists in the map, keep the original value.
+					if !dstValue.IsValid() {
+						// otherwise, add the new value
+						mapValue.SetMapIndex(iter.Key(), iter.Value())
+					}
+				} else {
+					// For append, replace the original value.
+					mapValue.SetMapIndex(iter.Key(), iter.Value())
+				}
+			}
+		}
+		dstFieldValue.Set(mapValue)
 	case reflect.Ptr:
 		if srcFieldValue.IsNil() {
 			break

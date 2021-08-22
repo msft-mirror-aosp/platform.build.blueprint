@@ -294,16 +294,31 @@ type BaseModuleContext interface {
 	// passed to Context.SetNameInterface, or SimpleNameInterface if it was not called.
 	OtherModuleExists(name string) bool
 
+	// ModuleFromName returns (module, true) if a module exists by the given name and same context namespace,
+	// or (nil, false) if it does not exist. It panics if there is either more than one
+	// module of the given name, or if the given name refers to an alias instead of a module.
+	// There are no guarantees about which variant of the module will be returned.
+	// Prefer retrieving the module using GetDirectDep or a visit function, when possible, as
+	// this will guarantee the appropriate module-variant dependency is returned.
+	ModuleFromName(name string) (Module, bool)
+
 	// OtherModuleDependencyVariantExists returns true if a module with the
 	// specified name and variant exists. The variant must match the given
 	// variations. It must also match all the non-local variations of the current
-	// module. In other words, it checks for the module AddVariationDependencies
+	// module. In other words, it checks for the module that AddVariationDependencies
 	// would add a dependency on with the same arguments.
 	OtherModuleDependencyVariantExists(variations []Variation, name string) bool
 
+	// OtherModuleFarDependencyVariantExists returns true if a module with the
+	// specified name and variant exists. The variant must match the given
+	// variations, but not the non-local variations of the current module. In
+	// other words, it checks for the module that AddFarVariationDependencies
+	// would add a dependency on with the same arguments.
+	OtherModuleFarDependencyVariantExists(variations []Variation, name string) bool
+
 	// OtherModuleReverseDependencyVariantExists returns true if a module with the
 	// specified name exists with the same variations as the current module. In
-	// other words, it checks for the module AddReverseDependency would add a
+	// other words, it checks for the module that AddReverseDependency would add a
 	// dependency on with the same argument.
 	OtherModuleReverseDependencyVariantExists(name string) bool
 
@@ -525,6 +540,23 @@ func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) Depende
 	return nil
 }
 
+func (m *baseModuleContext) ModuleFromName(name string) (Module, bool) {
+	moduleGroup, exists := m.context.nameInterface.ModuleFromName(name, m.module.namespace())
+	if exists {
+		if len(moduleGroup.modules) != 1 {
+			panic(fmt.Errorf("Expected exactly one module named %q, but got %d", name, len(moduleGroup.modules)))
+		}
+		moduleInfo := moduleGroup.modules[0].module()
+		if moduleInfo != nil {
+			return moduleInfo.logicModule, true
+		} else {
+			panic(fmt.Errorf(`Expected actual module named %q, but group did not contain a module.
+    There may instead be an alias by that name.`, name))
+		}
+	}
+	return nil, exists
+}
+
 func (m *baseModuleContext) OtherModuleExists(name string) bool {
 	_, exists := m.context.nameInterface.ModuleFromName(name, m.module.namespace())
 	return exists
@@ -536,6 +568,15 @@ func (m *baseModuleContext) OtherModuleDependencyVariantExists(variations []Vari
 		return false
 	}
 	found, _ := findVariant(m.module, possibleDeps, variations, false, false)
+	return found != nil
+}
+
+func (m *baseModuleContext) OtherModuleFarDependencyVariantExists(variations []Variation, name string) bool {
+	possibleDeps := m.context.moduleGroupFromName(name, m.module.namespace())
+	if possibleDeps == nil {
+		return false
+	}
+	found, _ := findVariant(m.module, possibleDeps, variations, true, false)
 	return found != nil
 }
 
@@ -1323,7 +1364,7 @@ func AddLoadHook(module Module, hook LoadHook) {
 }
 
 func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
-	scopedModuleFactories *map[string]ModuleFactory) (newModules []*moduleInfo, errs []error) {
+	scopedModuleFactories *map[string]ModuleFactory) (newModules []*moduleInfo, deps []string, errs []error) {
 
 	if v, exists := pendingHooks.Load(module.logicModule); exists {
 		hooks := v.(*[]LoadHook)
@@ -1339,14 +1380,15 @@ func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
 		for _, hook := range *hooks {
 			hook(mctx)
 			newModules = append(newModules, mctx.newModules...)
+			deps = append(deps, mctx.ninjaFileDeps...)
 			errs = append(errs, mctx.errs...)
 		}
 		pendingHooks.Delete(module.logicModule)
 
-		return newModules, errs
+		return newModules, deps, errs
 	}
 
-	return nil, nil
+	return nil, nil, nil
 }
 
 // Check the syntax of a generated blueprint file.
