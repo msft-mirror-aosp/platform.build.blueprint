@@ -32,7 +32,6 @@ import (
 type Args struct {
 	OutFile                  string
 	Subninjas                []string
-	DepFile                  string
 	Cpuprofile               string
 	Memprofile               string
 	DelveListen              string
@@ -121,14 +120,14 @@ func RunBlueprint(args Args, ctx *blueprint.Context, config interface{}) []strin
 		fatalf("could not enumerate files: %v\n", err.Error())
 	}
 
-	buildDir := config.(BootstrapConfig).BuildDir()
+	soongOutDir := config.(BootstrapConfig).SoongOutDir()
 
 	stage := StageMain
 	if args.GeneratingPrimaryBuilder {
 		stage = StagePrimary
 	}
 
-	mainNinjaFile := filepath.Join("$buildDir", "build.ninja")
+	mainNinjaFile := filepath.Join("$soongOutDir", "build.ninja")
 
 	var invocations []PrimaryBuilderInvocation
 
@@ -235,8 +234,8 @@ func RunBlueprint(args Args, ctx *blueprint.Context, config interface{}) []strin
 	}
 
 	if c, ok := config.(ConfigRemoveAbandonedFilesUnder); ok {
-		under, except := c.RemoveAbandonedFilesUnder(buildDir)
-		err := removeAbandonedFilesUnder(ctx, srcDir, buildDir, under, except)
+		under, except := c.RemoveAbandonedFilesUnder(soongOutDir)
+		err := removeAbandonedFilesUnder(ctx, srcDir, soongOutDir, under, except)
 		if err != nil {
 			fatalf("error removing abandoned files: %s", err)
 		}
