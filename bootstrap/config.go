@@ -41,11 +41,11 @@ var (
 	srcDirVariable = bootstrapVariable("srcDir", func(c BootstrapConfig) string {
 		return "."
 	})
-	buildDirVariable = bootstrapVariable("buildDir", func(c BootstrapConfig) string {
-		return c.BuildDir()
+	soongOutDirVariable = bootstrapVariable("soongOutDir", func(c BootstrapConfig) string {
+		return c.SoongOutDir()
 	})
-	ninjaBuildDirVariable = bootstrapVariable("ninjaBuildDir", func(c BootstrapConfig) string {
-		return c.NinjaBuildDir()
+	outDirVariable = bootstrapVariable("outDir", func(c BootstrapConfig) string {
+		return c.OutDir()
 	})
 	goRootVariable = bootstrapVariable("goRoot", func(c BootstrapConfig) string {
 		goroot := runtime.GOROOT()
@@ -76,12 +76,15 @@ var (
 )
 
 type BootstrapConfig interface {
+	// The directory where tools run during the build are located.
+	HostToolDir() string
+
 	// The directory where files emitted during bootstrapping are located.
-	// Usually NinjaBuildDir() + "/soong".
-	BuildDir() string
+	// Usually OutDir() + "/soong".
+	SoongOutDir() string
 
 	// The output directory for the build.
-	NinjaBuildDir() string
+	OutDir() string
 
 	// Whether to compile Go code in such a way that it can be debugged
 	DebugCompilation() bool
@@ -95,13 +98,6 @@ type ConfigRemoveAbandonedFilesUnder interface {
 	RemoveAbandonedFilesUnder(buildDir string) (under, except []string)
 }
 
-type ConfigBlueprintToolLocation interface {
-	// BlueprintToolLocation can return a path name to install blueprint tools
-	// designed for end users (bpfmt, bpmodify, and anything else using
-	// blueprint_go_binary).
-	BlueprintToolLocation() string
-}
-
 type StopBefore int
 
 const (
@@ -113,13 +109,6 @@ type ConfigStopBefore interface {
 	StopBefore() StopBefore
 }
 
-type Stage int
-
-const (
-	StagePrimary Stage = iota
-	StageMain
-)
-
 type PrimaryBuilderInvocation struct {
 	Inputs  []string
 	Outputs []string
@@ -127,10 +116,7 @@ type PrimaryBuilderInvocation struct {
 }
 
 type Config struct {
-	stage Stage
-
-	topLevelBlueprintsFile string
-	subninjas              []string
+	subninjas []string
 
 	runGoTests     bool
 	useValidations bool

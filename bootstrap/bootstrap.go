@@ -25,14 +25,12 @@ import (
 	"github.com/google/blueprint/pathtools"
 )
 
-const bootstrapSubDir = ".bootstrap"
-
 var (
 	pctx = blueprint.NewPackageContext("github.com/google/blueprint/bootstrap")
 
-	goTestMainCmd   = pctx.StaticVariable("goTestMainCmd", filepath.Join(bootstrapDir, "bin", "gotestmain"))
-	goTestRunnerCmd = pctx.StaticVariable("goTestRunnerCmd", filepath.Join(bootstrapDir, "bin", "gotestrunner"))
-	pluginGenSrcCmd = pctx.StaticVariable("pluginGenSrcCmd", filepath.Join(bootstrapDir, "bin", "loadplugins"))
+	goTestMainCmd   = pctx.StaticVariable("goTestMainCmd", filepath.Join("$ToolDir", "gotestmain"))
+	goTestRunnerCmd = pctx.StaticVariable("goTestRunnerCmd", filepath.Join("$ToolDir", "gotestrunner"))
+	pluginGenSrcCmd = pctx.StaticVariable("pluginGenSrcCmd", filepath.Join("$ToolDir", "loadplugins"))
 
 	parallelCompile = pctx.StaticVariable("parallelCompile", func() string {
 		// Parallel compilation is only supported on >= go1.9
@@ -106,7 +104,7 @@ var (
 
 	bootstrap = pctx.StaticRule("bootstrap",
 		blueprint.RuleParams{
-			Command:     "BUILDDIR=$buildDir $bootstrapCmd -i $in",
+			Command:     "BUILDDIR=$soongOutDir $bootstrapCmd -i $in",
 			CommandDeps: []string{"$bootstrapCmd"},
 			Description: "bootstrap $in",
 			Generator:   true,
@@ -131,9 +129,8 @@ var (
 				`cd / && ` +
 				`env -i "$$BUILDER" ` +
 				`    --top "$$TOP" ` +
-				`    --out "$buildDir" ` +
-				`    -n "$ninjaBuildDir" ` +
-				`    -d "$out.d" ` +
+				`    --out "$soongOutDir" ` +
+				`    -n "$outDir" ` +
 				`    $extra`,
 			CommandDeps: []string{"$builder"},
 			Description: "$builder $out",
@@ -152,15 +149,9 @@ var (
 		},
 		"depfile")
 
-	_ = pctx.VariableFunc("BinDir", func(config interface{}) (string, error) {
-		return bootstrapBinDir(config), nil
-	})
-
 	_ = pctx.VariableFunc("ToolDir", func(config interface{}) (string, error) {
-		return toolDir(config), nil
+		return config.(BootstrapConfig).HostToolDir(), nil
 	})
-
-	bootstrapDir = filepath.Join("$buildDir", bootstrapSubDir)
 )
 
 type GoBinaryTool interface {
@@ -168,17 +159,6 @@ type GoBinaryTool interface {
 
 	// So that other packages can't implement this interface
 	isGoBinary()
-}
-
-func bootstrapBinDir(config interface{}) string {
-	return filepath.Join(config.(BootstrapConfig).BuildDir(), bootstrapSubDir, "bin")
-}
-
-func toolDir(config interface{}) string {
-	if c, ok := config.(ConfigBlueprintToolLocation); ok {
-		return filepath.Join(c.BlueprintToolLocation())
-	}
-	return filepath.Join(config.(BootstrapConfig).BuildDir(), "bin")
 }
 
 func pluginDeps(ctx blueprint.BottomUpMutatorContext) {
@@ -334,7 +314,7 @@ func (g *goPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	ctx.VisitDepsDepthFirstIf(isGoPluginFor(name),
 		func(module blueprint.Module) { hasPlugins = true })
 	if hasPlugins {
-		pluginSrc = filepath.Join(moduleGenSrcDir(ctx, g.config), "plugin.go")
+		pluginSrc = filepath.Join(moduleGenSrcDir(ctx), "plugin.go")
 		genSrcs = append(genSrcs, pluginSrc)
 	}
 
@@ -445,17 +425,11 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		genSrcs         = []string{}
 	)
 
-	if g.properties.Tool_dir {
-		g.installPath = filepath.Join(toolDir(ctx.Config()), name)
-	} else {
-		buildDir := ctx.Config().(BootstrapConfig).BuildDir()
-		g.installPath = filepath.Join(buildDir, bootstrapSubDir, "bin", name)
-	}
-
+	g.installPath = filepath.Join(ctx.Config().(BootstrapConfig).HostToolDir(), name)
 	ctx.VisitDepsDepthFirstIf(isGoPluginFor(name),
 		func(module blueprint.Module) { hasPlugins = true })
 	if hasPlugins {
-		pluginSrc = filepath.Join(moduleGenSrcDir(ctx, g.config), "plugin.go")
+		pluginSrc = filepath.Join(moduleGenSrcDir(ctx), "plugin.go")
 		genSrcs = append(genSrcs, pluginSrc)
 	}
 
@@ -729,68 +703,64 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 		primaryBuilderName = ctx.ModuleName(primaryBuilders[0])
 	}
 
-	primaryBuilderFile := filepath.Join("$BinDir", primaryBuilderName)
-	ctx.SetNinjaBuildDir(pctx, "${ninjaBuildDir}")
+	primaryBuilderFile := filepath.Join("$ToolDir", primaryBuilderName)
+	ctx.SetOutDir(pctx, "${outDir}")
 
 	for _, subninja := range s.config.subninjas {
 		ctx.AddSubninja(subninja)
 	}
 
-	if s.config.stage == StagePrimary {
-		for _, i := range s.config.primaryBuilderInvocations {
-			flags := make([]string, 0)
-			flags = append(flags, primaryBuilderCmdlinePrefix...)
-			flags = append(flags, i.Args...)
+	for _, i := range s.config.primaryBuilderInvocations {
+		flags := make([]string, 0)
+		flags = append(flags, primaryBuilderCmdlinePrefix...)
+		flags = append(flags, i.Args...)
 
-			// Build the main build.ninja
-			ctx.Build(pctx, blueprint.BuildParams{
-				Rule:    generateBuildNinja,
-				Outputs: i.Outputs,
-				Inputs:  i.Inputs,
-				Args: map[string]string{
-					"builder": primaryBuilderFile,
-					"extra":   strings.Join(flags, " "),
-				},
-				// soong_ui explicitly requests what it wants to be build. This is
-				// because the same Ninja file contains instructions to run
-				// soong_build, run bp2build and to generate the JSON module graph.
-				Optional: true,
-			})
-		}
-	}
-
-	if s.config.stage == StageMain {
-		// Add a phony target for building various tools that are part of blueprint
+		// Build the main build.ninja
 		ctx.Build(pctx, blueprint.BuildParams{
-			Rule:    blueprint.Phony,
-			Outputs: []string{"blueprint_tools"},
-			Inputs:  blueprintTools,
-		})
-
-		// Add a phony target for running go tests
-		ctx.Build(pctx, blueprint.BuildParams{
-			Rule:     blueprint.Phony,
-			Outputs:  []string{"blueprint_go_packages"},
-			Inputs:   blueprintGoPackages,
+			Rule:    generateBuildNinja,
+			Outputs: i.Outputs,
+			Inputs:  i.Inputs,
+			Args: map[string]string{
+				"builder": primaryBuilderFile,
+				"extra":   strings.Join(flags, " "),
+			},
+			// soong_ui explicitly requests what it wants to be build. This is
+			// because the same Ninja file contains instructions to run
+			// soong_build, run bp2build and to generate the JSON module graph.
 			Optional: true,
 		})
 	}
+
+	// Add a phony target for building various tools that are part of blueprint
+	ctx.Build(pctx, blueprint.BuildParams{
+		Rule:    blueprint.Phony,
+		Outputs: []string{"blueprint_tools"},
+		Inputs:  blueprintTools,
+	})
+
+	// Add a phony target for running go tests
+	ctx.Build(pctx, blueprint.BuildParams{
+		Rule:     blueprint.Phony,
+		Outputs:  []string{"blueprint_go_packages"},
+		Inputs:   blueprintGoPackages,
+		Optional: true,
+	})
 }
 
 // packageRoot returns the module-specific package root directory path.  This
 // directory is where the final package .a files are output and where dependant
 // modules search for this package via -I arguments.
 func packageRoot(ctx blueprint.ModuleContext) string {
-	buildDir := ctx.Config().(BootstrapConfig).BuildDir()
-	return filepath.Join(buildDir, bootstrapSubDir, ctx.ModuleName(), "pkg")
+	toolDir := ctx.Config().(BootstrapConfig).HostToolDir()
+	return filepath.Join(toolDir, "go", ctx.ModuleName(), "pkg")
 }
 
 // testRoot returns the module-specific package root directory path used for
 // building tests. The .a files generated here will include everything from
 // packageRoot, plus the test-only code.
 func testRoot(ctx blueprint.ModuleContext) string {
-	buildDir := ctx.Config().(BootstrapConfig).BuildDir()
-	return filepath.Join(buildDir, bootstrapSubDir, ctx.ModuleName(), "test")
+	toolDir := ctx.Config().(BootstrapConfig).HostToolDir()
+	return filepath.Join(toolDir, "go", ctx.ModuleName(), "test")
 }
 
 // moduleSrcDir returns the path of the directory that all source file paths are
@@ -801,12 +771,12 @@ func moduleSrcDir(ctx blueprint.ModuleContext) string {
 
 // moduleObjDir returns the module-specific object directory path.
 func moduleObjDir(ctx blueprint.ModuleContext) string {
-	buildDir := ctx.Config().(BootstrapConfig).BuildDir()
-	return filepath.Join(buildDir, bootstrapSubDir, ctx.ModuleName(), "obj")
+	toolDir := ctx.Config().(BootstrapConfig).HostToolDir()
+	return filepath.Join(toolDir, "go", ctx.ModuleName(), "obj")
 }
 
 // moduleGenSrcDir returns the module-specific generated sources path.
-func moduleGenSrcDir(ctx blueprint.ModuleContext, config *Config) string {
-	buildDir := ctx.Config().(BootstrapConfig).BuildDir()
-	return filepath.Join(buildDir, bootstrapSubDir, ctx.ModuleName(), "gen")
+func moduleGenSrcDir(ctx blueprint.ModuleContext) string {
+	toolDir := ctx.Config().(BootstrapConfig).HostToolDir()
+	return filepath.Join(toolDir, "go", ctx.ModuleName(), "gen")
 }
