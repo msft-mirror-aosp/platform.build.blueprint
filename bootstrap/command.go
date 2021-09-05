@@ -30,24 +30,24 @@ import (
 )
 
 type Args struct {
-	OutFile                  string
-	Subninjas                []string
-	Cpuprofile               string
-	Memprofile               string
-	DelveListen              string
-	DelvePath                string
-	TraceFile                string
-	RunGoTests               bool
-	UseValidations           bool
-	NoGC                     bool
-	EmptyNinjaFile           bool
-	BuildDir                 string
-	ModuleListFile           string
-	NinjaBuildDir            string
-	TopFile                  string
-	GeneratingPrimaryBuilder bool
+	ModuleListFile string
+	OutDir         string
+	SoongOutDir    string
 
+	OutFile                   string
+	Subninjas                 []string
 	PrimaryBuilderInvocations []PrimaryBuilderInvocation
+
+	RunGoTests     bool
+	UseValidations bool
+	EmptyNinjaFile bool
+
+	NoGC        bool
+	Cpuprofile  string
+	Memprofile  string
+	DelveListen string
+	DelvePath   string
+	TraceFile   string
 }
 
 func PrimaryBuilderExtraFlags(args Args, mainNinjaFile string) []string {
@@ -105,7 +105,7 @@ func RunBlueprint(args Args, ctx *blueprint.Context, config interface{}) []strin
 		defer trace.Stop()
 	}
 
-	srcDir := filepath.Dir(args.TopFile)
+	srcDir := "."
 
 	ninjaDeps := make([]string, 0)
 
@@ -122,45 +122,12 @@ func RunBlueprint(args Args, ctx *blueprint.Context, config interface{}) []strin
 
 	soongOutDir := config.(BootstrapConfig).SoongOutDir()
 
-	stage := StageMain
-	if args.GeneratingPrimaryBuilder {
-		stage = StagePrimary
-	}
-
-	mainNinjaFile := filepath.Join("$soongOutDir", "build.ninja")
-
-	var invocations []PrimaryBuilderInvocation
-
-	if args.PrimaryBuilderInvocations != nil {
-		invocations = args.PrimaryBuilderInvocations
-	} else {
-		primaryBuilderArgs := PrimaryBuilderExtraFlags(args, mainNinjaFile)
-		primaryBuilderArgs = append(primaryBuilderArgs, args.TopFile)
-
-		invocations = []PrimaryBuilderInvocation{{
-			Inputs:  []string{args.TopFile},
-			Outputs: []string{mainNinjaFile},
-			Args:    primaryBuilderArgs,
-		}}
-	}
-
-	bootstrapConfig := &Config{
-		stage: stage,
-
-		topLevelBlueprintsFile:    args.TopFile,
-		subninjas:                 args.Subninjas,
-		runGoTests:                args.RunGoTests,
-		useValidations:            args.UseValidations,
-		primaryBuilderInvocations: invocations,
-	}
-
 	ctx.RegisterBottomUpMutator("bootstrap_plugin_deps", pluginDeps)
-	ctx.RegisterModuleType("bootstrap_go_package", newGoPackageModuleFactory(bootstrapConfig))
-	ctx.RegisterModuleType("bootstrap_go_binary", newGoBinaryModuleFactory(bootstrapConfig, false))
-	ctx.RegisterModuleType("blueprint_go_binary", newGoBinaryModuleFactory(bootstrapConfig, true))
-	ctx.RegisterSingletonType("bootstrap", newSingletonFactory(bootstrapConfig))
+	ctx.RegisterModuleType("bootstrap_go_package", newGoPackageModuleFactory())
+	ctx.RegisterModuleType("blueprint_go_binary", newGoBinaryModuleFactory())
+	ctx.RegisterSingletonType("bootstrap", newSingletonFactory())
 
-	blueprintFiles, errs := ctx.ParseFileList(filepath.Dir(args.TopFile), filesToParse, config)
+	blueprintFiles, errs := ctx.ParseFileList(".", filesToParse, config)
 	if len(errs) > 0 {
 		fatalErrors(errs)
 	}
@@ -203,7 +170,7 @@ func RunBlueprint(args Args, ctx *blueprint.Context, config interface{}) []strin
 		}
 	}
 
-	if stage != StageMain || !args.EmptyNinjaFile {
+	if !args.EmptyNinjaFile {
 		f, err = os.OpenFile(joinPath(ctx.SrcDir(), args.OutFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, outFilePermissions)
 		if err != nil {
 			fatalf("error opening Ninja file: %s", err)

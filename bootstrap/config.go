@@ -76,6 +76,9 @@ var (
 )
 
 type BootstrapConfig interface {
+	// The directory where tools run during the build are located.
+	HostToolDir() string
+
 	// The directory where files emitted during bootstrapping are located.
 	// Usually OutDir() + "/soong".
 	SoongOutDir() string
@@ -85,6 +88,15 @@ type BootstrapConfig interface {
 
 	// Whether to compile Go code in such a way that it can be debugged
 	DebugCompilation() bool
+
+	// Whether to run tests for Go code
+	RunGoTests() bool
+
+	// Whether to use Ninja validations for running Go tests
+	UseValidationsForGoTests() bool
+
+	Subninjas() []string
+	PrimaryBuilderInvocations() []PrimaryBuilderInvocation
 }
 
 type ConfigRemoveAbandonedFilesUnder interface {
@@ -93,13 +105,6 @@ type ConfigRemoveAbandonedFilesUnder interface {
 	//   longer active targets, but are listed in the .ninja_log.
 	// - a slice of paths that are exempt from cleaning
 	RemoveAbandonedFilesUnder(buildDir string) (under, except []string)
-}
-
-type ConfigBlueprintToolLocation interface {
-	// BlueprintToolLocation can return a path name to install blueprint tools
-	// designed for end users (bpfmt, bpmodify, and anything else using
-	// blueprint_go_binary).
-	BlueprintToolLocation() string
 }
 
 type StopBefore int
@@ -113,27 +118,8 @@ type ConfigStopBefore interface {
 	StopBefore() StopBefore
 }
 
-type Stage int
-
-const (
-	StagePrimary Stage = iota
-	StageMain
-)
-
 type PrimaryBuilderInvocation struct {
 	Inputs  []string
 	Outputs []string
 	Args    []string
-}
-
-type Config struct {
-	stage Stage
-
-	topLevelBlueprintsFile string
-	subninjas              []string
-
-	runGoTests     bool
-	useValidations bool
-
-	primaryBuilderInvocations []PrimaryBuilderInvocation
 }
