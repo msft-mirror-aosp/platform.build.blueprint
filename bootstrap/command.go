@@ -31,54 +31,20 @@ import (
 
 type Args struct {
 	ModuleListFile string
-	OutDir         string
-	SoongOutDir    string
+	OutFile        string
 
-	OutFile                   string
-	Subninjas                 []string
-	PrimaryBuilderInvocations []PrimaryBuilderInvocation
-
-	RunGoTests     bool
-	UseValidations bool
 	EmptyNinjaFile bool
 
-	NoGC        bool
-	Cpuprofile  string
-	Memprofile  string
-	DelveListen string
-	DelvePath   string
-	TraceFile   string
-}
-
-func PrimaryBuilderExtraFlags(args Args, mainNinjaFile string) []string {
-	result := make([]string, 0)
-
-	if args.RunGoTests {
-		result = append(result, "-t")
-	}
-
-	result = append(result, "-l", args.ModuleListFile)
-	result = append(result, "-o", mainNinjaFile)
-
-	if args.EmptyNinjaFile {
-		result = append(result, "--empty-ninja-file")
-	}
-
-	if args.DelveListen != "" {
-		result = append(result, "--delve_listen", args.DelveListen)
-	}
-
-	if args.DelvePath != "" {
-		result = append(result, "--delve_path", args.DelvePath)
-	}
-
-	return result
+	NoGC       bool
+	Cpuprofile string
+	Memprofile string
+	TraceFile  string
 }
 
 // Returns the list of dependencies the emitted Ninja files has. These can be
 // written to the .d file for the output so that it is correctly rebuilt when
 // needed in case Blueprint is itself invoked from Ninja
-func RunBlueprint(args Args, ctx *blueprint.Context, config interface{}) []string {
+func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, config interface{}) []string {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	if args.NoGC {
@@ -120,8 +86,6 @@ func RunBlueprint(args Args, ctx *blueprint.Context, config interface{}) []strin
 		fatalf("could not enumerate files: %v\n", err.Error())
 	}
 
-	soongOutDir := config.(BootstrapConfig).SoongOutDir()
-
 	ctx.RegisterBottomUpMutator("bootstrap_plugin_deps", pluginDeps)
 	ctx.RegisterModuleType("bootstrap_go_package", newGoPackageModuleFactory())
 	ctx.RegisterModuleType("blueprint_go_binary", newGoBinaryModuleFactory())
@@ -141,10 +105,8 @@ func RunBlueprint(args Args, ctx *blueprint.Context, config interface{}) []strin
 	}
 	ninjaDeps = append(ninjaDeps, extraDeps...)
 
-	if c, ok := config.(ConfigStopBefore); ok {
-		if c.StopBefore() == StopBeforePrepareBuildActions {
-			return ninjaDeps
-		}
+	if stopBefore == StopBeforePrepareBuildActions {
+		return ninjaDeps
 	}
 
 	extraDeps, errs = ctx.PrepareBuildActions(config)
@@ -153,10 +115,8 @@ func RunBlueprint(args Args, ctx *blueprint.Context, config interface{}) []strin
 	}
 	ninjaDeps = append(ninjaDeps, extraDeps...)
 
-	if c, ok := config.(ConfigStopBefore); ok {
-		if c.StopBefore() == StopBeforeWriteNinja {
-			return ninjaDeps
-		}
+	if stopBefore == StopBeforeWriteNinja {
+		return ninjaDeps
 	}
 
 	const outFilePermissions = 0666
@@ -197,14 +157,6 @@ func RunBlueprint(args Args, ctx *blueprint.Context, config interface{}) []strin
 		err = f.Close()
 		if err != nil {
 			fatalf("error closing Ninja file: %s", err)
-		}
-	}
-
-	if c, ok := config.(ConfigRemoveAbandonedFilesUnder); ok {
-		under, except := c.RemoveAbandonedFilesUnder(soongOutDir)
-		err := removeAbandonedFilesUnder(ctx, srcDir, soongOutDir, under, except)
-		if err != nil {
-			fatalf("error removing abandoned files: %s", err)
 		}
 	}
 
