@@ -102,7 +102,7 @@ type Context struct {
 	globalRules     map[Rule]*ruleDef
 
 	// set during PrepareBuildActions
-	ninjaBuildDir      ninjaString // The builddir special Ninja variable
+	outDir             ninjaString // The builddir special Ninja variable
 	requiredNinjaMajor int         // For the ninja_required_version variable
 	requiredNinjaMinor int         // For the ninja_required_version variable
 	requiredNinjaMicro int         // For the ninja_required_version variable
@@ -388,7 +388,7 @@ func newContext() *Context {
 		globs:              make(map[globKey]pathtools.GlobResult),
 		fs:                 pathtools.OsFs,
 		finishedMutators:   make(map[*mutatorInfo]bool),
-		ninjaBuildDir:      nil,
+		outDir:             nil,
 		requiredNinjaMajor: 1,
 		requiredNinjaMinor: 7,
 		requiredNinjaMicro: 0,
@@ -1008,7 +1008,7 @@ func (c *Context) MockFileSystem(files map[string][]byte) {
 		// no module list file specified; find every file named Blueprints
 		pathsToParse := []string{}
 		for candidate := range files {
-			if filepath.Base(candidate) == "Blueprints" {
+			if filepath.Base(candidate) == "Android.bp" {
 				pathsToParse = append(pathsToParse, candidate)
 			}
 		}
@@ -1129,13 +1129,8 @@ func (c *Context) parseOne(rootDir, filename string, reader io.Reader,
 		}
 	}
 
-	subBlueprintsName, _, err := getStringFromScope(scope, "subname")
 	if err != nil {
 		errs = append(errs, err)
-	}
-
-	if subBlueprintsName == "" {
-		subBlueprintsName = "Blueprints"
 	}
 
 	var blueprints []string
@@ -1818,9 +1813,9 @@ func (c *Context) addInterVariantDependency(origModule *moduleInfo, tag Dependen
 	return toInfo
 }
 
-// findBlueprintDescendants returns a map linking parent Blueprints files to child Blueprints files
-// For example, if paths = []string{"a/b/c/Android.bp", "a/Blueprints"},
-// then descendants = {"":[]string{"a/Blueprints"}, "a/Blueprints":[]string{"a/b/c/Android.bp"}}
+// findBlueprintDescendants returns a map linking parent Blueprint files to child Blueprints files
+// For example, if paths = []string{"a/b/c/Android.bp", "a/Android.bp"},
+// then descendants = {"":[]string{"a/Android.bp"}, "a/Android.bp":[]string{"a/b/c/Android.bp"}}
 func findBlueprintDescendants(paths []string) (descendants map[string][]string, err error) {
 	// make mapping from dir path to file path
 	filesByDir := make(map[string]string, len(paths))
@@ -2392,8 +2387,8 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 		deps = append(deps, depsModules...)
 		deps = append(deps, depsSingletons...)
 
-		if c.ninjaBuildDir != nil {
-			err := c.liveGlobals.addNinjaStringDeps(c.ninjaBuildDir)
+		if c.outDir != nil {
+			err := c.liveGlobals.addNinjaStringDeps(c.outDir)
 			if err != nil {
 				errs = []error{err}
 				return
@@ -3205,9 +3200,9 @@ func (c *Context) requireNinjaVersion(major, minor, micro int) {
 	}
 }
 
-func (c *Context) setNinjaBuildDir(value ninjaString) {
-	if c.ninjaBuildDir == nil {
-		c.ninjaBuildDir = value
+func (c *Context) setOutDir(value ninjaString) {
+	if c.outDir == nil {
+		c.outDir = value
 	}
 }
 
@@ -3399,9 +3394,9 @@ func (c *Context) AllTargets() (map[string]string, error) {
 	return targets, nil
 }
 
-func (c *Context) NinjaBuildDir() (string, error) {
-	if c.ninjaBuildDir != nil {
-		return c.ninjaBuildDir.Eval(c.globalVariables)
+func (c *Context) OutDir() (string, error) {
+	if c.outDir != nil {
+		return c.outDir.Eval(c.globalVariables)
 	} else {
 		return "", nil
 	}
@@ -3751,8 +3746,8 @@ func (c *Context) writeSubninjas(nw *ninjaWriter) error {
 }
 
 func (c *Context) writeBuildDir(nw *ninjaWriter) error {
-	if c.ninjaBuildDir != nil {
-		err := nw.Assign("builddir", c.ninjaBuildDir.Value(c.pkgNames))
+	if c.outDir != nil {
+		err := nw.Assign("builddir", c.outDir.Value(c.pkgNames))
 		if err != nil {
 			return err
 		}
