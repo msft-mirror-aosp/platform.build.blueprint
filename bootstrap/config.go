@@ -88,38 +88,24 @@ type BootstrapConfig interface {
 
 	// Whether to compile Go code in such a way that it can be debugged
 	DebugCompilation() bool
-}
 
-type ConfigRemoveAbandonedFilesUnder interface {
-	// RemoveAbandonedFilesUnder should return two slices:
-	// - a slice of path prefixes that will be cleaned of files that are no
-	//   longer active targets, but are listed in the .ninja_log.
-	// - a slice of paths that are exempt from cleaning
-	RemoveAbandonedFilesUnder(buildDir string) (under, except []string)
+	// Whether to run tests for Go code
+	RunGoTests() bool
+
+	Subninjas() []string
+	PrimaryBuilderInvocations() []PrimaryBuilderInvocation
 }
 
 type StopBefore int
 
 const (
+	DoEverything                  StopBefore = 0
 	StopBeforePrepareBuildActions StopBefore = 1
 	StopBeforeWriteNinja          StopBefore = 2
 )
-
-type ConfigStopBefore interface {
-	StopBefore() StopBefore
-}
 
 type PrimaryBuilderInvocation struct {
 	Inputs  []string
 	Outputs []string
 	Args    []string
-}
-
-type Config struct {
-	subninjas []string
-
-	runGoTests     bool
-	useValidations bool
-
-	primaryBuilderInvocations []PrimaryBuilderInvocation
 }
