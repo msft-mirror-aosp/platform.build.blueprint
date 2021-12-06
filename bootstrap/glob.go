@@ -44,15 +44,16 @@ import (
 // in a build failure with a "missing and no known rule to make it" error.
 
 var (
-	globCmd = filepath.Join("$ToolDir", "bpglob")
+	_ = pctx.VariableFunc("globCmd", func(config interface{}) (string, error) {
+		return filepath.Join(config.(BootstrapConfig).SoongOutDir(), "bpglob"), nil
+	})
 
 	// globRule rule traverses directories to produce a list of files that match $glob
 	// and writes it to $out if it has changed, and writes the directories to $out.d
 	GlobRule = pctx.StaticRule("GlobRule",
 		blueprint.RuleParams{
-			Command: fmt.Sprintf(`%s -o $out -v %d $args`,
-				globCmd, pathtools.BPGlobArgumentVersion),
-			CommandDeps: []string{globCmd},
+			Command:     "$globCmd -o $out $args",
+			CommandDeps: []string{"$globCmd"},
 			Description: "glob",
 
 			Restat:  true,
