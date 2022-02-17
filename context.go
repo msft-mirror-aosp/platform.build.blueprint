@@ -102,7 +102,7 @@ type Context struct {
 	globalRules     map[Rule]*ruleDef
 
 	// set during PrepareBuildActions
-	ninjaBuildDir      ninjaString // The builddir special Ninja variable
+	outDir             ninjaString // The builddir special Ninja variable
 	requiredNinjaMajor int         // For the ninja_required_version variable
 	requiredNinjaMinor int         // For the ninja_required_version variable
 	requiredNinjaMicro int         // For the ninja_required_version variable
@@ -388,7 +388,7 @@ func newContext() *Context {
 		globs:              make(map[globKey]pathtools.GlobResult),
 		fs:                 pathtools.OsFs,
 		finishedMutators:   make(map[*mutatorInfo]bool),
-		ninjaBuildDir:      nil,
+		outDir:             nil,
 		requiredNinjaMajor: 1,
 		requiredNinjaMinor: 7,
 		requiredNinjaMicro: 0,
@@ -486,7 +486,7 @@ func (c *Context) RegisterModuleType(name string, factory ModuleFactory) {
 type SingletonFactory func() Singleton
 
 // RegisterSingletonType registers a singleton type that will be invoked to
-// generate build actions.  Each registered singleton type is instantiated and
+// generate build actions.  Each registered singleton type is instantiated
 // and invoked exactly once as part of the generate phase.  Each registered
 // singleton is invoked in registration order.
 //
@@ -686,6 +686,7 @@ func (c *Context) ListModulePaths(baseDir string) (paths []string, err error) {
 	if err != nil {
 		return nil, err
 	}
+	defer reader.Close()
 	bytes, err := ioutil.ReadAll(reader)
 	if err != nil {
 		return nil, err
@@ -1008,7 +1009,7 @@ func (c *Context) MockFileSystem(files map[string][]byte) {
 		// no module list file specified; find every file named Blueprints
 		pathsToParse := []string{}
 		for candidate := range files {
-			if filepath.Base(candidate) == "Blueprints" {
+			if filepath.Base(candidate) == "Android.bp" {
 				pathsToParse = append(pathsToParse, candidate)
 			}
 		}
@@ -1129,13 +1130,8 @@ func (c *Context) parseOne(rootDir, filename string, reader io.Reader,
 		}
 	}
 
-	subBlueprintsName, _, err := getStringFromScope(scope, "subname")
 	if err != nil {
 		errs = append(errs, err)
-	}
-
-	if subBlueprintsName == "" {
-		subBlueprintsName = "Blueprints"
 	}
 
 	var blueprints []string
@@ -1448,14 +1444,11 @@ func (c *Context) prettyPrintGroupVariants(group *moduleGroup) string {
 func newModule(factory ModuleFactory) *moduleInfo {
 	logicModule, properties := factory()
 
-	module := &moduleInfo{
+	return &moduleInfo{
 		logicModule: logicModule,
 		factory:     factory,
+		properties:  properties,
 	}
-
-	module.properties = properties
-
-	return module
 }
 
 func processModuleDef(moduleDef *parser.Module,
@@ -1818,9 +1811,9 @@ func (c *Context) addInterVariantDependency(origModule *moduleInfo, tag Dependen
 	return toInfo
 }
 
-// findBlueprintDescendants returns a map linking parent Blueprints files to child Blueprints files
-// For example, if paths = []string{"a/b/c/Android.bp", "a/Blueprints"},
-// then descendants = {"":[]string{"a/Blueprints"}, "a/Blueprints":[]string{"a/b/c/Android.bp"}}
+// findBlueprintDescendants returns a map linking parent Blueprint files to child Blueprints files
+// For example, if paths = []string{"a/b/c/Android.bp", "a/Android.bp"},
+// then descendants = {"":[]string{"a/Android.bp"}, "a/Android.bp":[]string{"a/b/c/Android.bp"}}
 func findBlueprintDescendants(paths []string) (descendants map[string][]string, err error) {
 	// make mapping from dir path to file path
 	filesByDir := make(map[string]string, len(paths))
@@ -2176,7 +2169,7 @@ func cycleError(cycle []*moduleInfo) (errs []error) {
 // additional fields based on the dependencies.  It builds a sorted list of modules
 // such that dependencies of a module always appear first, and populates reverse
 // dependency links and counts of total dependencies.  It also reports errors when
-// it encounters dependency cycles.  This should called after resolveDependencies,
+// it encounters dependency cycles.  This should be called after resolveDependencies,
 // as well as after any mutator pass has called addDependency
 func (c *Context) updateDependencies() (errs []error) {
 	c.cachedDepsModified = true
@@ -2281,11 +2274,12 @@ type jsonDep struct {
 	Tag string
 }
 
-type jsonModule struct {
+type JsonModule struct {
 	jsonModuleName
 	Deps      []jsonDep
 	Type      string
 	Blueprint string
+	Module    map[string]interface{}
 }
 
 func toJsonVariationMap(vm variationMap) jsonVariationMap {
@@ -2300,30 +2294,94 @@ func jsonModuleNameFromModuleInfo(m *moduleInfo) *jsonModuleName {
 	}
 }
 
-func jsonModuleFromModuleInfo(m *moduleInfo) *jsonModule {
-	return &jsonModule{
+type JSONDataSupplier interface {
+	AddJSONData(d *map[string]interface{})
+}
+
+func jsonModuleFromModuleInfo(m *moduleInfo) *JsonModule {
+	result := &JsonModule{
 		jsonModuleName: *jsonModuleNameFromModuleInfo(m),
 		Deps:           make([]jsonDep, 0),
 		Type:           m.typeName,
 		Blueprint:      m.relBlueprintsFile,
+		Module:         make(map[string]interface{}),
 	}
+	if j, ok := m.logicModule.(JSONDataSupplier); ok {
+		j.AddJSONData(&result.Module)
+	}
+	for _, p := range m.providers {
+		if j, ok := p.(JSONDataSupplier); ok {
+			j.AddJSONData(&result.Module)
+		}
+	}
+	return result
 }
 
-func (c *Context) PrintJSONGraph(w io.Writer) {
-	modules := make([]*jsonModule, 0)
+func jsonModuleWithActionsFromModuleInfo(m *moduleInfo) *JsonModule {
+	result := &JsonModule{
+		jsonModuleName: jsonModuleName{
+			Name: m.Name(),
+		},
+		Deps:      make([]jsonDep, 0),
+		Type:      m.typeName,
+		Blueprint: m.relBlueprintsFile,
+		Module:    make(map[string]interface{}),
+	}
+	var actions []map[string]interface{}
+	for _, bDef := range m.actionDefs.buildDefs {
+		actions = append(actions, map[string]interface{}{
+			"Inputs": append(
+				getNinjaStringsWithNilPkgNames(bDef.Inputs),
+				getNinjaStringsWithNilPkgNames(bDef.Implicits)...),
+			"Outputs": append(
+				getNinjaStringsWithNilPkgNames(bDef.Outputs),
+				getNinjaStringsWithNilPkgNames(bDef.ImplicitOutputs)...),
+		})
+	}
+	result.Module["Actions"] = actions
+	return result
+}
+
+// Gets a list of strings from the given list of ninjaStrings by invoking ninjaString.Value with
+// nil pkgNames on each of the input ninjaStrings.
+func getNinjaStringsWithNilPkgNames(nStrs []ninjaString) []string {
+	var strs []string
+	for _, nstr := range nStrs {
+		strs = append(strs, nstr.Value(nil))
+	}
+	return strs
+}
+
+// PrintJSONGraph prints info of modules in a JSON file.
+func (c *Context) PrintJSONGraphAndActions(wGraph io.Writer, wActions io.Writer) {
+	modulesToGraph := make([]*JsonModule, 0)
+	modulesToActions := make([]*JsonModule, 0)
 	for _, m := range c.modulesSorted {
 		jm := jsonModuleFromModuleInfo(m)
+		jmWithActions := jsonModuleWithActionsFromModuleInfo(m)
 		for _, d := range m.directDeps {
 			jm.Deps = append(jm.Deps, jsonDep{
 				jsonModuleName: *jsonModuleNameFromModuleInfo(d.module),
 				Tag:            fmt.Sprintf("%T %+v", d.tag, d.tag),
 			})
+			jmWithActions.Deps = append(jmWithActions.Deps, jsonDep{
+				jsonModuleName: jsonModuleName{
+					Name: d.module.Name(),
+				},
+			})
+
 		}
-
-		modules = append(modules, jm)
+		modulesToGraph = append(modulesToGraph, jm)
+		modulesToActions = append(modulesToActions, jmWithActions)
 	}
+	writeJson(wGraph, modulesToGraph)
+	writeJson(wActions, modulesToActions)
+}
 
-	json.NewEncoder(w).Encode(modules)
+func writeJson(w io.Writer, modules []*JsonModule) {
+	e := json.NewEncoder(w)
+	e.SetIndent("", "\t")
+	e.Encode(modules)
 }
 
 // PrepareBuildActions generates an internal representation of all the build
@@ -2373,8 +2431,8 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 		deps = append(deps, depsModules...)
 		deps = append(deps, depsSingletons...)
 
-		if c.ninjaBuildDir != nil {
-			err := c.liveGlobals.addNinjaStringDeps(c.ninjaBuildDir)
+		if c.outDir != nil {
+			err := c.liveGlobals.addNinjaStringDeps(c.outDir)
 			if err != nil {
 				errs = []error{err}
 				return
@@ -2800,8 +2858,9 @@ func (c *Context) generateModuleBuildActions(config interface{},
 		func(module *moduleInfo, pause chan<- pauseSpec) bool {
 			uniqueName := c.nameInterface.UniqueName(newNamespaceContext(module), module.group.name)
 			sanitizedName := toNinjaName(uniqueName)
+			sanitizedVariant := toNinjaName(module.variant.name)
 
-			prefix := moduleNamespacePrefix(sanitizedName + "_" + module.variant.name)
+			prefix := moduleNamespacePrefix(sanitizedName + "_" + sanitizedVariant)
 
 			// The parent scope of the moduleContext's local scope gets overridden to be that of the
 			// calling Go package on a per-call basis.  Since the initial parent scope doesn't matter we
@@ -3186,9 +3245,9 @@ func (c *Context) requireNinjaVersion(major, minor, micro int) {
 	}
 }
 
-func (c *Context) setNinjaBuildDir(value ninjaString) {
-	if c.ninjaBuildDir == nil {
-		c.ninjaBuildDir = value
+func (c *Context) setOutDir(value ninjaString) {
+	if c.outDir == nil {
+		c.outDir = value
 	}
 }
 
@@ -3380,9 +3439,9 @@ func (c *Context) AllTargets() (map[string]string, error) {
 	return targets, nil
 }
 
-func (c *Context) NinjaBuildDir() (string, error) {
-	if c.ninjaBuildDir != nil {
-		return c.ninjaBuildDir.Eval(c.globalVariables)
+func (c *Context) OutDir() (string, error) {
+	if c.outDir != nil {
+		return c.outDir.Eval(c.globalVariables)
 	} else {
 		return "", nil
 	}
@@ -3732,8 +3791,8 @@ func (c *Context) writeSubninjas(nw *ninjaWriter) error {
 }
 
 func (c *Context) writeBuildDir(nw *ninjaWriter) error {
-	if c.ninjaBuildDir != nil {
-		err := nw.Assign("builddir", c.ninjaBuildDir.Value(c.pkgNames))
+	if c.outDir != nil {
+		err := nw.Assign("builddir", c.outDir.Value(c.pkgNames))
 		if err != nil {
 			return err
 		}
