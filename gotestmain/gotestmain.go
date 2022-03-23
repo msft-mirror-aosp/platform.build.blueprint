@@ -38,11 +38,11 @@ var (
 )
 
 type data struct {
-	Package               string
-	Tests                 []string
-	Examples              []*doc.Example
-	HasMain               bool
-	MainStartTakesFuzzers bool
+	Package                 string
+	Tests                   []string
+	Examples                []*doc.Example
+	HasMain                 bool
+	MainStartTakesInterface bool
 }
 
 func findTests(srcs []string) (tests []string, examples []*doc.Example, hasMain bool) {
@@ -68,9 +68,10 @@ func findTests(srcs []string) (tests []string, examples []*doc.Example, hasMain 
 	return
 }
 
-// Returns true for go1.18+, where testing.MainStart takes an extra slice of fuzzers.
-func mainStartTakesFuzzers() bool {
-	return reflect.TypeOf(testing.MainStart).NumIn() > 4
+// Returns true for go1.8+, where testing.MainStart takes an interface instead of a function
+// as its first argument.
+func mainStartTakesInterface() bool {
+	return reflect.TypeOf(testing.MainStart).In(0).Kind() == reflect.Interface
 }
 
 func main() {
@@ -87,11 +88,11 @@ func main() {
 	tests, examples, hasMain := findTests(flag.Args())
 
 	d := data{
-		Package:               *pkg,
-		Tests:                 tests,
-		Examples:              examples,
-		HasMain:               hasMain,
-		MainStartTakesFuzzers: mainStartTakesFuzzers(),
+		Package:                 *pkg,
+		Tests:                   tests,
+		Examples:                examples,
+		HasMain:                 hasMain,
+		MainStartTakesInterface: mainStartTakesInterface(),
 	}
 
 	err := testMainTmpl.Execute(buf, d)
@@ -113,10 +114,8 @@ import (
 {{if not .HasMain}}
 	"os"
 {{end}}
-	"reflect"
 	"regexp"
 	"testing"
-	"time"
 
 	pkg "{{.Package}}"
 )
@@ -182,48 +181,11 @@ func (matchString) StopTestLog() error {
 	panic("shouldn't get here")
 }
 
-func (matchString) SetPanicOnExit0(bool) {
-	panic("shouldn't get here")
-}
-
-func (matchString) CoordinateFuzzing(time.Duration, int64, time.Duration, int64, int, []corpusEntry, []reflect.Type, string, string) error {
-	panic("shouldn't get here")
-}
-
-func (matchString) RunFuzzWorker(func(corpusEntry) error) error {
-	panic("shouldn't get here")
-}
-
-func (matchString) ReadCorpus(string, []reflect.Type) ([]corpusEntry, error) {
-	panic("shouldn't get here")
-}
-
-func (matchString) CheckCorpus([]interface{}, []reflect.Type) error {
-	panic("shouldn't get here")
-}
-
-func (matchString) ResetCoverage() {
-	panic("shouldn't get here")
-}
-
-func (matchString) SnapshotCoverage() {
-	panic("shouldn't get here")
-}
-
-type corpusEntry = struct {
-	Parent     string
-	Path       string
-	Data       []byte
-	Values     []interface{}
-	Generation int
-	IsSeed     bool
-}
-
 func main() {
-{{if .MainStartTakesFuzzers }}
-	m := testing.MainStart(matchString{}, t, nil, nil, e)
-{{else}}
+{{if .MainStartTakesInterface}}
 	m := testing.MainStart(matchString{}, t, nil, e)
+{{else}}
+	m := testing.MainStart(MatchString, t, nil, e)
 {{end}}
 {{if .HasMain}}
 	pkg.TestMain(m)
