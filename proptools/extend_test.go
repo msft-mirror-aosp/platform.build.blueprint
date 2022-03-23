@@ -23,9 +23,8 @@ import (
 )
 
 type appendPropertyTestCase struct {
-	name   string
-	dst    interface{}
-	src    interface{}
+	in1    interface{}
+	in2    interface{}
 	out    interface{}
 	order  Order // default is Append
 	filter ExtendPropertyFilterFunc
@@ -37,14 +36,14 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 		// Valid inputs
 
 		{
-			name: "Append bool",
-			dst: &struct{ B1, B2, B3, B4 bool }{
+			// Append bool
+			in1: &struct{ B1, B2, B3, B4 bool }{
 				B1: true,
 				B2: false,
 				B3: true,
 				B4: false,
 			},
-			src: &struct{ B1, B2, B3, B4 bool }{
+			in2: &struct{ B1, B2, B3, B4 bool }{
 				B1: true,
 				B2: true,
 				B3: false,
@@ -58,14 +57,14 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Prepend bool",
-			dst: &struct{ B1, B2, B3, B4 bool }{
+			// Prepend bool
+			in1: &struct{ B1, B2, B3, B4 bool }{
 				B1: true,
 				B2: false,
 				B3: true,
 				B4: false,
 			},
-			src: &struct{ B1, B2, B3, B4 bool }{
+			in2: &struct{ B1, B2, B3, B4 bool }{
 				B1: true,
 				B2: true,
 				B3: false,
@@ -80,11 +79,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Append strings",
-			dst: &struct{ S string }{
+			// Append strings
+			in1: &struct{ S string }{
 				S: "string1",
 			},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string2",
 			},
 			out: &struct{ S string }{
@@ -92,11 +91,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Prepend strings",
-			dst: &struct{ S string }{
+			// Prepend strings
+			in1: &struct{ S string }{
 				S: "string1",
 			},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string2",
 			},
 			out: &struct{ S string }{
@@ -105,8 +104,8 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Append pointer to bool",
-			dst: &struct{ B1, B2, B3, B4, B5, B6, B7, B8, B9 *bool }{
+			// Append pointer to bool
+			in1: &struct{ B1, B2, B3, B4, B5, B6, B7, B8, B9 *bool }{
 				B1: BoolPtr(true),
 				B2: BoolPtr(false),
 				B3: nil,
@@ -117,7 +116,7 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 				B8: BoolPtr(false),
 				B9: nil,
 			},
-			src: &struct{ B1, B2, B3, B4, B5, B6, B7, B8, B9 *bool }{
+			in2: &struct{ B1, B2, B3, B4, B5, B6, B7, B8, B9 *bool }{
 				B1: nil,
 				B2: nil,
 				B3: nil,
@@ -141,8 +140,8 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Prepend pointer to bool",
-			dst: &struct{ B1, B2, B3, B4, B5, B6, B7, B8, B9 *bool }{
+			// Prepend pointer to bool
+			in1: &struct{ B1, B2, B3, B4, B5, B6, B7, B8, B9 *bool }{
 				B1: BoolPtr(true),
 				B2: BoolPtr(false),
 				B3: nil,
@@ -153,7 +152,7 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 				B8: BoolPtr(false),
 				B9: nil,
 			},
-			src: &struct{ B1, B2, B3, B4, B5, B6, B7, B8, B9 *bool }{
+			in2: &struct{ B1, B2, B3, B4, B5, B6, B7, B8, B9 *bool }{
 				B1: nil,
 				B2: nil,
 				B3: nil,
@@ -178,8 +177,8 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Append pointer to integer",
-			dst: &struct{ I1, I2, I3, I4, I5, I6, I7, I8, I9 *int64 }{
+			// Append pointer to integer
+			in1: &struct{ I1, I2, I3, I4, I5, I6, I7, I8, I9 *int64 }{
 				I1: Int64Ptr(55),
 				I2: Int64Ptr(-3),
 				I3: nil,
@@ -190,7 +189,7 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 				I8: Int64Ptr(0),
 				I9: nil,
 			},
-			src: &struct{ I1, I2, I3, I4, I5, I6, I7, I8, I9 *int64 }{
+			in2: &struct{ I1, I2, I3, I4, I5, I6, I7, I8, I9 *int64 }{
 				I1: nil,
 				I2: nil,
 				I3: nil,
@@ -214,12 +213,12 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Prepend pointer to integer",
-			dst: &struct{ I1, I2, I3 *int64 }{
+			// Prepend pointer to integer
+			in1: &struct{ I1, I2, I3 *int64 }{
 				I1: Int64Ptr(55),
 				I3: nil,
 			},
-			src: &struct{ I1, I2, I3 *int64 }{
+			in2: &struct{ I1, I2, I3 *int64 }{
 				I2: Int64Ptr(33),
 			},
 			out: &struct{ I1, I2, I3 *int64 }{
@@ -230,12 +229,12 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Append pointer to strings",
-			dst: &struct{ S1, S2, S3, S4 *string }{
+			// Append pointer to strings
+			in1: &struct{ S1, S2, S3, S4 *string }{
 				S1: StringPtr("string1"),
 				S2: StringPtr("string2"),
 			},
-			src: &struct{ S1, S2, S3, S4 *string }{
+			in2: &struct{ S1, S2, S3, S4 *string }{
 				S1: StringPtr("string3"),
 				S3: StringPtr("string4"),
 			},
@@ -247,12 +246,12 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Prepend pointer to strings",
-			dst: &struct{ S1, S2, S3, S4 *string }{
+			// Prepend pointer to strings
+			in1: &struct{ S1, S2, S3, S4 *string }{
 				S1: StringPtr("string1"),
 				S2: StringPtr("string2"),
 			},
-			src: &struct{ S1, S2, S3, S4 *string }{
+			in2: &struct{ S1, S2, S3, S4 *string }{
 				S1: StringPtr("string3"),
 				S3: StringPtr("string4"),
 			},
@@ -265,11 +264,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Append slice",
-			dst: &struct{ S []string }{
+			// Append slice
+			in1: &struct{ S []string }{
 				S: []string{"string1"},
 			},
-			src: &struct{ S []string }{
+			in2: &struct{ S []string }{
 				S: []string{"string2"},
 			},
 			out: &struct{ S []string }{
@@ -277,11 +276,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Prepend slice",
-			dst: &struct{ S []string }{
+			// Prepend slice
+			in1: &struct{ S []string }{
 				S: []string{"string1"},
 			},
-			src: &struct{ S []string }{
+			in2: &struct{ S []string }{
 				S: []string{"string2"},
 			},
 			out: &struct{ S []string }{
@@ -290,11 +289,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Replace slice",
-			dst: &struct{ S []string }{
+			// Replace slice
+			in1: &struct{ S []string }{
 				S: []string{"string1"},
 			},
-			src: &struct{ S []string }{
+			in2: &struct{ S []string }{
 				S: []string{"string2"},
 			},
 			out: &struct{ S []string }{
@@ -303,12 +302,12 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Replace,
 		},
 		{
-			name: "Append empty slice",
-			dst: &struct{ S1, S2 []string }{
+			// Append empty slice
+			in1: &struct{ S1, S2 []string }{
 				S1: []string{"string1"},
 				S2: []string{},
 			},
-			src: &struct{ S1, S2 []string }{
+			in2: &struct{ S1, S2 []string }{
 				S1: []string{},
 				S2: []string{"string2"},
 			},
@@ -318,12 +317,12 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Prepend empty slice",
-			dst: &struct{ S1, S2 []string }{
+			// Prepend empty slice
+			in1: &struct{ S1, S2 []string }{
 				S1: []string{"string1"},
 				S2: []string{},
 			},
-			src: &struct{ S1, S2 []string }{
+			in2: &struct{ S1, S2 []string }{
 				S1: []string{},
 				S2: []string{"string2"},
 			},
@@ -334,12 +333,12 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Replace empty slice",
-			dst: &struct{ S1, S2 []string }{
+			// Replace empty slice
+			in1: &struct{ S1, S2 []string }{
 				S1: []string{"string1"},
 				S2: []string{},
 			},
-			src: &struct{ S1, S2 []string }{
+			in2: &struct{ S1, S2 []string }{
 				S1: []string{},
 				S2: []string{"string2"},
 			},
@@ -350,11 +349,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Replace,
 		},
 		{
-			name: "Append nil slice",
-			dst: &struct{ S1, S2, S3 []string }{
+			// Append nil slice
+			in1: &struct{ S1, S2, S3 []string }{
 				S1: []string{"string1"},
 			},
-			src: &struct{ S1, S2, S3 []string }{
+			in2: &struct{ S1, S2, S3 []string }{
 				S2: []string{"string2"},
 			},
 			out: &struct{ S1, S2, S3 []string }{
@@ -364,11 +363,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Prepend nil slice",
-			dst: &struct{ S1, S2, S3 []string }{
+			// Prepend nil slice
+			in1: &struct{ S1, S2, S3 []string }{
 				S1: []string{"string1"},
 			},
-			src: &struct{ S1, S2, S3 []string }{
+			in2: &struct{ S1, S2, S3 []string }{
 				S2: []string{"string2"},
 			},
 			out: &struct{ S1, S2, S3 []string }{
@@ -379,11 +378,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Replace nil slice",
-			dst: &struct{ S1, S2, S3 []string }{
+			// Replace nil slice
+			in1: &struct{ S1, S2, S3 []string }{
 				S1: []string{"string1"},
 			},
-			src: &struct{ S1, S2, S3 []string }{
+			in2: &struct{ S1, S2, S3 []string }{
 				S2: []string{"string2"},
 			},
 			out: &struct{ S1, S2, S3 []string }{
@@ -394,13 +393,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Replace,
 		},
 		{
-			name: "Replace embedded slice",
-			dst: &struct{ S *struct{ S1 []string } }{
+			// Replace embedded slice
+			in1: &struct{ S *struct{ S1 []string } }{
 				S: &struct{ S1 []string }{
 					S1: []string{"string1"},
 				},
 			},
-			src: &struct{ S *struct{ S1 []string } }{
+			in2: &struct{ S *struct{ S1 []string } }{
 				S: &struct{ S1 []string }{
 					S1: []string{"string2"},
 				},
@@ -413,13 +412,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Replace,
 		},
 		{
-			name: "Append slice of structs",
-			dst: &struct{ S []struct{ F string } }{
+			// Append slice of structs
+			in1: &struct{ S []struct{ F string } }{
 				S: []struct{ F string }{
 					{F: "foo"}, {F: "bar"},
 				},
 			},
-			src: &struct{ S []struct{ F string } }{
+			in2: &struct{ S []struct{ F string } }{
 				S: []struct{ F string }{
 					{F: "baz"},
 				},
@@ -432,13 +431,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Append,
 		},
 		{
-			name: "Prepend slice of structs",
-			dst: &struct{ S []struct{ F string } }{
+			// Prepend slice of structs
+			in1: &struct{ S []struct{ F string } }{
 				S: []struct{ F string }{
 					{F: "foo"}, {F: "bar"},
 				},
 			},
-			src: &struct{ S []struct{ F string } }{
+			in2: &struct{ S []struct{ F string } }{
 				S: []struct{ F string }{
 					{F: "baz"},
 				},
@@ -451,181 +450,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Append map",
-			dst: &struct{ S map[string]string }{
-				S: map[string]string{
-					"key0": "",
-					"key1": "dst_value1",
-					"key2": "dst_value2",
-				},
-			},
-			src: &struct{ S map[string]string }{
-				S: map[string]string{
-					"key0": "src_value0",
-					"key1": "src_value1",
-					"key3": "src_value3",
-				},
-			},
-			out: &struct{ S map[string]string }{
-				S: map[string]string{
-					"key0": "src_value0",
-					"key1": "src_value1",
-					"key2": "dst_value2",
-					"key3": "src_value3",
-				},
-			},
-			order: Append,
-		},
-		{
-			name: "Prepend map",
-			dst: &struct{ S map[string]string }{
-				S: map[string]string{
-					"key0": "",
-					"key1": "dst_value1",
-					"key2": "dst_value2",
-				},
-			},
-			src: &struct{ S map[string]string }{
-				S: map[string]string{
-					"key0": "src_value0",
-					"key1": "src_value1",
-					"key3": "src_value3",
-				},
-			},
-			out: &struct{ S map[string]string }{
-				S: map[string]string{
-					"key0": "",
-					"key1": "dst_value1",
-					"key2": "dst_value2",
-					"key3": "src_value3",
-				},
-			},
-			order: Prepend,
-		},
-		{
-			name: "Replace map",
-			dst: &struct{ S map[string]string }{
-				S: map[string]string{
-					"key0": "",
-					"key1": "dst_value1",
-					"key2": "dst_value2",
-				},
-			},
-			src: &struct{ S map[string]string }{
-				S: map[string]string{
-					"key0": "src_value0",
-					"key1": "src_value1",
-					"key3": "src_value3",
-				},
-			},
-			out: &struct{ S map[string]string }{
-				S: map[string]string{
-					"key0": "src_value0",
-					"key1": "src_value1",
-					"key3": "src_value3",
-				},
-			},
-			order: Replace,
-		},
-		{
-			name: "Append empty map",
-			dst: &struct{ S1, S2 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-				S2: map[string]string{},
-			},
-			src: &struct{ S1, S2 map[string]string }{
-				S1: map[string]string{},
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			out: &struct{ S1, S2 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			order: Append,
-		},
-		{
-			name: "Prepend empty map",
-			dst: &struct{ S1, S2 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-				S2: map[string]string{},
-			},
-			src: &struct{ S1, S2 map[string]string }{
-				S1: map[string]string{},
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			out: &struct{ S1, S2 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			order: Prepend,
-		},
-		{
-			name: "Replace empty map",
-			dst: &struct{ S1, S2 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-				S2: map[string]string{},
-			},
-			src: &struct{ S1, S2 map[string]string }{
-				S1: map[string]string{},
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			out: &struct{ S1, S2 map[string]string }{
-				S1: map[string]string{},
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			order: Replace,
-		},
-		{
-			name: "Append nil map",
-			dst: &struct{ S1, S2, S3 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-			},
-			src: &struct{ S1, S2, S3 map[string]string }{
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			out: &struct{ S1, S2, S3 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			order: Append,
-		},
-		{
-			name: "Prepend nil map",
-			dst: &struct{ S1, S2, S3 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-			},
-			src: &struct{ S1, S2, S3 map[string]string }{
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			out: &struct{ S1, S2, S3 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			order: Prepend,
-		},
-		{
-			name: "Replace nil map",
-			dst: &struct{ S1, S2, S3 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-			},
-			src: &struct{ S1, S2, S3 map[string]string }{
-				S2: map[string]string{"key0": "src_value0"},
-			},
-			out: &struct{ S1, S2, S3 map[string]string }{
-				S1: map[string]string{"key0": "dst_value0"},
-				S2: map[string]string{"key0": "src_value0"},
-				S3: nil,
-			},
-			order: Replace,
-		},
-		{
-			name: "Replace slice of structs",
-			dst: &struct{ S []struct{ F string } }{
+			// Replace slice of structs
+			in1: &struct{ S []struct{ F string } }{
 				S: []struct{ F string }{
 					{F: "foo"}, {F: "bar"},
 				},
 			},
-			src: &struct{ S []struct{ F string } }{
+			in2: &struct{ S []struct{ F string } }{
 				S: []struct{ F string }{
 					{F: "baz"},
 				},
@@ -638,13 +469,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Replace,
 		},
 		{
-			name: "Append pointer",
-			dst: &struct{ S *struct{ S string } }{
+			// Append pointer
+			in1: &struct{ S *struct{ S string } }{
 				S: &struct{ S string }{
 					S: "string1",
 				},
 			},
-			src: &struct{ S *struct{ S string } }{
+			in2: &struct{ S *struct{ S string } }{
 				S: &struct{ S string }{
 					S: "string2",
 				},
@@ -656,13 +487,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Prepend pointer",
-			dst: &struct{ S *struct{ S string } }{
+			// Prepend pointer
+			in1: &struct{ S *struct{ S string } }{
 				S: &struct{ S string }{
 					S: "string1",
 				},
 			},
-			src: &struct{ S *struct{ S string } }{
+			in2: &struct{ S *struct{ S string } }{
 				S: &struct{ S string }{
 					S: "string2",
 				},
@@ -675,13 +506,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Append interface",
-			dst: &struct{ S interface{} }{
+			// Append interface
+			in1: &struct{ S interface{} }{
 				S: &struct{ S string }{
 					S: "string1",
 				},
 			},
-			src: &struct{ S interface{} }{
+			in2: &struct{ S interface{} }{
 				S: &struct{ S string }{
 					S: "string2",
 				},
@@ -693,13 +524,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Prepend interface",
-			dst: &struct{ S interface{} }{
+			// Prepend interface
+			in1: &struct{ S interface{} }{
 				S: &struct{ S string }{
 					S: "string1",
 				},
 			},
-			src: &struct{ S interface{} }{
+			in2: &struct{ S interface{} }{
 				S: &struct{ S string }{
 					S: "string2",
 				},
@@ -712,11 +543,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Unexported field",
-			dst: &struct{ s string }{
+			// Unexported field
+			in1: &struct{ s string }{
 				s: "string1",
 			},
-			src: &struct{ s string }{
+			in2: &struct{ s string }{
 				s: "string2",
 			},
 			out: &struct{ s string }{
@@ -724,11 +555,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Unexported field",
-			dst: &struct{ i *int64 }{
+			// Unexported field
+			in1: &struct{ i *int64 }{
 				i: Int64Ptr(33),
 			},
-			src: &struct{ i *int64 }{
+			in2: &struct{ i *int64 }{
 				i: Int64Ptr(5),
 			},
 			out: &struct{ i *int64 }{
@@ -736,17 +567,17 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Empty struct",
-			dst:  &struct{}{},
-			src:  &struct{}{},
-			out:  &struct{}{},
+			// Empty struct
+			in1: &struct{}{},
+			in2: &struct{}{},
+			out: &struct{}{},
 		},
 		{
-			name: "Interface nil",
-			dst: &struct{ S interface{} }{
+			// Interface nil
+			in1: &struct{ S interface{} }{
 				S: nil,
 			},
-			src: &struct{ S interface{} }{
+			in2: &struct{ S interface{} }{
 				S: nil,
 			},
 			out: &struct{ S interface{} }{
@@ -754,11 +585,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Pointer nil",
-			dst: &struct{ S *struct{} }{
+			// Pointer nil
+			in1: &struct{ S *struct{} }{
 				S: nil,
 			},
-			src: &struct{ S *struct{} }{
+			in2: &struct{ S *struct{} }{
 				S: nil,
 			},
 			out: &struct{ S *struct{} }{
@@ -766,8 +597,8 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Anonymous struct",
-			dst: &struct {
+			// Anonymous struct
+			in1: &struct {
 				EmbeddedStruct
 				Nested struct{ EmbeddedStruct }
 			}{
@@ -782,7 +613,7 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 					},
 				},
 			},
-			src: &struct {
+			in2: &struct {
 				EmbeddedStruct
 				Nested struct{ EmbeddedStruct }
 			}{
@@ -814,56 +645,8 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "BlueprintEmbed struct",
-			dst: &struct {
-				BlueprintEmbed EmbeddedStruct
-				Nested         struct{ BlueprintEmbed EmbeddedStruct }
-			}{
-				BlueprintEmbed: EmbeddedStruct{
-					S: "string1",
-					I: Int64Ptr(55),
-				},
-				Nested: struct{ BlueprintEmbed EmbeddedStruct }{
-					BlueprintEmbed: EmbeddedStruct{
-						S: "string2",
-						I: Int64Ptr(-4),
-					},
-				},
-			},
-			src: &struct {
-				BlueprintEmbed EmbeddedStruct
-				Nested         struct{ BlueprintEmbed EmbeddedStruct }
-			}{
-				BlueprintEmbed: EmbeddedStruct{
-					S: "string3",
-					I: Int64Ptr(66),
-				},
-				Nested: struct{ BlueprintEmbed EmbeddedStruct }{
-					BlueprintEmbed: EmbeddedStruct{
-						S: "string4",
-						I: Int64Ptr(-8),
-					},
-				},
-			},
-			out: &struct {
-				BlueprintEmbed EmbeddedStruct
-				Nested         struct{ BlueprintEmbed EmbeddedStruct }
-			}{
-				BlueprintEmbed: EmbeddedStruct{
-					S: "string1string3",
-					I: Int64Ptr(66),
-				},
-				Nested: struct{ BlueprintEmbed EmbeddedStruct }{
-					BlueprintEmbed: EmbeddedStruct{
-						S: "string2string4",
-						I: Int64Ptr(-8),
-					},
-				},
-			},
-		},
-		{
-			name: "Anonymous interface",
-			dst: &struct {
+			// Anonymous interface
+			in1: &struct {
 				EmbeddedInterface
 				Nested struct{ EmbeddedInterface }
 			}{
@@ -884,7 +667,7 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 					},
 				},
 			},
-			src: &struct {
+			in2: &struct {
 				EmbeddedInterface
 				Nested struct{ EmbeddedInterface }
 			}{
@@ -928,13 +711,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Nil pointer to a struct",
-			dst: &struct {
+			// Nil pointer to a struct
+			in1: &struct {
 				Nested *struct {
 					S string
 				}
 			}{},
-			src: &struct {
+			in2: &struct {
 				Nested *struct {
 					S string
 				}
@@ -958,13 +741,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Nil pointer to a struct in an interface",
-			dst: &struct {
+			// Nil pointer to a struct in an interface
+			in1: &struct {
 				Nested interface{}
 			}{
 				Nested: (*struct{ S string })(nil),
 			},
-			src: &struct {
+			in2: &struct {
 				Nested interface{}
 			}{
 				Nested: &struct {
@@ -984,13 +767,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Interface src nil",
-			dst: &struct{ S interface{} }{
+			// Interface src nil
+			in1: &struct{ S interface{} }{
 				S: &struct{ S string }{
 					S: "string1",
 				},
 			},
-			src: &struct{ S interface{} }{
+			in2: &struct{ S interface{} }{
 				S: nil,
 			},
 			out: &struct{ S interface{} }{
@@ -1003,39 +786,39 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 		// Errors
 
 		{
-			name: "Non-pointer dst",
-			dst:  struct{}{},
-			src:  &struct{}{},
-			err:  errors.New("expected pointer to struct, got struct {}"),
-			out:  struct{}{},
+			// Non-pointer in1
+			in1: struct{}{},
+			in2: &struct{}{},
+			err: errors.New("expected pointer to struct, got struct {}"),
+			out: struct{}{},
 		},
 		{
-			name: "Non-pointer src",
-			dst:  &struct{}{},
-			src:  struct{}{},
-			err:  errors.New("expected pointer to struct, got struct {}"),
-			out:  &struct{}{},
+			// Non-pointer in2
+			in1: &struct{}{},
+			in2: struct{}{},
+			err: errors.New("expected pointer to struct, got struct {}"),
+			out: &struct{}{},
 		},
 		{
-			name: "Non-struct dst",
-			dst:  &[]string{"bad"},
-			src:  &struct{}{},
-			err:  errors.New("expected pointer to struct, got *[]string"),
-			out:  &[]string{"bad"},
+			// Non-struct in1
+			in1: &[]string{"bad"},
+			in2: &struct{}{},
+			err: errors.New("expected pointer to struct, got *[]string"),
+			out: &[]string{"bad"},
 		},
 		{
-			name: "Non-struct src",
-			dst:  &struct{}{},
-			src:  &[]string{"bad"},
-			err:  errors.New("expected pointer to struct, got *[]string"),
-			out:  &struct{}{},
+			// Non-struct in2
+			in1: &struct{}{},
+			in2: &[]string{"bad"},
+			err: errors.New("expected pointer to struct, got *[]string"),
+			out: &struct{}{},
 		},
 		{
-			name: "Mismatched types",
-			dst: &struct{ A string }{
+			// Mismatched types
+			in1: &struct{ A string }{
 				A: "string1",
 			},
-			src: &struct{ B string }{
+			in2: &struct{ B string }{
 				B: "string2",
 			},
 			out: &struct{ A string }{
@@ -1044,11 +827,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			err: errors.New("expected matching types for dst and src, got *struct { A string } and *struct { B string }"),
 		},
 		{
-			name: "Unsupported kind",
-			dst: &struct{ I int }{
+			// Unsupported kind
+			in1: &struct{ I int }{
 				I: 1,
 			},
-			src: &struct{ I int }{
+			in2: &struct{ I int }{
 				I: 2,
 			},
 			out: &struct{ I int }{
@@ -1057,11 +840,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			err: extendPropertyErrorf("i", "unsupported kind int"),
 		},
 		{
-			name: "Unsupported kind",
-			dst: &struct{ I int64 }{
+			// Unsupported kind
+			in1: &struct{ I int64 }{
 				I: 1,
 			},
-			src: &struct{ I int64 }{
+			in2: &struct{ I int64 }{
 				I: 2,
 			},
 			out: &struct{ I int64 }{
@@ -1070,11 +853,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			err: extendPropertyErrorf("i", "unsupported kind int64"),
 		},
 		{
-			name: "Interface nilitude mismatch",
-			dst: &struct{ S interface{} }{
+			// Interface nilitude mismatch
+			in1: &struct{ S interface{} }{
 				S: nil,
 			},
-			src: &struct{ S interface{} }{
+			in2: &struct{ S interface{} }{
 				S: &struct{ S string }{
 					S: "string1",
 				},
@@ -1085,13 +868,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			err: extendPropertyErrorf("s", "nilitude mismatch"),
 		},
 		{
-			name: "Interface type mismatch",
-			dst: &struct{ S interface{} }{
+			// Interface type mismatch
+			in1: &struct{ S interface{} }{
 				S: &struct{ A string }{
 					A: "string1",
 				},
 			},
-			src: &struct{ S interface{} }{
+			in2: &struct{ S interface{} }{
 				S: &struct{ B string }{
 					B: "string2",
 				},
@@ -1104,13 +887,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			err: extendPropertyErrorf("s", "mismatched types struct { A string } and struct { B string }"),
 		},
 		{
-			name: "Interface not a pointer",
-			dst: &struct{ S interface{} }{
+			// Interface not a pointer
+			in1: &struct{ S interface{} }{
 				S: struct{ S string }{
 					S: "string1",
 				},
 			},
-			src: &struct{ S interface{} }{
+			in2: &struct{ S interface{} }{
 				S: struct{ S string }{
 					S: "string2",
 				},
@@ -1123,11 +906,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			err: extendPropertyErrorf("s", "interface not a pointer"),
 		},
 		{
-			name: "Pointer not a struct",
-			dst: &struct{ S *[]string }{
+			// Pointer not a struct
+			in1: &struct{ S *[]string }{
 				S: &[]string{"string1"},
 			},
-			src: &struct{ S *[]string }{
+			in2: &struct{ S *[]string }{
 				S: &[]string{"string2"},
 			},
 			out: &struct{ S *[]string }{
@@ -1136,13 +919,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			err: extendPropertyErrorf("s", "pointer is a slice"),
 		},
 		{
-			name: "Error in nested struct",
-			dst: &struct{ S interface{} }{
+			// Error in nested struct
+			in1: &struct{ S interface{} }{
 				S: &struct{ I int }{
 					I: 1,
 				},
 			},
-			src: &struct{ S interface{} }{
+			in2: &struct{ S interface{} }{
 				S: &struct{ I int }{
 					I: 2,
 				},
@@ -1158,11 +941,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 		// Filters
 
 		{
-			name: "Filter true",
-			dst: &struct{ S string }{
+			// Filter true
+			in1: &struct{ S string }{
 				S: "string1",
 			},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string2",
 			},
 			out: &struct{ S string }{
@@ -1175,11 +958,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Filter false",
-			dst: &struct{ S string }{
+			// Filter false
+			in1: &struct{ S string }{
 				S: "string1",
 			},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string2",
 			},
 			out: &struct{ S string }{
@@ -1192,11 +975,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Filter check args",
-			dst: &struct{ S string }{
+			// Filter check args
+			in1: &struct{ S string }{
 				S: "string1",
 			},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string2",
 			},
 			out: &struct{ S string }{
@@ -1211,13 +994,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Filter mutated",
-			dst: &struct {
+			// Filter mutated
+			in1: &struct {
 				S string `blueprint:"mutated"`
 			}{
 				S: "string1",
 			},
-			src: &struct {
+			in2: &struct {
 				S string `blueprint:"mutated"`
 			}{
 				S: "string2",
@@ -1229,13 +1012,13 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Filter mutated",
-			dst: &struct {
+			// Filter mutated
+			in1: &struct {
 				S *int64 `blueprint:"mutated"`
 			}{
 				S: Int64Ptr(4),
 			},
-			src: &struct {
+			in2: &struct {
 				S *int64 `blueprint:"mutated"`
 			}{
 				S: Int64Ptr(5),
@@ -1247,11 +1030,11 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 			},
 		},
 		{
-			name: "Filter error",
-			dst: &struct{ S string }{
+			// Filter error
+			in1: &struct{ S string }{
 				S: "string1",
 			},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string2",
 			},
 			out: &struct{ S string }{
@@ -1269,71 +1052,68 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 
 func TestAppendProperties(t *testing.T) {
 	for _, testCase := range appendPropertiesTestCases() {
-		t.Run(testCase.name, func(t *testing.T) {
+		testString := fmt.Sprintf("%v, %v -> %v", testCase.in1, testCase.in2, testCase.out)
 
-			got := testCase.dst
-			var err error
-			var testType string
+		got := testCase.in1
+		var err error
+		var testType string
 
-			switch testCase.order {
-			case Append:
-				testType = "append"
-				err = AppendProperties(got, testCase.src, testCase.filter)
-			case Prepend:
-				testType = "prepend"
-				err = PrependProperties(got, testCase.src, testCase.filter)
-			case Replace:
-				testType = "replace"
-				err = ExtendProperties(got, testCase.src, testCase.filter, OrderReplace)
-			}
+		switch testCase.order {
+		case Append:
+			testType = "append"
+			err = AppendProperties(got, testCase.in2, testCase.filter)
+		case Prepend:
+			testType = "prepend"
+			err = PrependProperties(got, testCase.in2, testCase.filter)
+		case Replace:
+			testType = "replace"
+			err = ExtendProperties(got, testCase.in2, testCase.filter, OrderReplace)
+		}
 
-			check(t, testType, testCase.name, got, err, testCase.out, testCase.err)
-		})
+		check(t, testType, testString, got, err, testCase.out, testCase.err)
 	}
 }
 
 func TestExtendProperties(t *testing.T) {
 	for _, testCase := range appendPropertiesTestCases() {
-		t.Run(testCase.name, func(t *testing.T) {
+		testString := fmt.Sprintf("%v, %v -> %v", testCase.in1, testCase.in2, testCase.out)
 
-			got := testCase.dst
-			var err error
-			var testType string
+		got := testCase.in1
+		var err error
+		var testType string
 
-			order := func(property string,
-				dstField, srcField reflect.StructField,
-				dstValue, srcValue interface{}) (Order, error) {
-				switch testCase.order {
-				case Append:
-					return Append, nil
-				case Prepend:
-					return Prepend, nil
-				case Replace:
-					return Replace, nil
-				}
-				return Append, errors.New("unknown order")
-			}
-
+		order := func(property string,
+			dstField, srcField reflect.StructField,
+			dstValue, srcValue interface{}) (Order, error) {
 			switch testCase.order {
 			case Append:
-				testType = "prepend"
+				return Append, nil
 			case Prepend:
-				testType = "append"
+				return Prepend, nil
 			case Replace:
-				testType = "replace"
+				return Replace, nil
 			}
+			return Append, errors.New("unknown order")
+		}
 
-			err = ExtendProperties(got, testCase.src, testCase.filter, order)
+		switch testCase.order {
+		case Append:
+			testType = "prepend"
+		case Prepend:
+			testType = "append"
+		case Replace:
+			testType = "replace"
+		}
 
-			check(t, testType, testCase.name, got, err, testCase.out, testCase.err)
-		})
+		err = ExtendProperties(got, testCase.in2, testCase.filter, order)
+
+		check(t, testType, testString, got, err, testCase.out, testCase.err)
 	}
 }
 
 type appendMatchingPropertiesTestCase struct {
-	name   string
-	dst    []interface{}
-	src    interface{}
+	in1    []interface{}
+	in2    interface{}
 	out    []interface{}
 	order  Order // default is Append
 	filter ExtendPropertyFilterFunc
@@ -1343,11 +1123,11 @@ type appendMatchingPropertiesTestCase struct {
 func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 	return []appendMatchingPropertiesTestCase{
 		{
-			name: "Append strings",
-			dst: []interface{}{&struct{ S string }{
+			// Append strings
+			in1: []interface{}{&struct{ S string }{
 				S: "string1",
 			}},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string2",
 			},
 			out: []interface{}{&struct{ S string }{
@@ -1355,11 +1135,11 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			}},
 		},
 		{
-			name: "Prepend strings",
-			dst: []interface{}{&struct{ S string }{
+			// Prepend strings
+			in1: []interface{}{&struct{ S string }{
 				S: "string1",
 			}},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string2",
 			},
 			out: []interface{}{&struct{ S string }{
@@ -1368,8 +1148,8 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			order: Prepend,
 		},
 		{
-			name: "Append all",
-			dst: []interface{}{
+			// Append all
+			in1: []interface{}{
 				&struct{ S, A string }{
 					S: "string1",
 				},
@@ -1377,7 +1157,7 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 					S: "string2",
 				},
 			},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string3",
 			},
 			out: []interface{}{
@@ -1390,14 +1170,14 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			},
 		},
 		{
-			name: "Append some",
-			dst: []interface{}{
+			// Append some
+			in1: []interface{}{
 				&struct{ S, A string }{
 					S: "string1",
 				},
 				&struct{ B string }{},
 			},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string2",
 			},
 			out: []interface{}{
@@ -1408,11 +1188,11 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			},
 		},
 		{
-			name: "Append mismatched structs",
-			dst: []interface{}{&struct{ S, A string }{
+			// Append mismatched structs
+			in1: []interface{}{&struct{ S, A string }{
 				S: "string1",
 			}},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string2",
 			},
 			out: []interface{}{&struct{ S, A string }{
@@ -1420,13 +1200,13 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			}},
 		},
 		{
-			name: "Append mismatched pointer structs",
-			dst: []interface{}{&struct{ S *struct{ S, A string } }{
+			// Append mismatched pointer structs
+			in1: []interface{}{&struct{ S *struct{ S, A string } }{
 				S: &struct{ S, A string }{
 					S: "string1",
 				},
 			}},
-			src: &struct{ S *struct{ S string } }{
+			in2: &struct{ S *struct{ S string } }{
 				S: &struct{ S string }{
 					S: "string2",
 				},
@@ -1438,8 +1218,8 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			}},
 		},
 		{
-			name: "Append through mismatched types",
-			dst: []interface{}{
+			// Append through mismatched types
+			in1: []interface{}{
 				&struct{ B string }{},
 				&struct{ S interface{} }{
 					S: &struct{ S, A string }{
@@ -1447,7 +1227,7 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 					},
 				},
 			},
-			src: &struct{ S struct{ S string } }{
+			in2: &struct{ S struct{ S string } }{
 				S: struct{ S string }{
 					S: "string2",
 				},
@@ -1462,14 +1242,14 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			},
 		},
 		{
-			name: "Append through mismatched types and nil",
-			dst: []interface{}{
+			// Append through mismatched types and nil
+			in1: []interface{}{
 				&struct{ B string }{},
 				&struct{ S interface{} }{
 					S: (*struct{ S, A string })(nil),
 				},
 			},
-			src: &struct{ S struct{ S string } }{
+			in2: &struct{ S struct{ S string } }{
 				S: struct{ S string }{
 					S: "string2",
 				},
@@ -1484,8 +1264,8 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			},
 		},
 		{
-			name: "Append through multiple matches",
-			dst: []interface{}{
+			// Append through multiple matches
+			in1: []interface{}{
 				&struct {
 					S struct{ S, A string }
 				}{
@@ -1501,7 +1281,7 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 					},
 				},
 			},
-			src: &struct{ S struct{ B string } }{
+			in2: &struct{ S struct{ B string } }{
 				S: struct{ B string }{
 					B: "string3",
 				},
@@ -1524,168 +1304,44 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 				},
 			},
 		},
-		{
-			name: "Append through embedded struct",
-			dst: []interface{}{
-				&struct{ B string }{},
-				&struct{ EmbeddedStruct }{
-					EmbeddedStruct: EmbeddedStruct{
-						S: "string1",
-					},
-				},
-			},
-			src: &struct{ S string }{
-				S: "string2",
-			},
-			out: []interface{}{
-				&struct{ B string }{},
-				&struct{ EmbeddedStruct }{
-					EmbeddedStruct: EmbeddedStruct{
-						S: "string1string2",
-					},
-				},
-			},
-		},
-		{
-			name: "Append through BlueprintEmbed struct",
-			dst: []interface{}{
-				&struct{ B string }{},
-				&struct{ BlueprintEmbed EmbeddedStruct }{
-					BlueprintEmbed: EmbeddedStruct{
-						S: "string1",
-					},
-				},
-			},
-			src: &struct{ S string }{
-				S: "string2",
-			},
-			out: []interface{}{
-				&struct{ B string }{},
-				&struct{ BlueprintEmbed EmbeddedStruct }{
-					BlueprintEmbed: EmbeddedStruct{
-						S: "string1string2",
-					},
-				},
-			},
-		},
-		{
-			name: "Append through embedded pointer to struct",
-			dst: []interface{}{
-				&struct{ B string }{},
-				&struct{ *EmbeddedStruct }{
-					EmbeddedStruct: &EmbeddedStruct{
-						S: "string1",
-					},
-				},
-			},
-			src: &struct{ S string }{
-				S: "string2",
-			},
-			out: []interface{}{
-				&struct{ B string }{},
-				&struct{ *EmbeddedStruct }{
-					EmbeddedStruct: &EmbeddedStruct{
-						S: "string1string2",
-					},
-				},
-			},
-		},
-		{
-			name: "Append through BlueprintEmbed pointer to struct",
-			dst: []interface{}{
-				&struct{ B string }{},
-				&struct{ BlueprintEmbed *EmbeddedStruct }{
-					BlueprintEmbed: &EmbeddedStruct{
-						S: "string1",
-					},
-				},
-			},
-			src: &struct{ S string }{
-				S: "string2",
-			},
-			out: []interface{}{
-				&struct{ B string }{},
-				&struct{ BlueprintEmbed *EmbeddedStruct }{
-					BlueprintEmbed: &EmbeddedStruct{
-						S: "string1string2",
-					},
-				},
-			},
-		},
-		{
-			name: "Append through embedded nil pointer to struct",
-			dst: []interface{}{
-				&struct{ B string }{},
-				&struct{ *EmbeddedStruct }{},
-			},
-			src: &struct{ S string }{
-				S: "string2",
-			},
-			out: []interface{}{
-				&struct{ B string }{},
-				&struct{ *EmbeddedStruct }{
-					EmbeddedStruct: &EmbeddedStruct{
-						S: "string2",
-					},
-				},
-			},
-		},
-		{
-			name: "Append through BlueprintEmbed nil pointer to struct",
-			dst: []interface{}{
-				&struct{ B string }{},
-				&struct{ BlueprintEmbed *EmbeddedStruct }{},
-			},
-			src: &struct{ S string }{
-				S: "string2",
-			},
-			out: []interface{}{
-				&struct{ B string }{},
-				&struct{ BlueprintEmbed *EmbeddedStruct }{
-					BlueprintEmbed: &EmbeddedStruct{
-						S: "string2",
-					},
-				},
-			},
-		},
 
 		// Errors
 
 		{
-			name: "Non-pointer dst",
-			dst:  []interface{}{struct{}{}},
-			src:  &struct{}{},
-			err:  errors.New("expected pointer to struct, got struct {}"),
-			out:  []interface{}{struct{}{}},
+			// Non-pointer in1
+			in1: []interface{}{struct{}{}},
+			in2: &struct{}{},
+			err: errors.New("expected pointer to struct, got struct {}"),
+			out: []interface{}{struct{}{}},
 		},
 		{
-			name: "Non-pointer src",
-			dst:  []interface{}{&struct{}{}},
-			src:  struct{}{},
-			err:  errors.New("expected pointer to struct, got struct {}"),
-			out:  []interface{}{&struct{}{}},
+			// Non-pointer in2
+			in1: []interface{}{&struct{}{}},
+			in2: struct{}{},
+			err: errors.New("expected pointer to struct, got struct {}"),
+			out: []interface{}{&struct{}{}},
 		},
 		{
-			name: "Non-struct dst",
-			dst:  []interface{}{&[]string{"bad"}},
-			src:  &struct{}{},
-			err:  errors.New("expected pointer to struct, got *[]string"),
-			out:  []interface{}{&[]string{"bad"}},
+			// Non-struct in1
+			in1: []interface{}{&[]string{"bad"}},
+			in2: &struct{}{},
+			err: errors.New("expected pointer to struct, got *[]string"),
+			out: []interface{}{&[]string{"bad"}},
 		},
 		{
-			name: "Non-struct src",
-			dst:  []interface{}{&struct{}{}},
-			src:  &[]string{"bad"},
-			err:  errors.New("expected pointer to struct, got *[]string"),
-			out:  []interface{}{&struct{}{}},
+			// Non-struct in2
+			in1: []interface{}{&struct{}{}},
+			in2: &[]string{"bad"},
+			err: errors.New("expected pointer to struct, got *[]string"),
+			out: []interface{}{&struct{}{}},
 		},
 		{
-			name: "Append none",
-			dst: []interface{}{
+			// Append none
+			in1: []interface{}{
 				&struct{ A string }{},
 				&struct{ B string }{},
 			},
-			src: &struct{ S string }{
+			in2: &struct{ S string }{
 				S: "string1",
 			},
 			out: []interface{}{
@@ -1695,13 +1351,13 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			err: extendPropertyErrorf("s", "failed to find property to extend"),
 		},
 		{
-			name: "Append mismatched kinds",
-			dst: []interface{}{
+			// Append mismatched kinds
+			in1: []interface{}{
 				&struct{ S string }{
 					S: "string1",
 				},
 			},
-			src: &struct{ S []string }{
+			in2: &struct{ S []string }{
 				S: []string{"string2"},
 			},
 			out: []interface{}{
@@ -1712,13 +1368,13 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			err: extendPropertyErrorf("s", "mismatched types string and []string"),
 		},
 		{
-			name: "Append mismatched types",
-			dst: []interface{}{
+			// Append mismatched types
+			in1: []interface{}{
 				&struct{ S []int }{
 					S: []int{1},
 				},
 			},
-			src: &struct{ S []string }{
+			in2: &struct{ S []string }{
 				S: []string{"string2"},
 			},
 			out: []interface{}{
@@ -1733,64 +1389,62 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 
 func TestAppendMatchingProperties(t *testing.T) {
 	for _, testCase := range appendMatchingPropertiesTestCases() {
-		t.Run(testCase.name, func(t *testing.T) {
+		testString := fmt.Sprintf("%s, %s -> %s", p(testCase.in1), p(testCase.in2), p(testCase.out))
 
-			got := testCase.dst
-			var err error
-			var testType string
+		got := testCase.in1
+		var err error
+		var testType string
 
-			switch testCase.order {
-			case Append:
-				testType = "append"
-				err = AppendMatchingProperties(got, testCase.src, testCase.filter)
-			case Prepend:
-				testType = "prepend"
-				err = PrependMatchingProperties(got, testCase.src, testCase.filter)
-			case Replace:
-				testType = "replace"
-				err = ExtendMatchingProperties(got, testCase.src, testCase.filter, OrderReplace)
-			}
+		switch testCase.order {
+		case Append:
+			testType = "append"
+			err = AppendMatchingProperties(got, testCase.in2, testCase.filter)
+		case Prepend:
+			testType = "prepend"
+			err = PrependMatchingProperties(got, testCase.in2, testCase.filter)
+		case Replace:
+			testType = "replace"
+			err = ExtendMatchingProperties(got, testCase.in2, testCase.filter, OrderReplace)
+		}
 
-			check(t, testType, testCase.name, got, err, testCase.out, testCase.err)
-		})
+		check(t, testType, testString, got, err, testCase.out, testCase.err)
 	}
 }
 
 func TestExtendMatchingProperties(t *testing.T) {
 	for _, testCase := range appendMatchingPropertiesTestCases() {
-		t.Run(testCase.name, func(t *testing.T) {
+		testString := fmt.Sprintf("%s, %s -> %s", p(testCase.in1), p(testCase.in2), p(testCase.out))
 
-			got := testCase.dst
-			var err error
-			var testType string
+		got := testCase.in1
+		var err error
+		var testType string
 
-			order := func(property string,
-				dstField, srcField reflect.StructField,
-				dstValue, srcValue interface{}) (Order, error) {
-				switch testCase.order {
-				case Append:
-					return Append, nil
-				case Prepend:
-					return Prepend, nil
-				case Replace:
-					return Replace, nil
-				}
-				return Append, errors.New("unknown order")
-			}
-
+		order := func(property string,
+			dstField, srcField reflect.StructField,
+			dstValue, srcValue interface{}) (Order, error) {
 			switch testCase.order {
 			case Append:
-				testType = "prepend matching"
+				return Append, nil
 			case Prepend:
-				testType = "append matching"
+				return Prepend, nil
 			case Replace:
-				testType = "replace matching"
+				return Replace, nil
 			}
+			return Append, errors.New("unknown order")
+		}
 
-			err = ExtendMatchingProperties(got, testCase.src, testCase.filter, order)
+		switch testCase.order {
+		case Append:
+			testType = "prepend matching"
+		case Prepend:
+			testType = "append matching"
+		case Replace:
+			testType = "replace matching"
+		}
 
-			check(t, testType, testCase.name, got, err, testCase.out, testCase.err)
-		})
+		err = ExtendMatchingProperties(got, testCase.in2, testCase.filter, order)
+
+		check(t, testType, testString, got, err, testCase.out, testCase.err)
 	}
 }
 
