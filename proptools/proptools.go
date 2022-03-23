@@ -129,7 +129,3 @@ func isSlice(t reflect.Type) bool {
 func isSliceOfStruct(t reflect.Type) bool {
 	return isSlice(t) && isStruct(t.Elem())
 }
-
-func isMapOfStruct(t reflect.Type) bool {
-	return t.Kind() == reflect.Map && isStruct(t.Elem())
-}
