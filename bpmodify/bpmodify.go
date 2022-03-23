@@ -30,9 +30,8 @@ var (
 	targetedProperty = new(qualifiedProperty)
 	addIdents        = new(identSet)
 	removeIdents     = new(identSet)
-	removeProperty   = flag.Bool("remove-property", false, "remove the property")
-	setString        *string
-	addLiteral       *string
+
+	setString *string
 )
 
 func init() {
@@ -40,7 +39,6 @@ func init() {
 	flag.Var(targetedProperty, "parameter", "alias to -property=`name`")
 	flag.Var(targetedProperty, "property", "fully qualified `name` of property to modify (default \"deps\")")
 	flag.Var(addIdents, "a", "comma or whitespace separated list of identifiers to add")
-	flag.Var(stringPtrFlag{&addLiteral}, "add-literal", "a literal to add")
 	flag.Var(removeIdents, "r", "comma or whitespace separated list of identifiers to remove")
 	flag.Var(stringPtrFlag{&setString}, "str", "set a string property")
 	flag.Usage = usage
@@ -147,12 +145,12 @@ func findModules(file *parser.File) (modified bool, errs []error) {
 
 func processModule(module *parser.Module, moduleName string,
 	file *parser.File) (modified bool, errs []error) {
-	prop, parent, err := getRecursiveProperty(module, targetedProperty.name(), targetedProperty.prefixes())
+	prop, err := getRecursiveProperty(module, targetedProperty.name(), targetedProperty.prefixes())
 	if err != nil {
 		return false, []error{err}
 	}
 	if prop == nil {
-		if len(addIdents.idents) > 0 || addLiteral != nil {
+		if len(addIdents.idents) > 0 {
 			// We are adding something to a non-existing list prop, so we need to create it first.
 			prop, modified, err = createRecursiveProperty(module, targetedProperty.name(), targetedProperty.prefixes(), &parser.List{})
 		} else if setString != nil {
@@ -168,28 +166,25 @@ func processModule(module *parser.Module, moduleName string,
 			// Here should be unreachable, but still handle it for completeness.
 			return false, []error{err}
 		}
-	} else if *removeProperty {
-		// remove-property is used solely, so return here.
-		return parent.RemoveProperty(prop.Name), nil
 	}
 	m, errs := processParameter(prop.Value, targetedProperty.String(), moduleName, file)
 	modified = modified || m
 	return modified, errs
 }
 
-func getRecursiveProperty(module *parser.Module, name string, prefixes []string) (prop *parser.Property, parent *parser.Map, err error) {
-	prop, parent, _, err = getOrCreateRecursiveProperty(module, name, prefixes, nil)
-	return prop, parent, err
+func getRecursiveProperty(module *parser.Module, name string, prefixes []string) (prop *parser.Property, err error) {
+	prop, _, err = getOrCreateRecursiveProperty(module, name, prefixes, nil)
+	return prop, err
 }
 
 func createRecursiveProperty(module *parser.Module, name string, prefixes []string,
 	empty parser.Expression) (prop *parser.Property, modified bool, err error) {
-	prop, _, modified, err = getOrCreateRecursiveProperty(module, name, prefixes, empty)
-	return prop, modified, err
+
+	return getOrCreateRecursiveProperty(module, name, prefixes, empty)
 }
 
 func getOrCreateRecursiveProperty(module *parser.Module, name string, prefixes []string,
-	empty parser.Expression) (prop *parser.Property, parent *parser.Map, modified bool, err error) {
+	empty parser.Expression) (prop *parser.Property, modified bool, err error) {
 	m := &module.Map
 	for i, prefix := range prefixes {
 		if prop, found := m.GetProperty(prefix); found {
@@ -198,7 +193,7 @@ func getOrCreateRecursiveProperty(module *parser.Module, name string, prefixes [
 			} else {
 				// We've found a property in the AST and such property is not of type
 				// *parser.Map, which must mean we didn't modify the AST.
-				return nil, nil, false, fmt.Errorf("Expected property %q to be a map, found %s",
+				return nil, false, fmt.Errorf("Expected property %q to be a map, found %s",
 					strings.Join(prefixes[:i+1], "."), prop.Value.Type())
 			}
 		} else if empty != nil {
@@ -209,18 +204,18 @@ func getOrCreateRecursiveProperty(module *parser.Module, name string, prefixes [
 			// check after this for loop must fail, because the node we inserted is an
 			// empty parser.Map, thus this function will return |modified| is true.
 		} else {
-			return nil, nil, false, nil
+			return nil, false, nil
 		}
 	}
 	if prop, found := m.GetProperty(name); found {
 		// We've found a property in the AST, which must mean we didn't modify the AST.
-		return prop, m, false, nil
+		return prop, false, nil
 	} else if empty != nil {
 		prop = &parser.Property{Name: name, Value: empty}
 		m.Properties = append(m.Properties, prop)
-		return prop, m, true, nil
+		return prop, true, nil
 	} else {
-		return nil, nil, false, nil
+		return nil, false, nil
 	}
 }
 
@@ -258,21 +253,6 @@ func processParameter(value parser.Expression, paramName, moduleName string,
 		if (wasSorted || *sortLists) && modified {
 			parser.SortList(file, list)
 		}
-	} else if addLiteral != nil {
-		if *sortLists {
-			return false, []error{fmt.Errorf("sorting not supported when adding a literal")}
-		}
-		list, ok := value.(*parser.List)
-		if !ok {
-			return false, []error{fmt.Errorf("expected parameter %s in module %s to be list, found %s",
-				paramName, moduleName, value.Type().String())}
-		}
-		value, errs := parser.ParseExpression(strings.NewReader(*addLiteral))
-		if errs != nil {
-			return false, errs
-		}
-		list.Values = append(list.Values, value)
-		modified = true
 	} else if setString != nil {
 		str, ok := value.(*parser.String)
 		if !ok {
@@ -344,13 +324,8 @@ func main() {
 		return
 	}
 
-	if len(addIdents.idents) == 0 && len(removeIdents.idents) == 0 && setString == nil && addLiteral == nil && !*removeProperty {
-		report(fmt.Errorf("-a, -add-literal, -r, -remove-property or -str parameter is required"))
-		return
-	}
-
-	if *removeProperty && (len(addIdents.idents) > 0 || len(removeIdents.idents) > 0 || setString != nil || addLiteral != nil) {
-		report(fmt.Errorf("-remove-property cannot be used with other parameter(s)"))
+	if len(addIdents.idents) == 0 && len(removeIdents.idents) == 0 && setString == nil {
+		report(fmt.Errorf("-a, -r or -str parameter is required"))
 		return
 	}
 
