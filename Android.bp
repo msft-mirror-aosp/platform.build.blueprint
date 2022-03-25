@@ -1,3 +1,33 @@
+package {
+    default_applicable_licenses: ["build_blueprint_license"],
+}
+
+// Added automatically by a large-scale-change that took the approach of
+// 'apply every license found to every target'. While this makes sure we respect
+// every license restriction, it may not be entirely correct.
+//
+// e.g. GPL in an MIT project might only apply to the contrib/ directory.
+//
+// Please consider splitting the single license below into multiple licenses,
+// taking care not to lose any license_kind information, and overriding the
+// default license using the 'licenses: [...]' property on targets as needed.
+//
+// For unused files, consider creating a 'fileGroup' with "//visibility:private"
+// to attach the license to, and including a comment whether the files may be
+// used in the current project.
+// See: http://go/android-license-faq
+license {
+    name: "build_blueprint_license",
+    visibility: [":__subpackages__"],
+    license_kinds: [
+        "SPDX-license-identifier-Apache-2.0",
+        "SPDX-license-identifier-BSD",
+    ],
+    license_text: [
+        "LICENSE",
+    ],
+}
+
 bootstrap_go_package {
     name: "blueprint",
     deps: [
@@ -47,7 +77,7 @@ bootstrap_go_package {
         "parser/modify_test.go",
         "parser/parser_test.go",
         "parser/printer_test.go",
-	"parser/sort_test.go",
+        "parser/sort_test.go",
     ],
 }
 
@@ -113,10 +143,8 @@ bootstrap_go_package {
     pkgPath: "github.com/google/blueprint/bootstrap",
     srcs: [
         "bootstrap/bootstrap.go",
-        "bootstrap/cleanup.go",
         "bootstrap/command.go",
         "bootstrap/config.go",
-        "bootstrap/doc.go",
         "bootstrap/glob.go",
         "bootstrap/writedocs.go",
     ],
@@ -141,17 +169,7 @@ bootstrap_go_package {
     ],
 }
 
-bootstrap_go_binary {
-    name: "minibp",
-    deps: [
-        "blueprint",
-        "blueprint-bootstrap",
-        "gotestmain-tests",
-    ],
-    srcs: ["bootstrap/minibp/main.go"],
-}
-
-bootstrap_go_binary {
+blueprint_go_binary {
     name: "bpglob",
     deps: ["blueprint-pathtools"],
     srcs: ["bootstrap/bpglob/bpglob.go"],
@@ -169,7 +187,7 @@ blueprint_go_binary {
     srcs: ["bpmodify/bpmodify.go"],
 }
 
-bootstrap_go_binary {
+blueprint_go_binary {
     name: "gotestmain",
     srcs: ["gotestmain/gotestmain.go"],
 }
@@ -187,12 +205,12 @@ bootstrap_go_package {
     ],
 }
 
-bootstrap_go_binary {
+blueprint_go_binary {
     name: "gotestrunner",
     srcs: ["gotestrunner/gotestrunner.go"],
 }
 
-bootstrap_go_binary {
+blueprint_go_binary {
     name: "loadplugins",
     srcs: ["loadplugins/loadplugins.go"],
 }
