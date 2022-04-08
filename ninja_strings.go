@@ -17,7 +17,6 @@ package blueprint
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"strings"
 )
 
@@ -37,7 +36,7 @@ var (
 
 type ninjaString interface {
 	Value(pkgNames map[*packageContext]string) string
-	ValueWithEscaper(w io.StringWriter, pkgNames map[*packageContext]string, escaper *strings.Replacer)
+	ValueWithEscaper(pkgNames map[*packageContext]string, escaper *strings.Replacer) string
 	Eval(variables map[Variable]ninjaString) (string, error)
 	Variables() []Variable
 }
@@ -285,24 +284,26 @@ func parseNinjaStrings(scope scope, strs []string) ([]ninjaString,
 }
 
 func (n varNinjaString) Value(pkgNames map[*packageContext]string) string {
-	if len(n.strings) == 1 {
-		return defaultEscaper.Replace(n.strings[0])
-	}
-	str := &strings.Builder{}
-	n.ValueWithEscaper(str, pkgNames, defaultEscaper)
-	return str.String()
+	return n.ValueWithEscaper(pkgNames, defaultEscaper)
 }
 
-func (n varNinjaString) ValueWithEscaper(w io.StringWriter, pkgNames map[*packageContext]string,
-	escaper *strings.Replacer) {
+func (n varNinjaString) ValueWithEscaper(pkgNames map[*packageContext]string,
+	escaper *strings.Replacer) string {
 
-	w.WriteString(escaper.Replace(n.strings[0]))
-	for i, v := range n.variables {
-		w.WriteString("${")
-		w.WriteString(v.fullName(pkgNames))
-		w.WriteString("}")
-		w.WriteString(escaper.Replace(n.strings[i+1]))
+	if len(n.strings) == 1 {
+		return escaper.Replace(n.strings[0])
 	}
+
+	str := strings.Builder{}
+	str.WriteString(escaper.Replace(n.strings[0]))
+	for i, v := range n.variables {
+		str.WriteString("${")
+		str.WriteString(v.fullName(pkgNames))
+		str.WriteString("}")
+		str.WriteString(escaper.Replace(n.strings[i+1]))
+	}
+
+	return str.String()
 }
 
 func (n varNinjaString) Eval(variables map[Variable]ninjaString) (string, error) {
@@ -326,12 +327,12 @@ func (n varNinjaString) Variables() []Variable {
 }
 
 func (l literalNinjaString) Value(pkgNames map[*packageContext]string) string {
-	return defaultEscaper.Replace(string(l))
+	return l.ValueWithEscaper(pkgNames, defaultEscaper)
 }
 
-func (l literalNinjaString) ValueWithEscaper(w io.StringWriter, pkgNames map[*packageContext]string,
-	escaper *strings.Replacer) {
-	w.WriteString(escaper.Replace(string(l)))
+func (l literalNinjaString) ValueWithEscaper(pkgNames map[*packageContext]string,
+	escaper *strings.Replacer) string {
+	return escaper.Replace(string(l))
 }
 
 func (l literalNinjaString) Eval(variables map[Variable]ninjaString) (string, error) {

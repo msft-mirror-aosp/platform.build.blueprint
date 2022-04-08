@@ -38,12 +38,10 @@ func ReplaceExtensions(paths []string, extension string) []string {
 	return result
 }
 
-// ReplaceExtension changes the file extension. If the file does not have an
-// extension, the new extension is appended.
 func ReplaceExtension(path string, extension string) string {
-	oldExt := filepath.Ext(path)
-	if oldExt != "" {
-		path = strings.TrimSuffix(path, oldExt)
+	dot := strings.LastIndex(path, ".")
+	if dot == -1 {
+		return path
 	}
-	return path + "." + extension
+	return path[:dot+1] + extension
 }

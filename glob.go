@@ -15,6 +15,7 @@
 package blueprint
 
 import (
+	"crypto/md5"
 	"fmt"
 	"sort"
 	"strings"
@@ -22,95 +23,108 @@ import (
 	"github.com/google/blueprint/pathtools"
 )
 
-func verifyGlob(key globKey, pattern string, excludes []string, g pathtools.GlobResult) {
+type GlobPath struct {
+	Pattern  string
+	Excludes []string
+	Files    []string
+	Deps     []string
+	Name     string
+}
+
+func verifyGlob(fileName, pattern string, excludes []string, g GlobPath) {
 	if pattern != g.Pattern {
-		panic(fmt.Errorf("Mismatched patterns %q and %q for glob key %q", pattern, g.Pattern, key))
+		panic(fmt.Errorf("Mismatched patterns %q and %q for glob file %q", pattern, g.Pattern, fileName))
 	}
 	if len(excludes) != len(g.Excludes) {
-		panic(fmt.Errorf("Mismatched excludes %v and %v for glob key %q", excludes, g.Excludes, key))
+		panic(fmt.Errorf("Mismatched excludes %v and %v for glob file %q", excludes, g.Excludes, fileName))
 	}
 
 	for i := range excludes {
 		if g.Excludes[i] != excludes[i] {
-			panic(fmt.Errorf("Mismatched excludes %v and %v for glob key %q", excludes, g.Excludes, key))
+			panic(fmt.Errorf("Mismatched excludes %v and %v for glob file %q", excludes, g.Excludes, fileName))
 		}
 	}
 }
 
 func (c *Context) glob(pattern string, excludes []string) ([]string, error) {
-	// Sort excludes so that two globs with the same excludes in a different order reuse the same
-	// key.  Make a copy first to avoid modifying the caller's version.
-	excludes = append([]string(nil), excludes...)
-	sort.Strings(excludes)
-
-	key := globToKey(pattern, excludes)
+	fileName := globToFileName(pattern, excludes)
 
 	// Try to get existing glob from the stored results
 	c.globLock.Lock()
-	g, exists := c.globs[key]
+	g, exists := c.globs[fileName]
 	c.globLock.Unlock()
 
 	if exists {
 		// Glob has already been done, double check it is identical
-		verifyGlob(key, pattern, excludes, g)
-		// Return a copy so that modifications don't affect the cached value.
-		return append([]string(nil), g.Matches...), nil
+		verifyGlob(fileName, pattern, excludes, g)
+		return g.Files, nil
 	}
 
 	// Get a globbed file list
-	result, err := c.fs.Glob(pattern, excludes, pathtools.FollowSymlinks)
+	files, deps, err := c.fs.Glob(pattern, excludes, pathtools.FollowSymlinks)
 	if err != nil {
 		return nil, err
 	}
 
 	// Store the results
 	c.globLock.Lock()
-	if g, exists = c.globs[key]; !exists {
-		c.globs[key] = result
+	if g, exists = c.globs[fileName]; !exists {
+		c.globs[fileName] = GlobPath{pattern, excludes, files, deps, fileName}
 	}
 	c.globLock.Unlock()
 
+	// Getting the list raced with another goroutine, throw away the results and use theirs
 	if exists {
-		// Getting the list raced with another goroutine, throw away the results and use theirs
-		verifyGlob(key, pattern, excludes, g)
-		// Return a copy so that modifications don't affect the cached value.
-		return append([]string(nil), g.Matches...), nil
+		verifyGlob(fileName, pattern, excludes, g)
+		return g.Files, nil
 	}
 
-	// Return a copy so that modifications don't affect the cached value.
-	return append([]string(nil), result.Matches...), nil
+	return files, nil
 }
 
-func (c *Context) Globs() pathtools.MultipleGlobResults {
-	keys := make([]globKey, 0, len(c.globs))
+func (c *Context) Globs() []GlobPath {
+	fileNames := make([]string, 0, len(c.globs))
 	for k := range c.globs {
-		keys = append(keys, k)
+		fileNames = append(fileNames, k)
 	}
+	sort.Strings(fileNames)
 
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].pattern != keys[j].pattern {
-			return keys[i].pattern < keys[j].pattern
-		}
-		return keys[i].excludes < keys[j].excludes
-	})
-
-	globs := make(pathtools.MultipleGlobResults, len(keys))
-	for i, key := range keys {
-		globs[i] = c.globs[key]
+	globs := make([]GlobPath, len(fileNames))
+	for i, fileName := range fileNames {
+		globs[i] = c.globs[fileName]
 	}
 
 	return globs
 }
 
-// globKey combines a pattern and a list of excludes into a hashable struct to be used as a key in
-// a map.
-type globKey struct {
-	pattern  string
-	excludes string
+func globToString(pattern string) string {
+	ret := ""
+	for _, c := range pattern {
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '_', c == '-', c == '/':
+			ret += string(c)
+		default:
+			ret += "_"
+		}
+	}
+
+	return ret
 }
 
-// globToKey converts a pattern and an excludes list into a globKey struct that is hashable and
-// usable as a key in a map.
-func globToKey(pattern string, excludes []string) globKey {
-	return globKey{pattern, strings.Join(excludes, "|")}
+func globToFileName(pattern string, excludes []string) string {
+	name := globToString(pattern)
+	excludeName := ""
+	for _, e := range excludes {
+		excludeName += "__" + globToString(e)
+	}
+
+	// Prevent file names from reaching ninja's path component limit
+	if strings.Count(name, "/")+strings.Count(excludeName, "/") > 30 {
+		excludeName = fmt.Sprintf("___%x", md5.Sum([]byte(excludeName)))
+	}
+
+	return name + excludeName + ".glob"
 }

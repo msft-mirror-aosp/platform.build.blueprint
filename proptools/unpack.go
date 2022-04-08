@@ -280,14 +280,6 @@ func (ctx *unpackContext) unpackToStruct(namePrefix string, structValue reflect.
 		}
 
 		if isStruct(fieldValue.Type()) {
-			if property.Value.Eval().Type() != parser.MapType {
-				ctx.addError(&UnpackError{
-					fmt.Errorf("can't assign %s value to map property %q",
-						property.Value.Type(), property.Name),
-					property.Value.Pos(),
-				})
-				continue
-			}
 			ctx.unpackToStruct(propertyName, fieldValue)
 			if len(ctx.errs) >= maxUnpackErrors {
 				return
@@ -315,11 +307,8 @@ func (ctx *unpackContext) unpackToSlice(
 	sliceName string, property *parser.Property, sliceType reflect.Type) (reflect.Value, bool) {
 	propValueAsList, ok := property.Value.Eval().(*parser.List)
 	if !ok {
-		ctx.addError(&UnpackError{
-			fmt.Errorf("can't assign %s value to list property %q",
-				property.Value.Type(), property.Name),
-			property.Value.Pos(),
-		})
+		ctx.addError(fmt.Errorf("%s: can't assign %s value to list property %q",
+			property.Value.Pos(), property.Value.Type(), property.Name))
 		return reflect.MakeSlice(sliceType, 0, 0), false
 	}
 	exprs := propValueAsList.Values
@@ -398,33 +387,24 @@ func propertyToValue(typ reflect.Type, property *parser.Property) (reflect.Value
 	case reflect.Bool:
 		b, ok := property.Value.Eval().(*parser.Bool)
 		if !ok {
-			return value, &UnpackError{
-				fmt.Errorf("can't assign %s value to bool property %q",
-					property.Value.Type(), property.Name),
-				property.Value.Pos(),
-			}
+			return value, fmt.Errorf("%s: can't assign %s value to bool property %q",
+				property.Value.Pos(), property.Value.Type(), property.Name)
 		}
 		value = reflect.ValueOf(b.Value)
 
 	case reflect.Int64:
 		b, ok := property.Value.Eval().(*parser.Int64)
 		if !ok {
-			return value, &UnpackError{
-				fmt.Errorf("can't assign %s value to int64 property %q",
-					property.Value.Type(), property.Name),
-				property.Value.Pos(),
-			}
+			return value, fmt.Errorf("%s: can't assign %s value to int64 property %q",
+				property.Value.Pos(), property.Value.Type(), property.Name)
 		}
 		value = reflect.ValueOf(b.Value)
 
 	case reflect.String:
 		s, ok := property.Value.Eval().(*parser.String)
 		if !ok {
-			return value, &UnpackError{
-				fmt.Errorf("can't assign %s value to string property %q",
-					property.Value.Type(), property.Name),
-				property.Value.Pos(),
-			}
+			return value, fmt.Errorf("%s: can't assign %s value to string property %q",
+				property.Value.Pos(), property.Value.Type(), property.Name)
 		}
 		value = reflect.ValueOf(s.Value)
 
