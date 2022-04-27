@@ -831,32 +831,6 @@ type BaseMutatorContext interface {
 	MutatorName() string
 }
 
-type EarlyMutatorContext interface {
-	BaseMutatorContext
-
-	// CreateVariations splits  a module into multiple variants, one for each name in the variationNames
-	// parameter.  It returns a list of new modules in the same order as the variationNames
-	// list.
-	//
-	// If any of the dependencies of the module being operated on were already split
-	// by calling CreateVariations with the same name, the dependency will automatically
-	// be updated to point the matching variant.
-	//
-	// If a module is split, and then a module depending on the first module is not split
-	// when the Mutator is later called on it, the dependency of the depending module will
-	// automatically be updated to point to the first variant.
-	CreateVariations(...string) []Module
-
-	// CreateLocalVariations splits a module into multiple variants, one for each name in the variantNames
-	// parameter.  It returns a list of new modules in the same order as the variantNames
-	// list.
-	//
-	// Local variations do not affect automatic dependency resolution - dependencies added
-	// to the split module via deps or DynamicDependerModule must exactly match a variant
-	// that contains all the non-local variations.
-	CreateLocalVariations(...string) []Module
-}
-
 type TopDownMutatorContext interface {
 	BaseMutatorContext
 
@@ -995,7 +969,6 @@ type BottomUpMutatorContext interface {
 // if a second Mutator chooses to split the module a second time.
 type TopDownMutator func(mctx TopDownMutatorContext)
 type BottomUpMutator func(mctx BottomUpMutatorContext)
-type EarlyMutator func(mctx EarlyMutatorContext)
 
 // DependencyTag is an interface to an arbitrary object that embeds BaseDependencyTag.  It can be
 // used to transfer information on a dependency between the mutator that called AddDependency
@@ -1288,20 +1261,21 @@ type LoadHookContext interface {
 
 	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
 	// the specified property structs to it as if the properties were set in a blueprint file.
-	CreateModule(ModuleFactory, ...interface{}) Module
+	CreateModule(ModuleFactory, string, ...interface{}) Module
 
 	// RegisterScopedModuleType creates a new module type that is scoped to the current Blueprints
 	// file.
 	RegisterScopedModuleType(name string, factory ModuleFactory)
 }
 
-func (l *loadHookContext) CreateModule(factory ModuleFactory, props ...interface{}) Module {
+func (l *loadHookContext) CreateModule(factory ModuleFactory, typeName string, props ...interface{}) Module {
 	module := newModule(factory)
 
 	module.relBlueprintsFile = l.module.relBlueprintsFile
 	module.pos = l.module.pos
 	module.propertyPos = l.module.propertyPos
 	module.createdBy = l.module
+	module.typeName = typeName
 
 	for _, p := range props {
 		err := proptools.AppendMatchingProperties(module.properties, p, nil)
