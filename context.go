@@ -34,6 +34,7 @@ import (
 	"text/scanner"
 	"text/template"
 
+	"github.com/google/blueprint/metrics"
 	"github.com/google/blueprint/parser"
 	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
@@ -71,7 +72,9 @@ const MockModuleListFile = "bplist"
 type Context struct {
 	context.Context
 
-	// set at instantiation
+	// Used for metrics-related event logging.
+	EventHandler *metrics.EventHandler
+
 	moduleFactories     map[string]ModuleFactory
 	nameInterface       NameInterface
 	moduleGroups        []*moduleGroup
@@ -80,7 +83,6 @@ type Context struct {
 	preSingletonInfo    []*singletonInfo
 	singletonInfo       []*singletonInfo
 	mutatorInfo         []*mutatorInfo
-	earlyMutatorInfo    []*mutatorInfo
 	variantMutatorNames []string
 
 	depsModified uint32 // positive if a mutator modified the dependencies
@@ -380,8 +382,10 @@ type mutatorInfo struct {
 }
 
 func newContext() *Context {
+	eventHandler := metrics.EventHandler{}
 	return &Context{
 		Context:            context.Background(),
+		EventHandler:       &eventHandler,
 		moduleFactories:    make(map[string]ModuleFactory),
 		nameInterface:      NewSimpleNameInterface(),
 		moduleInfo:         make(map[Module]*moduleInfo),
@@ -623,38 +627,6 @@ type MutatorHandle interface {
 func (mutator *mutatorInfo) Parallel() MutatorHandle {
 	mutator.parallel = true
 	return mutator
-}
-
-// RegisterEarlyMutator registers a mutator that will be invoked to split
-// Modules into multiple variant Modules before any dependencies have been
-// created.  Each registered mutator is invoked in registration order once
-// per Module (including each variant from previous early mutators).  Module
-// order is unpredictable.
-//
-// In order for dependencies to be satisifed in a later pass, all dependencies
-// of a module either must have an identical variant or must have no variations.
-//
-// The mutator type names given here must be unique to all bottom up or early
-// mutators in the Context.
-//
-// Deprecated, use a BottomUpMutator instead.  The only difference between
-// EarlyMutator and BottomUpMutator is that EarlyMutator runs before the
-// deprecated DynamicDependencies.
-func (c *Context) RegisterEarlyMutator(name string, mutator EarlyMutator) {
-	for _, m := range c.variantMutatorNames {
-		if m == name {
-			panic(fmt.Errorf("mutator name %s is already registered", name))
-		}
-	}
-
-	c.earlyMutatorInfo = append(c.earlyMutatorInfo, &mutatorInfo{
-		bottomUpMutator: func(mctx BottomUpMutatorContext) {
-			mutator(mctx)
-		},
-		name: name,
-	})
-
-	c.variantMutatorNames = append(c.variantMutatorNames, name)
 }
 
 // SetIgnoreUnknownModuleTypes sets the behavior of the context in the case
@@ -1538,6 +1510,8 @@ func (c *Context) addModule(module *moduleInfo) []error {
 // the modules depended upon are defined and that no circular dependencies
 // exist.
 func (c *Context) ResolveDependencies(config interface{}) (deps []string, errs []error) {
+	c.BeginEvent("resolve_deps")
+	defer c.EndEvent("resolve_deps")
 	return c.resolveDependencies(c.Context, config)
 }
 
@@ -2261,12 +2235,12 @@ func (c *Context) updateDependencies() (errs []error) {
 	return
 }
 
-type jsonVariationMap map[string]string
+type jsonVariations []Variation
 
 type jsonModuleName struct {
 	Name                 string
-	Variations           jsonVariationMap
-	DependencyVariations jsonVariationMap
+	Variations           jsonVariations
+	DependencyVariations jsonVariations
 }
 
 type jsonDep struct {
@@ -2282,8 +2256,18 @@ type JsonModule struct {
 	Module    map[string]interface{}
 }
 
-func toJsonVariationMap(vm variationMap) jsonVariationMap {
-	return jsonVariationMap(vm)
+func toJsonVariationMap(vm variationMap) jsonVariations {
+	m := make(jsonVariations, 0, len(vm))
+	for k, v := range vm {
+		m = append(m, Variation{k, v})
+	}
+	sort.Slice(m, func(i, j int) bool {
+		if m[i].Mutator != m[j].Mutator {
+			return m[i].Mutator < m[j].Mutator
+		}
+		return m[i].Variation < m[j].Variation
+	})
+	return m
 }
 
 func jsonModuleNameFromModuleInfo(m *moduleInfo) *jsonModuleName {
@@ -2404,6 +2388,8 @@ func writeJson(w io.Writer, modules []*JsonModule) {
 // methods.
 
 func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs []error) {
+	c.BeginEvent("prepare_build_actions")
+	defer c.EndEvent("prepare_build_actions")
 	pprof.Do(c.Context, pprof.Labels("blueprint", "PrepareBuildActions"), func(ctx context.Context) {
 		c.buildActionsReady = false
 
@@ -2464,13 +2450,8 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 }
 
 func (c *Context) runMutators(ctx context.Context, config interface{}) (deps []string, errs []error) {
-	var mutators []*mutatorInfo
-
 	pprof.Do(ctx, pprof.Labels("blueprint", "runMutators"), func(ctx context.Context) {
-		mutators = append(mutators, c.earlyMutatorInfo...)
-		mutators = append(mutators, c.mutatorInfo...)
-
-		for _, mutator := range mutators {
+		for _, mutator := range c.mutatorInfo {
 			pprof.Do(ctx, pprof.Labels("mutator", mutator.name), func(context.Context) {
 				var newDeps []string
 				if mutator.topDownMutator != nil {
@@ -4104,6 +4085,14 @@ func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 	}
 
 	return nil
+}
+
+func (c *Context) BeginEvent(name string) {
+	c.EventHandler.Begin(name)
+}
+
+func (c *Context) EndEvent(name string) {
+	c.EventHandler.End(name)
 }
 
 func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
