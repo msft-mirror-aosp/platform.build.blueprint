@@ -75,6 +75,8 @@ type Context struct {
 	// Used for metrics-related event logging.
 	EventHandler *metrics.EventHandler
 
+	BeforePrepareBuildActionsHook func() error
+
 	moduleFactories     map[string]ModuleFactory
 	nameInterface       NameInterface
 	moduleGroups        []*moduleGroup
@@ -2253,6 +2255,7 @@ type JsonModule struct {
 	Deps      []jsonDep
 	Type      string
 	Blueprint string
+	CreatedBy *string
 	Module    map[string]interface{}
 }
 
@@ -2289,6 +2292,10 @@ func jsonModuleFromModuleInfo(m *moduleInfo) *JsonModule {
 		Type:           m.typeName,
 		Blueprint:      m.relBlueprintsFile,
 		Module:         make(map[string]interface{}),
+	}
+	if m.createdBy != nil {
+		n := m.createdBy.Name()
+		result.CreatedBy = &n
 	}
 	if j, ok := m.logicModule.(JSONDataSupplier); ok {
 		j.AddJSONData(&result.Module)
@@ -4093,6 +4100,10 @@ func (c *Context) BeginEvent(name string) {
 
 func (c *Context) EndEvent(name string) {
 	c.EventHandler.End(name)
+}
+
+func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
+	c.BeforePrepareBuildActionsHook = hookFn
 }
 
 func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
