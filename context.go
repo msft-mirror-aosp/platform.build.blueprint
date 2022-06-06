@@ -75,6 +75,8 @@ type Context struct {
 	// Used for metrics-related event logging.
 	EventHandler *metrics.EventHandler
 
+	BeforePrepareBuildActionsHook func() error
+
 	moduleFactories     map[string]ModuleFactory
 	nameInterface       NameInterface
 	moduleGroups        []*moduleGroup
@@ -2253,6 +2255,7 @@ type JsonModule struct {
 	Deps      []jsonDep
 	Type      string
 	Blueprint string
+	CreatedBy *string
 	Module    map[string]interface{}
 }
 
@@ -2282,6 +2285,18 @@ type JSONDataSupplier interface {
 	AddJSONData(d *map[string]interface{})
 }
 
+// JSONAction contains the action-related info we expose to json module graph
+type JSONAction struct {
+	Inputs  []string
+	Outputs []string
+}
+
+// JSONActionSupplier allows JSON representation of additional actions that are not registered in
+// Ninja
+type JSONActionSupplier interface {
+	JSONActions() []JSONAction
+}
+
 func jsonModuleFromModuleInfo(m *moduleInfo) *JsonModule {
 	result := &JsonModule{
 		jsonModuleName: *jsonModuleNameFromModuleInfo(m),
@@ -2289,6 +2304,10 @@ func jsonModuleFromModuleInfo(m *moduleInfo) *JsonModule {
 		Type:           m.typeName,
 		Blueprint:      m.relBlueprintsFile,
 		Module:         make(map[string]interface{}),
+	}
+	if m.createdBy != nil {
+		n := m.createdBy.Name()
+		result.CreatedBy = &n
 	}
 	if j, ok := m.logicModule.(JSONDataSupplier); ok {
 		j.AddJSONData(&result.Module)
@@ -2311,17 +2330,27 @@ func jsonModuleWithActionsFromModuleInfo(m *moduleInfo) *JsonModule {
 		Blueprint: m.relBlueprintsFile,
 		Module:    make(map[string]interface{}),
 	}
-	var actions []map[string]interface{}
+	var actions []JSONAction
 	for _, bDef := range m.actionDefs.buildDefs {
-		actions = append(actions, map[string]interface{}{
-			"Inputs": append(
+		actions = append(actions, JSONAction{
+			Inputs: append(
 				getNinjaStringsWithNilPkgNames(bDef.Inputs),
 				getNinjaStringsWithNilPkgNames(bDef.Implicits)...),
-			"Outputs": append(
+			Outputs: append(
 				getNinjaStringsWithNilPkgNames(bDef.Outputs),
 				getNinjaStringsWithNilPkgNames(bDef.ImplicitOutputs)...),
 		})
 	}
+
+	if j, ok := m.logicModule.(JSONActionSupplier); ok {
+		actions = append(actions, j.JSONActions()...)
+	}
+	for _, p := range m.providers {
+		if j, ok := p.(JSONActionSupplier); ok {
+			actions = append(actions, j.JSONActions()...)
+		}
+	}
+
 	result.Module["Actions"] = actions
 	return result
 }
@@ -3619,7 +3648,7 @@ func (c *Context) SingletonName(singleton Singleton) string {
 	return ""
 }
 
-// WriteBuildFile writes the Ninja manifeset text for the generated build
+// WriteBuildFile writes the Ninja manifest text for the generated build
 // actions to w.  If this is called before PrepareBuildActions successfully
 // completes then ErrBuildActionsNotReady is returned.
 func (c *Context) WriteBuildFile(w io.StringWriter) error {
@@ -4093,6 +4122,10 @@ func (c *Context) BeginEvent(name string) {
 
 func (c *Context) EndEvent(name string) {
 	c.EventHandler.End(name)
+}
+
+func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
+	c.BeforePrepareBuildActionsHook = hookFn
 }
 
 func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
