@@ -831,38 +831,12 @@ type BaseMutatorContext interface {
 	MutatorName() string
 }
 
-type EarlyMutatorContext interface {
-	BaseMutatorContext
-
-	// CreateVariations splits  a module into multiple variants, one for each name in the variationNames
-	// parameter.  It returns a list of new modules in the same order as the variationNames
-	// list.
-	//
-	// If any of the dependencies of the module being operated on were already split
-	// by calling CreateVariations with the same name, the dependency will automatically
-	// be updated to point the matching variant.
-	//
-	// If a module is split, and then a module depending on the first module is not split
-	// when the Mutator is later called on it, the dependency of the depending module will
-	// automatically be updated to point to the first variant.
-	CreateVariations(...string) []Module
-
-	// CreateLocalVariations splits a module into multiple variants, one for each name in the variantNames
-	// parameter.  It returns a list of new modules in the same order as the variantNames
-	// list.
-	//
-	// Local variations do not affect automatic dependency resolution - dependencies added
-	// to the split module via deps or DynamicDependerModule must exactly match a variant
-	// that contains all the non-local variations.
-	CreateLocalVariations(...string) []Module
-}
-
 type TopDownMutatorContext interface {
 	BaseMutatorContext
 
 	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
 	// the specified property structs to it as if the properties were set in a blueprint file.
-	CreateModule(ModuleFactory, ...interface{}) Module
+	CreateModule(ModuleFactory, string, ...interface{}) Module
 }
 
 type BottomUpMutatorContext interface {
@@ -995,7 +969,6 @@ type BottomUpMutatorContext interface {
 // if a second Mutator chooses to split the module a second time.
 type TopDownMutator func(mctx TopDownMutatorContext)
 type BottomUpMutator func(mctx BottomUpMutatorContext)
-type EarlyMutator func(mctx EarlyMutatorContext)
 
 // DependencyTag is an interface to an arbitrary object that embeds BaseDependencyTag.  It can be
 // used to transfer information on a dependency between the mutator that called AddDependency
@@ -1018,11 +991,17 @@ func (mctx *mutatorContext) MutatorName() string {
 }
 
 func (mctx *mutatorContext) CreateVariations(variationNames ...string) []Module {
-	return mctx.createVariations(variationNames, false)
+	depChooser := chooseDepInherit(mctx.name, mctx.defaultVariation)
+	return mctx.createVariations(variationNames, depChooser, false)
+}
+
+func (mctx *mutatorContext) createVariationsWithTransition(transition Transition, variationNames ...string) []Module {
+	return mctx.createVariations(variationNames, chooseDepByTransition(mctx.name, transition), false)
 }
 
 func (mctx *mutatorContext) CreateLocalVariations(variationNames ...string) []Module {
-	return mctx.createVariations(variationNames, true)
+	depChooser := chooseDepInherit(mctx.name, mctx.defaultVariation)
+	return mctx.createVariations(variationNames, depChooser, true)
 }
 
 func (mctx *mutatorContext) SetVariationProvider(module Module, provider ProviderKey, value interface{}) {
@@ -1035,9 +1014,9 @@ func (mctx *mutatorContext) SetVariationProvider(module Module, provider Provide
 	panic(fmt.Errorf("module %q is not a newly created variant of %q", module, mctx.module))
 }
 
-func (mctx *mutatorContext) createVariations(variationNames []string, local bool) []Module {
+func (mctx *mutatorContext) createVariations(variationNames []string, depChooser depChooser, local bool) []Module {
 	var ret []Module
-	modules, errs := mctx.context.createVariations(mctx.module, mctx.name, mctx.defaultVariation, variationNames, local)
+	modules, errs := mctx.context.createVariations(mctx.module, mctx.name, depChooser, variationNames, local)
 	if len(errs) > 0 {
 		mctx.errs = append(mctx.errs, errs...)
 	}
@@ -1118,8 +1097,13 @@ func (mctx *mutatorContext) CreateAliasVariation(aliasVariationName, targetVaria
 	panic(fmt.Errorf("no %q variation in module variations %q", targetVariationName, foundVariations))
 }
 
+func (mctx *mutatorContext) applyTransition(transition Transition) {
+	mctx.context.convertDepsToVariation(mctx.module, chooseDepByTransition(mctx.name, transition))
+}
+
 func (mctx *mutatorContext) SetDependencyVariation(variationName string) {
-	mctx.context.convertDepsToVariation(mctx.module, mctx.name, variationName, nil)
+	mctx.context.convertDepsToVariation(mctx.module, chooseDepExplicit(
+		mctx.name, variationName, nil))
 }
 
 func (mctx *mutatorContext) SetDefaultDependencyVariation(variationName *string) {
@@ -1228,13 +1212,14 @@ func (mctx *mutatorContext) Rename(name string) {
 	mctx.rename = append(mctx.rename, rename{mctx.module.group, name})
 }
 
-func (mctx *mutatorContext) CreateModule(factory ModuleFactory, props ...interface{}) Module {
+func (mctx *mutatorContext) CreateModule(factory ModuleFactory, typeName string, props ...interface{}) Module {
 	module := newModule(factory)
 
 	module.relBlueprintsFile = mctx.module.relBlueprintsFile
 	module.pos = mctx.module.pos
 	module.propertyPos = mctx.module.propertyPos
 	module.createdBy = mctx.module
+	module.typeName = typeName
 
 	for _, p := range props {
 		err := proptools.AppendMatchingProperties(module.properties, p, nil)
