@@ -23,16 +23,14 @@ import "sync"
 type liveTracker struct {
 	sync.Mutex
 	config interface{} // Used to evaluate variable, rule, and pool values.
-	ctx    *Context    // Used to evaluate globs
 
 	variables map[Variable]ninjaString
 	pools     map[Pool]*poolDef
 	rules     map[Rule]*ruleDef
 }
 
-func newLiveTracker(ctx *Context, config interface{}) *liveTracker {
+func newLiveTracker(config interface{}) *liveTracker {
 	return &liveTracker{
-		ctx:       ctx,
 		config:    config,
 		variables: make(map[Variable]ninjaString),
 		pools:     make(map[Pool]*poolDef),
@@ -155,9 +153,7 @@ func (l *liveTracker) addPool(p Pool) error {
 func (l *liveTracker) addVariable(v Variable) error {
 	_, ok := l.variables[v]
 	if !ok {
-		ctx := &variableFuncContext{l.ctx}
-
-		value, err := v.value(ctx, l.config)
+		value, err := v.value(l.config)
 		if err == errVariableIsArg {
 			// This variable is a placeholder for an argument that can be passed
 			// to a rule.  It has no value and thus doesn't reference any other
