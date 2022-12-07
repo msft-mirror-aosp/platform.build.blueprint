@@ -39,9 +39,10 @@ type Args struct {
 	Memprofile string
 	TraceFile  string
 
-	BazelMode        bool
-	BazelModeDev     bool
-	BazelModeStaging bool
+	BazelMode                bool
+	BazelModeDev             bool
+	BazelModeStaging         bool
+	BazelForceEnabledModules string
 }
 
 // RunBlueprint emits `args.OutFile` (a Ninja file) and returns the list of
@@ -96,6 +97,7 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	ctx.RegisterModuleType("bootstrap_go_package", newGoPackageModuleFactory())
 	ctx.RegisterModuleType("blueprint_go_binary", newGoBinaryModuleFactory())
 	ctx.RegisterSingletonType("bootstrap", newSingletonFactory())
+	blueprint.RegisterPackageIncludesModuleType(ctx)
 
 	ctx.BeginEvent("parse_bp")
 	if blueprintFiles, errs := ctx.ParseFileList(".", filesToParse, config); len(errs) > 0 {
