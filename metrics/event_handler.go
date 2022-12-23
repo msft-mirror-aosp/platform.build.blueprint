@@ -98,12 +98,12 @@ func (h *EventHandler) CompletedEvents() []Event {
 			h.scopeIds))
 	}
 	// Validate no two events have the same full id.
-	ids := map[string]struct{}{}
+	ids := map[string]bool{}
 	for _, event := range h.completedEvents {
 		if _, containsId := ids[event.Id]; containsId {
 			panic(fmt.Errorf("Duplicate event registered: %s", event.Id))
 		}
-		ids[event.Id] = struct{}{}
+		ids[event.Id] = true
 	}
 	return h.completedEvents
 }
