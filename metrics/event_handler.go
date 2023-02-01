@@ -31,10 +31,8 @@ type EventHandler struct {
 	scopeStartTimes []time.Time
 }
 
-// _now wraps the time.Now() function. _now is declared for unit testing purpose.
-var _now = func() time.Time {
-	return time.Now()
-}
+// _now simply delegates to time.Now() function. _now is declared for unit testing purpose.
+var _now = time.Now
 
 // Event holds the performance metrics data of a single build event.
 type Event struct {
@@ -60,6 +58,13 @@ func (e Event) RuntimeNanoseconds() uint64 {
 func (h *EventHandler) Begin(name string) {
 	h.scopeIds = append(h.scopeIds, name)
 	h.scopeStartTimes = append(h.scopeStartTimes, _now())
+}
+
+// Do wraps a function with calls to Begin() and End().
+func (h *EventHandler) Do(name string, f func()) {
+	h.Begin(name)
+	defer h.End(name)
+	f()
 }
 
 // End logs the end of an event. All events nested within this event must have
@@ -93,12 +98,12 @@ func (h *EventHandler) CompletedEvents() []Event {
 			h.scopeIds))
 	}
 	// Validate no two events have the same full id.
-	ids := map[string]bool{}
+	ids := map[string]struct{}{}
 	for _, event := range h.completedEvents {
 		if _, containsId := ids[event.Id]; containsId {
 			panic(fmt.Errorf("Duplicate event registered: %s", event.Id))
 		}
-		ids[event.Id] = true
+		ids[event.Id] = struct{}{}
 	}
 	return h.completedEvents
 }
