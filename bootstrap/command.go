@@ -38,10 +38,6 @@ type Args struct {
 	Cpuprofile string
 	Memprofile string
 	TraceFile  string
-
-	BazelMode        bool
-	BazelModeDev     bool
-	BazelModeStaging bool
 }
 
 // RunBlueprint emits `args.OutFile` (a Ninja file) and returns the list of
@@ -96,6 +92,7 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	ctx.RegisterModuleType("bootstrap_go_package", newGoPackageModuleFactory())
 	ctx.RegisterModuleType("blueprint_go_binary", newGoBinaryModuleFactory())
 	ctx.RegisterSingletonType("bootstrap", newSingletonFactory())
+	blueprint.RegisterPackageIncludesModuleType(ctx)
 
 	ctx.BeginEvent("parse_bp")
 	if blueprintFiles, errs := ctx.ParseFileList(".", filesToParse, config); len(errs) > 0 {
@@ -142,17 +139,15 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 		if err := os.WriteFile(joinPath(ctx.SrcDir(), args.OutFile), []byte(nil), outFilePermissions); err != nil {
 			fatalf("error writing empty Ninja file: %s", err)
 		}
-	}
-
-	if !args.EmptyNinjaFile {
+		out = io.Discard.(io.StringWriter)
+	} else {
 		f, err := os.OpenFile(joinPath(ctx.SrcDir(), args.OutFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, outFilePermissions)
 		if err != nil {
 			fatalf("error opening Ninja file: %s", err)
 		}
+		defer f.Close()
 		buf = bufio.NewWriterSize(f, 16*1024*1024)
 		out = buf
-	} else {
-		out = io.Discard.(io.StringWriter)
 	}
 
 	if err := ctx.WriteBuildFile(out); err != nil {
