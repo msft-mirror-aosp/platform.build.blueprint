@@ -50,15 +50,15 @@ const MockModuleListFile = "bplist"
 // through a series of four phases.  Each phase corresponds with a some methods
 // on the Context object
 //
-//         Phase                            Methods
-//      ------------      -------------------------------------------
-//   1. Registration         RegisterModuleType, RegisterSingletonType
+//	      Phase                            Methods
+//	   ------------      -------------------------------------------
+//	1. Registration         RegisterModuleType, RegisterSingletonType
 //
-//   2. Parse                    ParseBlueprintsFiles, Parse
+//	2. Parse                    ParseBlueprintsFiles, Parse
 //
-//   3. Generate            ResolveDependencies, PrepareBuildActions
+//	3. Generate            ResolveDependencies, PrepareBuildActions
 //
-//   4. Write                           WriteBuildFile
+//	4. Write                           WriteBuildFile
 //
 // The registration phase prepares the context to process Blueprints files
 // containing various types of modules.  The parse phase reads in one or more
@@ -424,7 +424,7 @@ func newContext() *Context {
 		globs:              make(map[globKey]pathtools.GlobResult),
 		fs:                 pathtools.OsFs,
 		finishedMutators:   make(map[*mutatorInfo]bool),
-		includeTags: &IncludeTags{},
+		includeTags:        &IncludeTags{},
 		outDir:             nil,
 		requiredNinjaMajor: 1,
 		requiredNinjaMinor: 7,
@@ -481,32 +481,32 @@ type ModuleFactory func() (m Module, propertyStructs []interface{})
 //
 // As an example, the follow code:
 //
-//   type myModule struct {
-//       properties struct {
-//           Foo string
-//           Bar []string
-//       }
-//   }
+//	type myModule struct {
+//	    properties struct {
+//	        Foo string
+//	        Bar []string
+//	    }
+//	}
 //
-//   func NewMyModule() (blueprint.Module, []interface{}) {
-//       module := new(myModule)
-//       properties := &module.properties
-//       return module, []interface{}{properties}
-//   }
+//	func NewMyModule() (blueprint.Module, []interface{}) {
+//	    module := new(myModule)
+//	    properties := &module.properties
+//	    return module, []interface{}{properties}
+//	}
 //
-//   func main() {
-//       ctx := blueprint.NewContext()
-//       ctx.RegisterModuleType("my_module", NewMyModule)
-//       // ...
-//   }
+//	func main() {
+//	    ctx := blueprint.NewContext()
+//	    ctx.RegisterModuleType("my_module", NewMyModule)
+//	    // ...
+//	}
 //
 // would support parsing a module defined in a Blueprints file as follows:
 //
-//   my_module {
-//       name: "myName",
-//       foo:  "my foo string",
-//       bar:  ["my", "bar", "strings"],
-//   }
+//	my_module {
+//	    name: "myName",
+//	    foo:  "my foo string",
+//	    bar:  ["my", "bar", "strings"],
+//	}
 //
 // The factory function may be called from multiple goroutines.  Any accesses
 // to global variables must be synchronized.
@@ -991,7 +991,6 @@ func shouldVisitFile(c *Context, file *parser.File) (bool, []error) {
 	}
 	return true, []error{}
 }
-
 
 func (c *Context) ParseFileList(rootDir string, filePaths []string,
 	config interface{}) (deps []string, errs []error) {
@@ -2821,6 +2820,8 @@ func (c *Context) runMutators(ctx context.Context, config interface{}) (deps []s
 	pprof.Do(ctx, pprof.Labels("blueprint", "runMutators"), func(ctx context.Context) {
 		for _, mutator := range c.mutatorInfo {
 			pprof.Do(ctx, pprof.Labels("mutator", mutator.name), func(context.Context) {
+				c.BeginEvent(mutator.name)
+				defer c.EndEvent(mutator.name)
 				var newDeps []string
 				if mutator.topDownMutator != nil {
 					newDeps, errs = c.runMutator(config, mutator, topDownMutator)
@@ -3756,32 +3757,30 @@ func (c *Context) AllTargets() (map[string]string, error) {
 	}
 
 	targets := map[string]string{}
-
-	// Collect all the module build targets.
-	for _, module := range c.moduleInfo {
-		for _, buildDef := range module.actionDefs.buildDefs {
+	var collectTargets = func(actionDefs localBuildActions) error {
+		for _, buildDef := range actionDefs.buildDefs {
 			ruleName := buildDef.Rule.fullName(c.pkgNames)
 			for _, output := range append(buildDef.Outputs, buildDef.ImplicitOutputs...) {
 				outputValue, err := output.Eval(c.globalVariables)
 				if err != nil {
-					return nil, err
+					return err
 				}
 				targets[outputValue] = ruleName
 			}
+		}
+		return nil
+	}
+	// Collect all the module build targets.
+	for _, module := range c.moduleInfo {
+		if err := collectTargets(module.actionDefs); err != nil {
+			return nil, err
 		}
 	}
 
 	// Collect all the singleton build targets.
 	for _, info := range c.singletonInfo {
-		for _, buildDef := range info.actionDefs.buildDefs {
-			ruleName := buildDef.Rule.fullName(c.pkgNames)
-			for _, output := range append(buildDef.Outputs, buildDef.ImplicitOutputs...) {
-				outputValue, err := output.Eval(c.globalVariables)
-				if err != nil {
-					return nil, err
-				}
-				targets[outputValue] = ruleName
-			}
+		if err := collectTargets(info.actionDefs); err != nil {
+			return nil, err
 		}
 	}
 
@@ -4000,59 +3999,46 @@ func (c *Context) WriteBuildFile(w io.StringWriter) error {
 
 		nw := newNinjaWriter(w)
 
-		err = c.writeBuildFileHeader(nw)
-		if err != nil {
+		if err = c.writeBuildFileHeader(nw); err != nil {
 			return
 		}
 
-		err = c.writeNinjaRequiredVersion(nw)
-		if err != nil {
+		if err = c.writeNinjaRequiredVersion(nw); err != nil {
 			return
 		}
 
-		err = c.writeSubninjas(nw)
-		if err != nil {
+		if err = c.writeSubninjas(nw); err != nil {
 			return
 		}
 
 		// TODO: Group the globals by package.
 
-		err = c.writeGlobalVariables(nw)
-		if err != nil {
+		if err = c.writeGlobalVariables(nw); err != nil {
 			return
 		}
 
-		err = c.writeGlobalPools(nw)
-		if err != nil {
+		if err = c.writeGlobalPools(nw); err != nil {
 			return
 		}
 
-		err = c.writeBuildDir(nw)
-		if err != nil {
+		if err = c.writeBuildDir(nw); err != nil {
 			return
 		}
 
-		err = c.writeGlobalRules(nw)
-		if err != nil {
+		if err = c.writeGlobalRules(nw); err != nil {
 			return
 		}
 
-		err = c.writeAllModuleActions(nw)
-		if err != nil {
+		if err = c.writeAllModuleActions(nw); err != nil {
 			return
 		}
 
-		err = c.writeAllSingletonActions(nw)
-		if err != nil {
+		if err = c.writeAllSingletonActions(nw); err != nil {
 			return
 		}
 	})
 
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 type pkgAssociation struct {
@@ -4333,9 +4319,10 @@ func (s moduleSorter) Swap(i, j int) {
 }
 
 func (c *Context) writeAllModuleActions(nw *ninjaWriter) error {
+	c.BeginEvent("modules")
+	defer c.EndEvent("modules")
 	headerTemplate := template.New("moduleHeader")
-	_, err := headerTemplate.Parse(moduleHeaderTemplate)
-	if err != nil {
+	if _, err := headerTemplate.Parse(moduleHeaderTemplate); err != nil {
 		// This is a programming error.
 		panic(err)
 	}
@@ -4345,6 +4332,11 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter) error {
 		modules = append(modules, module)
 	}
 	sort.Sort(moduleSorter{modules, c.nameInterface})
+
+	phonys := c.extractPhonys(modules)
+	if err := c.writeLocalBuildActions(nw, phonys); err != nil {
+		return err
+	}
 
 	buf := bytes.NewBuffer(nil)
 
@@ -4372,28 +4364,23 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter) error {
 			"pos":       relPos,
 			"variant":   module.variant.name,
 		}
-		err = headerTemplate.Execute(buf, infoMap)
-		if err != nil {
+		if err := headerTemplate.Execute(buf, infoMap); err != nil {
 			return err
 		}
 
-		err = nw.Comment(buf.String())
-		if err != nil {
+		if err := nw.Comment(buf.String()); err != nil {
 			return err
 		}
 
-		err = nw.BlankLine()
-		if err != nil {
+		if err := nw.BlankLine(); err != nil {
 			return err
 		}
 
-		err = c.writeLocalBuildActions(nw, &module.actionDefs)
-		if err != nil {
+		if err := c.writeLocalBuildActions(nw, &module.actionDefs); err != nil {
 			return err
 		}
 
-		err = nw.BlankLine()
-		if err != nil {
+		if err := nw.BlankLine(); err != nil {
 			return err
 		}
 	}
@@ -4402,6 +4389,8 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter) error {
 }
 
 func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
+	c.BeginEvent("singletons")
+	defer c.EndEvent("singletons")
 	headerTemplate := template.New("singletonHeader")
 	_, err := headerTemplate.Parse(singletonHeaderTemplate)
 	if err != nil {
@@ -4455,6 +4444,10 @@ func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 	return nil
 }
 
+func (c *Context) GetEventHandler() *metrics.EventHandler {
+	return c.EventHandler
+}
+
 func (c *Context) BeginEvent(name string) {
 	c.EventHandler.Begin(name)
 }
@@ -4465,6 +4458,131 @@ func (c *Context) EndEvent(name string) {
 
 func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
 	c.BeforePrepareBuildActionsHook = hookFn
+}
+
+// phonyCandidate represents the state of a set of deps that decides its eligibility
+// to be extracted as a phony output
+type phonyCandidate struct {
+	sync.Mutex
+	frequency int       // the number of buildDef instances that use this set
+	phony     *buildDef // the phony buildDef that wraps the set
+	first     *buildDef // the first buildDef that uses this set
+	key       string    // a unique identifier for the set
+}
+
+func (c *phonyCandidate) less(other *phonyCandidate) bool {
+	if c.frequency == other.frequency {
+		if len(c.phony.OrderOnly) == len(other.phony.OrderOnly) {
+			return c.key < other.key
+		}
+		return len(c.phony.OrderOnly) < len(other.phony.OrderOnly)
+	}
+	return c.frequency < other.frequency
+}
+
+// keyForPhonyCandidate gives a unique identifier for a set of deps.
+// We are not using hash because string concatenation proved cheaper.
+// If any of the deps use a variable, we return an empty string to signal
+// that this set of deps is ineligible for extraction.
+func keyForPhonyCandidate(deps []ninjaString) string {
+	s := make([]string, len(deps))
+	for i, d := range deps {
+		if len(d.Variables()) != 0 {
+			return ""
+		}
+		s[i] = d.Value(nil)
+	}
+	return strings.Join(s, "\n")
+}
+
+// scanBuildDef is called for every known buildDef `b` that has a non-empty `b.OrderOnly`.
+// If `b.OrderOnly` is not present in `candidates`, it gets stored.
+// But if `b.OrderOnly` already exists in `candidates`, then `b.OrderOnly`
+// (and phonyCandidate#first.OrderOnly) will be replaced with phonyCandidate#phony.Outputs
+func scanBuildDef(wg *sync.WaitGroup, candidates *sync.Map, phonyCount *atomic.Uint32, b *buildDef) {
+	defer wg.Done()
+	key := keyForPhonyCandidate(b.OrderOnly)
+	if key == "" {
+		return
+	}
+	if v, loaded := candidates.LoadOrStore(key, &phonyCandidate{
+		frequency: 1,
+		first:     b,
+		key:       key,
+	}); loaded {
+		m := v.(*phonyCandidate)
+		func() {
+			m.Lock()
+			defer m.Unlock()
+			if m.frequency == 1 {
+				// this is the second occurrence and hence it makes sense to
+				// extract it as a phony output
+				phonyCount.Add(1)
+				m.phony = &buildDef{
+					Rule: Phony,
+					// We are using placeholder because we don't have a deterministic
+					// name for the phony output; m.key is unique and could be used but
+					// it's rather long (and has characters we would need to escape)
+					Outputs:  make([]ninjaString, 1),
+					Inputs:   m.first.OrderOnly, //we could also use b.OrderOnly
+					Optional: true,
+				}
+				// the previously recorded build-def, which first had these deps as its
+				// order-only deps, should now use this phony output instead
+				m.first.OrderOnly = m.phony.Outputs
+				m.first = nil
+			}
+			m.frequency += 1
+			b.OrderOnly = m.phony.Outputs
+		}()
+	}
+}
+
+// extractPhonys searches for common sets of order-only dependencies across all
+// buildDef instances in the provided moduleInfo instances. Each such
+// common set forms a new buildDef representing a phony output that then becomes
+// the sole order-only dependency of those buildDef instances
+func (c *Context) extractPhonys(infos []*moduleInfo) *localBuildActions {
+	c.BeginEvent("extract_phonys")
+	defer c.EndEvent("extract_phonys")
+
+	candidates := sync.Map{} //used as map[key]*candidate
+	phonyCount := atomic.Uint32{}
+	wg := sync.WaitGroup{}
+	for _, info := range infos {
+		for _, b := range info.actionDefs.buildDefs {
+			if len(b.OrderOnly) > 0 {
+				wg.Add(1)
+				go scanBuildDef(&wg, &candidates, &phonyCount, b)
+			}
+		}
+	}
+	wg.Wait()
+
+	//now filter candidates with freq > 1
+	phonys := make([]*phonyCandidate, 0, phonyCount.Load())
+	candidates.Range(func(_ any, v any) bool {
+		candidate := v.(*phonyCandidate)
+		if candidate.frequency > 1 {
+			phonys = append(phonys, candidate)
+		}
+		return true
+	})
+
+	phonyBuildDefs := make([]*buildDef, len(phonys))
+	c.EventHandler.Do("name", func() {
+		// sorting for determinism
+		sort.Slice(phonys, func(i int, j int) bool {
+			return phonys[i].less(phonys[j])
+		})
+		for index, p := range phonys {
+			// use the index to set the name for the phony output
+			p.phony.Outputs[0] = literalNinjaString(fmt.Sprintf("phony-%d", index))
+			phonyBuildDefs[index] = p.phony
+		}
+	})
+
+	return &localBuildActions{buildDefs: phonyBuildDefs}
 }
 
 func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
@@ -4590,7 +4708,7 @@ they were generated by the following Go packages:
 
 `
 
-var moduleHeaderTemplate = `# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+var moduleHeaderTemplate = `# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 Module:  {{.name}}
 Variant: {{.variant}}
 Type:    {{.typeName}}
@@ -4598,7 +4716,7 @@ Factory: {{.goFactory}}
 Defined: {{.pos}}
 `
 
-var singletonHeaderTemplate = `# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # 
+var singletonHeaderTemplate = `# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 Singleton: {{.name}}
 Factory:   {{.goFactory}}
 `
