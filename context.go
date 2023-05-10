@@ -17,6 +17,8 @@ package blueprint
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,6 +142,45 @@ type Context struct {
 
 	// String values that can be used to gate build graph traversal
 	includeTags *IncludeTags
+
+	sourceRootDirs *SourceRootDirs
+}
+
+// A container for String keys. The keys can be used to gate build graph traversal
+type SourceRootDirs struct {
+	dirs []string
+}
+
+func (dirs *SourceRootDirs) Add(names ...string) {
+	dirs.dirs = append(dirs.dirs, names...)
+}
+
+func (dirs *SourceRootDirs) SourceRootDirAllowed(path string) (bool, string) {
+	sort.Slice(dirs.dirs, func(i, j int) bool {
+		return len(dirs.dirs[i]) < len(dirs.dirs[j])
+	})
+	last := len(dirs.dirs)
+	for i := range dirs.dirs {
+		// iterate from longest paths (most specific)
+		prefix := dirs.dirs[last-i-1]
+		disallowedPrefix := false
+		if len(prefix) >= 1 && prefix[0] == '-' {
+			prefix = prefix[1:]
+			disallowedPrefix = true
+		}
+		if strings.HasPrefix(path, prefix) {
+			if disallowedPrefix {
+				return false, prefix
+			} else {
+				return true, prefix
+			}
+		}
+	}
+	return true, ""
+}
+
+func (c *Context) AddSourceRootDirs(dirs ...string) {
+	c.sourceRootDirs.Add(dirs...)
 }
 
 // A container for String keys. The keys can be used to gate build graph traversal
@@ -425,6 +466,7 @@ func newContext() *Context {
 		fs:                 pathtools.OsFs,
 		finishedMutators:   make(map[*mutatorInfo]bool),
 		includeTags:        &IncludeTags{},
+		sourceRootDirs:     &SourceRootDirs{},
 		outDir:             nil,
 		requiredNinjaMajor: 1,
 		requiredNinjaMinor: 7,
@@ -512,7 +554,7 @@ type ModuleFactory func() (m Module, propertyStructs []interface{})
 // to global variables must be synchronized.
 func (c *Context) RegisterModuleType(name string, factory ModuleFactory) {
 	if _, present := c.moduleFactories[name]; present {
-		panic(errors.New("module type name is already registered"))
+		panic(fmt.Errorf("module type %q is already registered", name))
 	}
 	c.moduleFactories[name] = factory
 }
@@ -533,7 +575,7 @@ type SingletonFactory func() Singleton
 func (c *Context) RegisterSingletonType(name string, factory SingletonFactory) {
 	for _, s := range c.singletonInfo {
 		if s.name == name {
-			panic(errors.New("singleton name is already registered"))
+			panic(fmt.Errorf("singleton %q is already registered", name))
 		}
 	}
 
@@ -555,7 +597,7 @@ func (c *Context) RegisterSingletonType(name string, factory SingletonFactory) {
 func (c *Context) RegisterPreSingletonType(name string, factory SingletonFactory) {
 	for _, s := range c.preSingletonInfo {
 		if s.name == name {
-			panic(errors.New("presingleton name is already registered"))
+			panic(fmt.Errorf("presingleton %q is already registered", name))
 		}
 	}
 
@@ -608,7 +650,7 @@ func singletonTypeName(singleton Singleton) string {
 func (c *Context) RegisterTopDownMutator(name string, mutator TopDownMutator) MutatorHandle {
 	for _, m := range c.mutatorInfo {
 		if m.name == name && m.topDownMutator != nil {
-			panic(fmt.Errorf("mutator name %s is already registered", name))
+			panic(fmt.Errorf("mutator %q is already registered", name))
 		}
 	}
 
@@ -635,7 +677,7 @@ func (c *Context) RegisterTopDownMutator(name string, mutator TopDownMutator) Mu
 func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) MutatorHandle {
 	for _, m := range c.variantMutatorNames {
 		if m == name {
-			panic(fmt.Errorf("mutator name %s is already registered", name))
+			panic(fmt.Errorf("mutator %q is already registered", name))
 		}
 	}
 
@@ -966,15 +1008,25 @@ func (c *Context) ParseBlueprintsFiles(rootFile string,
 	return c.ParseFileList(baseDir, pathsToParse, config)
 }
 
+type shouldVisitFileInfo struct {
+	shouldVisitFile bool
+	skippedModules  []string
+	reasonForSkip   string
+	errs            []error
+}
+
 // Returns a boolean for whether this file should be analyzed
 // Evaluates to true if the file either
 // 1. does not contain a blueprint_package_includes
 // 2. contains a blueprint_package_includes and all requested tags are set
 // This should be processed before adding any modules to the build graph
-func shouldVisitFile(c *Context, file *parser.File) (bool, []error) {
+func shouldVisitFile(c *Context, file *parser.File) shouldVisitFileInfo {
+	skippedModules := []string{}
+	var blueprintPackageIncludes *PackageIncludes
 	for _, def := range file.Defs {
 		switch def := def.(type) {
 		case *parser.Module:
+			skippedModules = append(skippedModules, def.Name())
 			if def.Type != "blueprint_package_includes" {
 				continue
 			}
@@ -982,14 +1034,43 @@ func shouldVisitFile(c *Context, file *parser.File) (bool, []error) {
 			if len(errs) > 0 {
 				// This file contains errors in blueprint_package_includes
 				// Visit anyways so that we can report errors on other modules in the file
-				return true, errs
+				return shouldVisitFileInfo{
+					shouldVisitFile: true,
+					errs:            errs,
+				}
 			}
 			logicModule, _ := c.cloneLogicModule(module)
-			pi := logicModule.(*PackageIncludes)
-			return pi.MatchesIncludeTags(c), []error{}
+			blueprintPackageIncludes = logicModule.(*PackageIncludes)
 		}
 	}
-	return true, []error{}
+
+	if blueprintPackageIncludes != nil {
+		packageMatches := blueprintPackageIncludes.MatchesIncludeTags(c)
+		if !packageMatches {
+			return shouldVisitFileInfo{
+				shouldVisitFile: false,
+				skippedModules:  skippedModules,
+				reasonForSkip: fmt.Sprintf(
+					"module is defined in %q which contains a blueprint_package_includes module with unsatisfied tags",
+					file.Name,
+				),
+			}
+		}
+	}
+
+	shouldVisit, invalidatingPrefix := c.sourceRootDirs.SourceRootDirAllowed(file.Name)
+	if !shouldVisit {
+		return shouldVisitFileInfo{
+			shouldVisitFile: shouldVisit,
+			skippedModules:  skippedModules,
+			reasonForSkip: fmt.Sprintf(
+				"%q is a descendant of %q, and that path prefix was not included in PRODUCT_SOURCE_ROOT_DIRS",
+				file.Name,
+				invalidatingPrefix,
+			),
+		}
+	}
+	return shouldVisitFileInfo{shouldVisitFile: true}
 }
 
 func (c *Context) ParseFileList(rootDir string, filePaths []string,
@@ -1007,9 +1088,15 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string,
 		added chan<- struct{}
 	}
 
+	type newSkipInfo struct {
+		shouldVisitFileInfo
+		file string
+	}
+
 	moduleCh := make(chan newModuleInfo)
 	errsCh := make(chan []error)
 	doneCh := make(chan struct{})
+	skipCh := make(chan newSkipInfo)
 	var numErrs uint32
 	var numGoroutines int32
 
@@ -1044,12 +1131,17 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string,
 			}
 			return nil
 		}
-		shouldVisit, errs := shouldVisitFile(c, file)
+		shouldVisitInfo := shouldVisitFile(c, file)
+		errs := shouldVisitInfo.errs
 		if len(errs) > 0 {
 			atomic.AddUint32(&numErrs, uint32(len(errs)))
 			errsCh <- errs
 		}
-		if !shouldVisit {
+		if !shouldVisitInfo.shouldVisitFile {
+			skipCh <- newSkipInfo{
+				file:                file.Name,
+				shouldVisitFileInfo: shouldVisitInfo,
+			}
 			// TODO: Write a file that lists the skipped bp files
 			return
 		}
@@ -1105,6 +1197,14 @@ loop:
 			n := atomic.AddInt32(&numGoroutines, -1)
 			if n == 0 {
 				break loop
+			}
+		case skipped := <-skipCh:
+			nctx := newNamespaceContextFromFilename(skipped.file)
+			for _, name := range skipped.skippedModules {
+				c.nameInterface.NewSkippedModule(nctx, name, SkippedModuleInfo{
+					filename: skipped.file,
+					reason:   skipped.reasonForSkip,
+				})
 			}
 		}
 	}
@@ -2579,6 +2679,7 @@ type jsonVariations []Variation
 
 type jsonModuleName struct {
 	Name                 string
+	Variant              string
 	Variations           jsonVariations
 	DependencyVariations jsonVariations
 }
@@ -2614,6 +2715,7 @@ func toJsonVariationMap(vm variationMap) jsonVariations {
 func jsonModuleNameFromModuleInfo(m *moduleInfo) *jsonModuleName {
 	return &jsonModuleName{
 		Name:                 m.Name(),
+		Variant:              m.variant.name,
 		Variations:           toJsonVariationMap(m.variant.variations),
 		DependencyVariations: toJsonVariationMap(m.variant.dependencyVariations),
 	}
@@ -2661,7 +2763,8 @@ func jsonModuleFromModuleInfo(m *moduleInfo) *JsonModule {
 func jsonModuleWithActionsFromModuleInfo(m *moduleInfo) *JsonModule {
 	result := &JsonModule{
 		jsonModuleName: jsonModuleName{
-			Name: m.Name(),
+			Name:    m.Name(),
+			Variant: m.variant.name,
 		},
 		Deps:      make([]jsonDep, 0),
 		Type:      m.typeName,
@@ -2701,6 +2804,30 @@ func getNinjaStringsWithNilPkgNames(nStrs []ninjaString) []string {
 		strs = append(strs, nstr.Value(nil))
 	}
 	return strs
+}
+
+func (c *Context) GetOutputsFromModuleNames(moduleNames []string) map[string][]string {
+	modulesToOutputs := make(map[string][]string)
+	for _, m := range c.modulesSorted {
+		if inList(m.Name(), moduleNames) {
+			jmWithActions := jsonModuleWithActionsFromModuleInfo(m)
+			for _, a := range jmWithActions.Module["Actions"].([]JSONAction) {
+				modulesToOutputs[m.Name()] = append(modulesToOutputs[m.Name()], a.Outputs...)
+			}
+			// There could be several modules with the same name, so keep looping
+		}
+	}
+
+	return modulesToOutputs
+}
+
+func inList(s string, l []string) bool {
+	for _, element := range l {
+		if s == element {
+			return true
+		}
+	}
+	return false
 }
 
 // PrintJSONGraph prints info of modules in a JSON file.
@@ -3488,8 +3615,8 @@ func (c *Context) discoveredMissingDependencies(module *moduleInfo, depName stri
 }
 
 func (c *Context) missingDependencyError(module *moduleInfo, depName string) (errs error) {
-	err := c.nameInterface.MissingDependencyError(module.Name(), module.namespace(), depName)
-
+	guess := namesLike(depName, module.Name(), c.moduleGroups)
+	err := c.nameInterface.MissingDependencyError(module.Name(), module.namespace(), depName, guess)
 	return &BlueprintError{
 		Err: err,
 		Pos: module.pos,
@@ -4333,7 +4460,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter) error {
 	}
 	sort.Sort(moduleSorter{modules, c.nameInterface})
 
-	phonys := c.extractPhonys(modules)
+	phonys := c.deduplicateOrderOnlyDeps(modules)
 	if err := c.writeLocalBuildActions(nw, phonys); err != nil {
 		return err
 	}
@@ -4463,36 +4590,23 @@ func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
 // phonyCandidate represents the state of a set of deps that decides its eligibility
 // to be extracted as a phony output
 type phonyCandidate struct {
-	sync.Mutex
-	frequency int       // the number of buildDef instances that use this set
-	phony     *buildDef // the phony buildDef that wraps the set
-	first     *buildDef // the first buildDef that uses this set
-	key       string    // a unique identifier for the set
-}
-
-func (c *phonyCandidate) less(other *phonyCandidate) bool {
-	if c.frequency == other.frequency {
-		if len(c.phony.OrderOnly) == len(other.phony.OrderOnly) {
-			return c.key < other.key
-		}
-		return len(c.phony.OrderOnly) < len(other.phony.OrderOnly)
-	}
-	return c.frequency < other.frequency
+	sync.Once
+	phony *buildDef // the phony buildDef that wraps the set
+	first *buildDef // the first buildDef that uses this set
 }
 
 // keyForPhonyCandidate gives a unique identifier for a set of deps.
-// We are not using hash because string concatenation proved cheaper.
 // If any of the deps use a variable, we return an empty string to signal
 // that this set of deps is ineligible for extraction.
 func keyForPhonyCandidate(deps []ninjaString) string {
-	s := make([]string, len(deps))
-	for i, d := range deps {
+	hasher := sha256.New()
+	for _, d := range deps {
 		if len(d.Variables()) != 0 {
 			return ""
 		}
-		s[i] = d.Value(nil)
+		io.WriteString(hasher, d.Value(nil))
 	}
-	return strings.Join(s, "\n")
+	return base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
 }
 
 // scanBuildDef is called for every known buildDef `b` that has a non-empty `b.OrderOnly`.
@@ -4506,45 +4620,35 @@ func scanBuildDef(wg *sync.WaitGroup, candidates *sync.Map, phonyCount *atomic.U
 		return
 	}
 	if v, loaded := candidates.LoadOrStore(key, &phonyCandidate{
-		frequency: 1,
-		first:     b,
-		key:       key,
+		first: b,
 	}); loaded {
 		m := v.(*phonyCandidate)
-		func() {
-			m.Lock()
-			defer m.Unlock()
-			if m.frequency == 1 {
-				// this is the second occurrence and hence it makes sense to
-				// extract it as a phony output
-				phonyCount.Add(1)
-				m.phony = &buildDef{
-					Rule: Phony,
-					// We are using placeholder because we don't have a deterministic
-					// name for the phony output; m.key is unique and could be used but
-					// it's rather long (and has characters we would need to escape)
-					Outputs:  make([]ninjaString, 1),
-					Inputs:   m.first.OrderOnly, //we could also use b.OrderOnly
-					Optional: true,
-				}
-				// the previously recorded build-def, which first had these deps as its
-				// order-only deps, should now use this phony output instead
-				m.first.OrderOnly = m.phony.Outputs
-				m.first = nil
+		m.Do(func() {
+			// this is the second occurrence and hence it makes sense to
+			// extract it as a phony output
+			phonyCount.Add(1)
+			m.phony = &buildDef{
+				Rule:     Phony,
+				Outputs:  []ninjaString{simpleNinjaString("dedup-" + key)},
+				Inputs:   m.first.OrderOnly, //we could also use b.OrderOnly
+				Optional: true,
 			}
-			m.frequency += 1
-			b.OrderOnly = m.phony.Outputs
-		}()
+			// the previously recorded build-def, which first had these deps as its
+			// order-only deps, should now use this phony output instead
+			m.first.OrderOnly = m.phony.Outputs
+			m.first = nil
+		})
+		b.OrderOnly = m.phony.Outputs
 	}
 }
 
-// extractPhonys searches for common sets of order-only dependencies across all
+// deduplicateOrderOnlyDeps searches for common sets of order-only dependencies across all
 // buildDef instances in the provided moduleInfo instances. Each such
 // common set forms a new buildDef representing a phony output that then becomes
 // the sole order-only dependency of those buildDef instances
-func (c *Context) extractPhonys(infos []*moduleInfo) *localBuildActions {
-	c.BeginEvent("extract_phonys")
-	defer c.EndEvent("extract_phonys")
+func (c *Context) deduplicateOrderOnlyDeps(infos []*moduleInfo) *localBuildActions {
+	c.BeginEvent("deduplicate_order_only_deps")
+	defer c.EndEvent("deduplicate_order_only_deps")
 
 	candidates := sync.Map{} //used as map[key]*candidate
 	phonyCount := atomic.Uint32{}
@@ -4559,30 +4663,24 @@ func (c *Context) extractPhonys(infos []*moduleInfo) *localBuildActions {
 	}
 	wg.Wait()
 
-	//now filter candidates with freq > 1
-	phonys := make([]*phonyCandidate, 0, phonyCount.Load())
+	// now collect all created phonys to return
+	phonys := make([]*buildDef, 0, phonyCount.Load())
 	candidates.Range(func(_ any, v any) bool {
 		candidate := v.(*phonyCandidate)
-		if candidate.frequency > 1 {
-			phonys = append(phonys, candidate)
+		if candidate.phony != nil {
+			phonys = append(phonys, candidate.phony)
 		}
 		return true
 	})
 
-	phonyBuildDefs := make([]*buildDef, len(phonys))
-	c.EventHandler.Do("name", func() {
-		// sorting for determinism
+	c.EventHandler.Do("sort_phony_builddefs", func() {
+		// sorting for determinism, the phony output names are stable
 		sort.Slice(phonys, func(i int, j int) bool {
-			return phonys[i].less(phonys[j])
+			return phonys[i].Outputs[0].Value(nil) < phonys[j].Outputs[0].Value(nil)
 		})
-		for index, p := range phonys {
-			// use the index to set the name for the phony output
-			p.phony.Outputs[0] = literalNinjaString(fmt.Sprintf("phony-%d", index))
-			phonyBuildDefs[index] = p.phony
-		}
 	})
 
-	return &localBuildActions{buildDefs: phonyBuildDefs}
+	return &localBuildActions{buildDefs: phonys}
 }
 
 func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
