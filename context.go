@@ -103,15 +103,15 @@ type Context struct {
 	// set during PrepareBuildActions
 	pkgNames        map[*packageContext]string
 	liveGlobals     *liveTracker
-	globalVariables map[Variable]ninjaString
+	globalVariables map[Variable]*ninjaString
 	globalPools     map[Pool]*poolDef
 	globalRules     map[Rule]*ruleDef
 
 	// set during PrepareBuildActions
-	outDir             ninjaString // The builddir special Ninja variable
-	requiredNinjaMajor int         // For the ninja_required_version variable
-	requiredNinjaMinor int         // For the ninja_required_version variable
-	requiredNinjaMicro int         // For the ninja_required_version variable
+	outDir             *ninjaString // The builddir special Ninja variable
+	requiredNinjaMajor int          // For the ninja_required_version variable
+	requiredNinjaMinor int          // For the ninja_required_version variable
+	requiredNinjaMicro int          // For the ninja_required_version variable
 
 	subninjas []string
 
@@ -137,8 +137,12 @@ type Context struct {
 	// True for any mutators that have already run over all modules
 	finishedMutators map[*mutatorInfo]bool
 
-	// Can be set by tests to avoid invalidating Module values after mutators.
-	skipCloneModulesAfterMutators bool
+	// If true, RunBlueprint will skip cloning modules at the end of RunBlueprint.
+	// Cloning modules intentionally invalidates some Module values after
+	// mutators run (to ensure that mutators don't set such Module values in a way
+	// which ruins the integrity of the graph). However, keeping Module values
+	// changed by mutators may be a desirable outcome (such as for tooling or tests).
+	SkipCloneModulesAfterMutators bool
 
 	// String values that can be used to gate build graph traversal
 	includeTags *IncludeTags
@@ -1983,9 +1987,11 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 		}
 		deps = append(deps, mutatorDeps...)
 
-		if !c.skipCloneModulesAfterMutators {
+		c.BeginEvent("clone_modules")
+		if !c.SkipCloneModulesAfterMutators {
 			c.cloneModules()
 		}
+		defer c.EndEvent("clone_modules")
 
 		c.dependenciesReady = true
 	})
@@ -2734,6 +2740,7 @@ type JSONDataSupplier interface {
 type JSONAction struct {
 	Inputs  []string
 	Outputs []string
+	Desc    string
 }
 
 // JSONActionSupplier allows JSON representation of additional actions that are not registered in
@@ -2778,14 +2785,18 @@ func jsonModuleWithActionsFromModuleInfo(m *moduleInfo) *JsonModule {
 	}
 	var actions []JSONAction
 	for _, bDef := range m.actionDefs.buildDefs {
-		actions = append(actions, JSONAction{
+		a := JSONAction{
 			Inputs: append(
 				getNinjaStringsWithNilPkgNames(bDef.Inputs),
 				getNinjaStringsWithNilPkgNames(bDef.Implicits)...),
 			Outputs: append(
 				getNinjaStringsWithNilPkgNames(bDef.Outputs),
 				getNinjaStringsWithNilPkgNames(bDef.ImplicitOutputs)...),
-		})
+		}
+		if d, ok := bDef.Variables["description"]; ok {
+			a.Desc = d.Value(nil)
+		}
+		actions = append(actions, a)
 	}
 
 	if j, ok := m.logicModule.(JSONActionSupplier); ok {
@@ -2803,7 +2814,7 @@ func jsonModuleWithActionsFromModuleInfo(m *moduleInfo) *JsonModule {
 
 // Gets a list of strings from the given list of ninjaStrings by invoking ninjaString.Value with
 // nil pkgNames on each of the input ninjaStrings.
-func getNinjaStringsWithNilPkgNames(nStrs []ninjaString) []string {
+func getNinjaStringsWithNilPkgNames(nStrs []*ninjaString) []string {
 	var strs []string
 	for _, nstr := range nStrs {
 		strs = append(strs, nstr.Value(nil))
@@ -3809,7 +3820,7 @@ func (c *Context) requireNinjaVersion(major, minor, micro int) {
 	}
 }
 
-func (c *Context) setOutDir(value ninjaString) {
+func (c *Context) setOutDir(value *ninjaString) {
 	if c.outDir == nil {
 		c.outDir = value
 	}
@@ -3890,7 +3901,7 @@ func (c *Context) memoizeFullNames(liveGlobals *liveTracker, pkgNames map[*packa
 }
 
 func (c *Context) checkForVariableReferenceCycles(
-	variables map[Variable]ninjaString, pkgNames map[*packageContext]string) {
+	variables map[Variable]*ninjaString, pkgNames map[*packageContext]string) {
 
 	visited := make(map[Variable]bool)  // variables that were already checked
 	checking := make(map[Variable]bool) // variables actively being checked
@@ -4685,7 +4696,7 @@ type phonyCandidate struct {
 // keyForPhonyCandidate gives a unique identifier for a set of deps.
 // If any of the deps use a variable, we return an empty string to signal
 // that this set of deps is ineligible for extraction.
-func keyForPhonyCandidate(deps []ninjaString) string {
+func keyForPhonyCandidate(deps []*ninjaString) string {
 	hasher := sha256.New()
 	for _, d := range deps {
 		if len(d.Variables()) != 0 {
@@ -4716,7 +4727,7 @@ func scanBuildDef(wg *sync.WaitGroup, candidates *sync.Map, phonyCount *atomic.U
 			phonyCount.Add(1)
 			m.phony = &buildDef{
 				Rule:     Phony,
-				Outputs:  []ninjaString{simpleNinjaString("dedup-" + key)},
+				Outputs:  []*ninjaString{simpleNinjaString("dedup-" + key)},
 				Inputs:   m.first.OrderOnly, //we could also use b.OrderOnly
 				Optional: true,
 			}
