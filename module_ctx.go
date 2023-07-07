@@ -58,27 +58,27 @@ import (
 // that other modules can link against.  The library Module might implement the
 // following interface:
 //
-//   type LibraryProducer interface {
-//       LibraryFileName() string
-//   }
+//	type LibraryProducer interface {
+//	    LibraryFileName() string
+//	}
 //
-//   func IsLibraryProducer(module blueprint.Module) {
-//       _, ok := module.(LibraryProducer)
-//       return ok
-//   }
+//	func IsLibraryProducer(module blueprint.Module) {
+//	    _, ok := module.(LibraryProducer)
+//	    return ok
+//	}
 //
 // A binary-producing Module that depends on the library Module could then do:
 //
-//   func (m *myBinaryModule) GenerateBuildActions(ctx blueprint.ModuleContext) {
-//       ...
-//       var libraryFiles []string
-//       ctx.VisitDepsDepthFirstIf(IsLibraryProducer,
-//           func(module blueprint.Module) {
-//               libProducer := module.(LibraryProducer)
-//               libraryFiles = append(libraryFiles, libProducer.LibraryFileName())
-//           })
-//       ...
-//   }
+//	func (m *myBinaryModule) GenerateBuildActions(ctx blueprint.ModuleContext) {
+//	    ...
+//	    var libraryFiles []string
+//	    ctx.VisitDepsDepthFirstIf(IsLibraryProducer,
+//	        func(module blueprint.Module) {
+//	            libProducer := module.(LibraryProducer)
+//	            libraryFiles = append(libraryFiles, libProducer.LibraryFileName())
+//	        })
+//	    ...
+//	}
 //
 // to build the list of library file names that should be included in its link
 // command.
@@ -300,6 +300,9 @@ type BaseModuleContext interface {
 	// There are no guarantees about which variant of the module will be returned.
 	// Prefer retrieving the module using GetDirectDep or a visit function, when possible, as
 	// this will guarantee the appropriate module-variant dependency is returned.
+	//
+	// WARNING: This should _only_ be used within the context of bp2build, where variants and
+	// dependencies are not created.
 	ModuleFromName(name string) (Module, bool)
 
 	// OtherModuleDependencyVariantExists returns true if a module with the
