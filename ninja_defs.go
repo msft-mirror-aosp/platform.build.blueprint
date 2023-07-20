@@ -131,11 +131,11 @@ func (p *poolDef) WriteTo(nw *ninjaWriter, name string) error {
 // A ruleDef describes a rule definition.  It does not include the name of the
 // rule.
 type ruleDef struct {
-	CommandDeps      []ninjaString
-	CommandOrderOnly []ninjaString
+	CommandDeps      []*ninjaString
+	CommandOrderOnly []*ninjaString
 	Comment          string
 	Pool             Pool
-	Variables        map[string]ninjaString
+	Variables        map[string]*ninjaString
 }
 
 func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
@@ -144,7 +144,7 @@ func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
 	r := &ruleDef{
 		Comment:   params.Comment,
 		Pool:      params.Pool,
-		Variables: make(map[string]ninjaString),
+		Variables: make(map[string]*ninjaString),
 	}
 
 	if params.Command == "" {
@@ -264,19 +264,36 @@ type buildDef struct {
 	Comment         string
 	Rule            Rule
 	RuleDef         *ruleDef
-	Outputs         []ninjaString
-	ImplicitOutputs []ninjaString
-	Inputs          []ninjaString
-	Implicits       []ninjaString
-	OrderOnly       []ninjaString
-	Validations     []ninjaString
-	Args            map[Variable]ninjaString
-	Variables       map[string]ninjaString
+	Outputs         []*ninjaString
+	ImplicitOutputs []*ninjaString
+	Inputs          []*ninjaString
+	Implicits       []*ninjaString
+	OrderOnly       []*ninjaString
+	Validations     []*ninjaString
+	Args            map[Variable]*ninjaString
+	Variables       map[string]*ninjaString
 	Optional        bool
 }
 
-func parseBuildParams(scope scope, params *BuildParams) (*buildDef,
-	error) {
+func formatTags(tags map[string]string, rule Rule) string {
+	// Maps in golang do not have a guaranteed iteration order, nor is there an
+	// ordered map type in the stdlib, but we need to deterministically generate
+	// the ninja file.
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, 0, len(keys))
+	for _, k := range keys {
+		pairs = append(pairs, k+"="+tags[k])
+	}
+	pairs = append(pairs, "rule_name="+rule.name())
+	return strings.Join(pairs, ";")
+}
+
+func parseBuildParams(scope scope, params *BuildParams,
+	tags map[string]string) (*buildDef, error) {
 
 	comment := params.Comment
 	rule := params.Rule
@@ -286,9 +303,9 @@ func parseBuildParams(scope scope, params *BuildParams) (*buildDef,
 		Rule:    rule,
 	}
 
-	setVariable := func(name string, value ninjaString) {
+	setVariable := func(name string, value *ninjaString) {
 		if b.Variables == nil {
-			b.Variables = make(map[string]ninjaString)
+			b.Variables = make(map[string]*ninjaString)
 		}
 		b.Variables[name] = value
 	}
@@ -360,10 +377,14 @@ func parseBuildParams(scope scope, params *BuildParams) (*buildDef,
 			simpleNinjaString(strings.Join(params.SymlinkOutputs, " ")))
 	}
 
+	if len(tags) > 0 {
+		setVariable("tags", simpleNinjaString(formatTags(tags, rule)))
+	}
+
 	argNameScope := rule.scope()
 
 	if len(params.Args) > 0 {
-		b.Args = make(map[Variable]ninjaString)
+		b.Args = make(map[Variable]*ninjaString)
 		for name, value := range params.Args {
 			if !rule.isArg(name) {
 				return nil, fmt.Errorf("unknown argument %q", name)
@@ -444,7 +465,7 @@ func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string)
 	return nw.BlankLine()
 }
 
-func writeVariables(nw *ninjaWriter, variables map[string]ninjaString,
+func writeVariables(nw *ninjaWriter, variables map[string]*ninjaString,
 	pkgNames map[*packageContext]string) error {
 	var keys []string
 	for k := range variables {
