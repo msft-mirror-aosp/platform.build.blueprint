@@ -84,7 +84,6 @@ type Context struct {
 	moduleGroups        []*moduleGroup
 	moduleInfo          map[Module]*moduleInfo
 	modulesSorted       []*moduleInfo
-	preSingletonInfo    []*singletonInfo
 	singletonInfo       []*singletonInfo
 	mutatorInfo         []*mutatorInfo
 	variantMutatorNames []string
@@ -591,29 +590,6 @@ func (c *Context) RegisterSingletonType(name string, factory SingletonFactory, p
 		singleton: factory(),
 		name:      name,
 		parallel:  parallel,
-	})
-}
-
-// RegisterPreSingletonType registers a presingleton type that will be invoked to
-// generate build actions before any Blueprint files have been read.  Each registered
-// presingleton type is instantiated and invoked exactly once at the beginning of the
-// parse phase.  Each registered presingleton is invoked in registration order.
-//
-// The presingleton type names given here must be unique for the context.  The
-// factory function should be a named function so that its package and name can
-// be included in the generated Ninja file for debugging purposes.
-func (c *Context) RegisterPreSingletonType(name string, factory SingletonFactory) {
-	for _, s := range c.preSingletonInfo {
-		if s.name == name {
-			panic(fmt.Errorf("presingleton %q is already registered", name))
-		}
-	}
-
-	c.preSingletonInfo = append(c.preSingletonInfo, &singletonInfo{
-		factory:   factory,
-		singleton: factory(),
-		name:      name,
-		parallel:  false,
 	})
 }
 
@@ -1970,22 +1946,15 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 
 		c.liveGlobals = newLiveTracker(c, config)
 
-		deps, errs = c.generateSingletonBuildActions(config, c.preSingletonInfo, c.liveGlobals)
-		if len(errs) > 0 {
-			return
-		}
-
 		errs = c.updateDependencies()
 		if len(errs) > 0 {
 			return
 		}
 
-		var mutatorDeps []string
-		mutatorDeps, errs = c.runMutators(ctx, config)
+		deps, errs = c.runMutators(ctx, config)
 		if len(errs) > 0 {
 			return
 		}
-		deps = append(deps, mutatorDeps...)
 
 		c.BeginEvent("clone_modules")
 		if !c.SkipCloneModulesAfterMutators {
@@ -2786,11 +2755,16 @@ func jsonModuleWithActionsFromModuleInfo(m *moduleInfo) *JsonModule {
 	var actions []JSONAction
 	for _, bDef := range m.actionDefs.buildDefs {
 		a := JSONAction{
-			Inputs: append(
-				getNinjaStringsWithNilPkgNames(bDef.Inputs),
+			Inputs: append(append(append(
+				bDef.InputStrings,
+				bDef.ImplicitStrings...),
+				getNinjaStringsWithNilPkgNames(bDef.Inputs)...),
 				getNinjaStringsWithNilPkgNames(bDef.Implicits)...),
-			Outputs: append(
-				getNinjaStringsWithNilPkgNames(bDef.Outputs),
+
+			Outputs: append(append(append(
+				bDef.OutputStrings,
+				bDef.ImplicitOutputStrings...),
+				getNinjaStringsWithNilPkgNames(bDef.Outputs)...),
 				getNinjaStringsWithNilPkgNames(bDef.ImplicitOutputs)...),
 		}
 		if d, ok := bDef.Variables["description"]; ok {
@@ -3992,6 +3966,9 @@ func (c *Context) AllTargets() (map[string]string, error) {
 				}
 				targets[outputValue] = ruleName
 			}
+			for _, output := range append(buildDef.OutputStrings, buildDef.ImplicitOutputStrings...) {
+				targets[output] = ruleName
+			}
 		}
 		return nil
 	}
@@ -4214,7 +4191,7 @@ func (c *Context) SingletonName(singleton Singleton) string {
 // WriteBuildFile writes the Ninja manifest text for the generated build
 // actions to w.  If this is called before PrepareBuildActions successfully
 // completes then ErrBuildActionsNotReady is returned.
-func (c *Context) WriteBuildFile(w io.StringWriter) error {
+func (c *Context) WriteBuildFile(w StringWriterWriter) error {
 	var err error
 	pprof.Do(c.Context, pprof.Labels("blueprint", "WriteBuildFile"), func(ctx context.Context) {
 		if !c.buildActionsReady {
@@ -4696,13 +4673,16 @@ type phonyCandidate struct {
 // keyForPhonyCandidate gives a unique identifier for a set of deps.
 // If any of the deps use a variable, we return an empty string to signal
 // that this set of deps is ineligible for extraction.
-func keyForPhonyCandidate(deps []*ninjaString) string {
+func keyForPhonyCandidate(deps []*ninjaString, stringDeps []string) string {
 	hasher := sha256.New()
 	for _, d := range deps {
 		if len(d.Variables()) != 0 {
 			return ""
 		}
 		io.WriteString(hasher, d.Value(nil))
+	}
+	for _, d := range stringDeps {
+		io.WriteString(hasher, d)
 	}
 	return base64.RawURLEncoding.EncodeToString(hasher.Sum(nil))
 }
@@ -4713,7 +4693,7 @@ func keyForPhonyCandidate(deps []*ninjaString) string {
 // (and phonyCandidate#first.OrderOnly) will be replaced with phonyCandidate#phony.Outputs
 func scanBuildDef(wg *sync.WaitGroup, candidates *sync.Map, phonyCount *atomic.Uint32, b *buildDef) {
 	defer wg.Done()
-	key := keyForPhonyCandidate(b.OrderOnly)
+	key := keyForPhonyCandidate(b.OrderOnly, b.OrderOnlyStrings)
 	if key == "" {
 		return
 	}
@@ -4726,17 +4706,20 @@ func scanBuildDef(wg *sync.WaitGroup, candidates *sync.Map, phonyCount *atomic.U
 			// extract it as a phony output
 			phonyCount.Add(1)
 			m.phony = &buildDef{
-				Rule:     Phony,
-				Outputs:  []*ninjaString{simpleNinjaString("dedup-" + key)},
-				Inputs:   m.first.OrderOnly, //we could also use b.OrderOnly
-				Optional: true,
+				Rule:          Phony,
+				OutputStrings: []string{"dedup-" + key},
+				Inputs:        m.first.OrderOnly, //we could also use b.OrderOnly
+				InputStrings:  m.first.OrderOnlyStrings,
+				Optional:      true,
 			}
 			// the previously recorded build-def, which first had these deps as its
 			// order-only deps, should now use this phony output instead
-			m.first.OrderOnly = m.phony.Outputs
+			m.first.OrderOnlyStrings = m.phony.OutputStrings
+			m.first.OrderOnly = nil
 			m.first = nil
 		})
-		b.OrderOnly = m.phony.Outputs
+		b.OrderOnlyStrings = m.phony.OutputStrings
+		b.OrderOnly = nil
 	}
 }
 
@@ -4753,7 +4736,7 @@ func (c *Context) deduplicateOrderOnlyDeps(infos []*moduleInfo) *localBuildActio
 	wg := sync.WaitGroup{}
 	for _, info := range infos {
 		for _, b := range info.actionDefs.buildDefs {
-			if len(b.OrderOnly) > 0 {
+			if len(b.OrderOnly) > 0 || len(b.OrderOnlyStrings) > 0 {
 				wg.Add(1)
 				go scanBuildDef(&wg, &candidates, &phonyCount, b)
 			}
@@ -4774,7 +4757,7 @@ func (c *Context) deduplicateOrderOnlyDeps(infos []*moduleInfo) *localBuildActio
 	c.EventHandler.Do("sort_phony_builddefs", func() {
 		// sorting for determinism, the phony output names are stable
 		sort.Slice(phonys, func(i int, j int) bool {
-			return phonys[i].Outputs[0].Value(nil) < phonys[j].Outputs[0].Value(nil)
+			return phonys[i].OutputStrings[0] < phonys[j].OutputStrings[0]
 		})
 	})
 
