@@ -56,16 +56,15 @@ type PoolParams struct {
 // definition.
 type RuleParams struct {
 	// These fields correspond to a Ninja variable of the same name.
-	Command        string   // The command that Ninja will run for the rule.
-	Depfile        string   // The dependency file name.
-	Deps           Deps     // The format of the dependency file.
-	Description    string   // The description that Ninja will print for the rule.
-	Generator      bool     // Whether the rule generates the Ninja manifest file.
-	Pool           Pool     // The Ninja pool to which the rule belongs.
-	Restat         bool     // Whether Ninja should re-stat the rule's outputs.
-	Rspfile        string   // The response file.
-	RspfileContent string   // The response file content.
-	SymlinkOutputs []string // The list of Outputs or ImplicitOutputs that are symlinks.
+	Command        string // The command that Ninja will run for the rule.
+	Depfile        string // The dependency file name.
+	Deps           Deps   // The format of the dependency file.
+	Description    string // The description that Ninja will print for the rule.
+	Generator      bool   // Whether the rule generates the Ninja manifest file.
+	Pool           Pool   // The Ninja pool to which the rule belongs.
+	Restat         bool   // Whether Ninja should re-stat the rule's outputs.
+	Rspfile        string // The response file.
+	RspfileContent string // The response file content.
 
 	// These fields are used internally in Blueprint
 	CommandDeps      []string // Command-specific implicit dependencies to prepend to builds
@@ -85,7 +84,6 @@ type BuildParams struct {
 	Rule            Rule              // The rule to invoke.
 	Outputs         []string          // The list of explicit output targets.
 	ImplicitOutputs []string          // The list of implicit output targets.
-	SymlinkOutputs  []string          // The list of Outputs or ImplicitOutputs that are symlinks.
 	Inputs          []string          // The list of explicit input dependencies.
 	Implicits       []string          // The list of implicit input dependencies.
 	OrderOnly       []string          // The list of order-only dependencies.
@@ -207,15 +205,6 @@ func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
 		r.Variables["rspfile_content"] = value
 	}
 
-	if len(params.SymlinkOutputs) > 0 {
-		value, err = parseNinjaString(scope, strings.Join(params.SymlinkOutputs, " "))
-		if err != nil {
-			return nil, fmt.Errorf("error parsing SymlinkOutputs param: %s",
-				err)
-		}
-		r.Variables["symlink_outputs"] = value
-	}
-
 	r.CommandDeps, err = parseNinjaStrings(scope, params.CommandDeps)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing CommandDeps param: %s", err)
@@ -229,8 +218,7 @@ func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
 	return r, nil
 }
 
-func (r *ruleDef) WriteTo(nw *ninjaWriter, name string,
-	pkgNames map[*packageContext]string) error {
+func (r *ruleDef) WriteTo(nw *ninjaWriter, name string, nameTracker *nameTracker) error {
 
 	if r.Comment != "" {
 		err := nw.Comment(r.Comment)
@@ -245,13 +233,13 @@ func (r *ruleDef) WriteTo(nw *ninjaWriter, name string,
 	}
 
 	if r.Pool != nil {
-		err = nw.ScopedAssign("pool", r.Pool.fullName(pkgNames))
+		err = nw.ScopedAssign("pool", nameTracker.Pool(r.Pool))
 		if err != nil {
 			return err
 		}
 	}
 
-	err = writeVariables(nw, r.Variables, pkgNames)
+	err = writeVariables(nw, r.Variables, nameTracker)
 	if err != nil {
 		return err
 	}
@@ -377,12 +365,6 @@ func parseBuildParams(scope scope, params *BuildParams,
 		setVariable("description", value)
 	}
 
-	if len(params.SymlinkOutputs) > 0 {
-		setVariable(
-			"symlink_outputs",
-			simpleNinjaString(strings.Join(params.SymlinkOutputs, " ")))
-	}
-
 	if len(tags) > 0 {
 		setVariable("tags", simpleNinjaString(formatTags(tags, rule)))
 	}
@@ -415,10 +397,10 @@ func parseBuildParams(scope scope, params *BuildParams,
 	return b, nil
 }
 
-func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string) error {
+func (b *buildDef) WriteTo(nw *ninjaWriter, nameTracker *nameTracker) error {
 	var (
 		comment             = b.Comment
-		rule                = b.Rule.fullName(pkgNames)
+		rule                = nameTracker.Rule(b.Rule)
 		outputs             = b.Outputs
 		implicitOuts        = b.ImplicitOutputs
 		explicitDeps        = b.Inputs
@@ -441,12 +423,12 @@ func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string)
 	err := nw.Build(comment, rule, outputs, implicitOuts, explicitDeps, implicitDeps, orderOnlyDeps, validations,
 		outputStrings, implicitOutStrings, explicitDepStrings,
 		implicitDepStrings, orderOnlyDepStrings, validationStrings,
-		pkgNames)
+		nameTracker)
 	if err != nil {
 		return err
 	}
 
-	err = writeVariables(nw, b.Variables, pkgNames)
+	err = writeVariables(nw, b.Variables, nameTracker)
 	if err != nil {
 		return err
 	}
@@ -458,8 +440,8 @@ func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string)
 	args := make([]nameValuePair, 0, len(b.Args))
 
 	for argVar, value := range b.Args {
-		fullName := argVar.fullName(pkgNames)
-		args = append(args, nameValuePair{fullName, value.Value(pkgNames)})
+		fullName := nameTracker.Variable(argVar)
+		args = append(args, nameValuePair{fullName, value.Value(nameTracker)})
 	}
 	sort.Slice(args, func(i, j int) bool { return args[i].name < args[j].name })
 
@@ -471,7 +453,7 @@ func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string)
 	}
 
 	if !b.Optional {
-		err = nw.Default(pkgNames, outputs, outputStrings)
+		err = nw.Default(nameTracker, outputs, outputStrings)
 		if err != nil {
 			return err
 		}
@@ -480,8 +462,7 @@ func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string)
 	return nw.BlankLine()
 }
 
-func writeVariables(nw *ninjaWriter, variables map[string]*ninjaString,
-	pkgNames map[*packageContext]string) error {
+func writeVariables(nw *ninjaWriter, variables map[string]*ninjaString, nameTracker *nameTracker) error {
 	var keys []string
 	for k := range variables {
 		keys = append(keys, k)
@@ -489,7 +470,7 @@ func writeVariables(nw *ninjaWriter, variables map[string]*ninjaString,
 	sort.Strings(keys)
 
 	for _, name := range keys {
-		err := nw.ScopedAssign(name, variables[name].Value(pkgNames))
+		err := nw.ScopedAssign(name, variables[name].Value(nameTracker))
 		if err != nil {
 			return err
 		}
