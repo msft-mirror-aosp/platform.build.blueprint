@@ -101,6 +101,8 @@ type Context struct {
 	// set by SetAllowMissingDependencies
 	allowMissingDependencies bool
 
+	verifyProvidersAreUnchanged bool
+
 	// set during PrepareBuildActions
 	nameTracker     *nameTracker
 	liveGlobals     *liveTracker
@@ -351,7 +353,8 @@ type moduleInfo struct {
 	// set during PrepareBuildActions
 	actionDefs localBuildActions
 
-	providers []interface{}
+	providers                  []interface{}
+	providerInitialValueHashes []uint64
 
 	startedMutator  *mutatorInfo
 	finishedMutator *mutatorInfo
@@ -463,20 +466,21 @@ type mutatorInfo struct {
 func newContext() *Context {
 	eventHandler := metrics.EventHandler{}
 	return &Context{
-		Context:            context.Background(),
-		EventHandler:       &eventHandler,
-		moduleFactories:    make(map[string]ModuleFactory),
-		nameInterface:      NewSimpleNameInterface(),
-		moduleInfo:         make(map[Module]*moduleInfo),
-		globs:              make(map[globKey]pathtools.GlobResult),
-		fs:                 pathtools.OsFs,
-		finishedMutators:   make(map[*mutatorInfo]bool),
-		includeTags:        &IncludeTags{},
-		sourceRootDirs:     &SourceRootDirs{},
-		outDir:             nil,
-		requiredNinjaMajor: 1,
-		requiredNinjaMinor: 7,
-		requiredNinjaMicro: 0,
+		Context:                     context.Background(),
+		EventHandler:                &eventHandler,
+		moduleFactories:             make(map[string]ModuleFactory),
+		nameInterface:               NewSimpleNameInterface(),
+		moduleInfo:                  make(map[Module]*moduleInfo),
+		globs:                       make(map[globKey]pathtools.GlobResult),
+		fs:                          pathtools.OsFs,
+		finishedMutators:            make(map[*mutatorInfo]bool),
+		includeTags:                 &IncludeTags{},
+		sourceRootDirs:              &SourceRootDirs{},
+		outDir:                      nil,
+		requiredNinjaMajor:          1,
+		requiredNinjaMinor:          7,
+		requiredNinjaMicro:          0,
+		verifyProvidersAreUnchanged: true,
 	}
 }
 
@@ -690,16 +694,20 @@ type IncomingTransitionContext interface {
 }
 
 type OutgoingTransitionContext interface {
-	// Module returns the target of the dependency edge for which the transition
+	// Module returns the source of the dependency edge for which the transition
 	// is being computed
 	Module() Module
 
 	// DepTag() Returns the dependency tag through which this dependency is
 	// reached
 	DepTag() DependencyTag
+
+	// Config returns the config object that was passed to
+	// Context.PrepareBuildActions.
+	Config() interface{}
 }
 
-// Transition mutators implement a top-down mechanism where a module tells its
+// TransitionMutator implements a top-down mechanism where a module tells its
 // direct dependencies what variation they should be built in but the dependency
 // has the final say.
 //
@@ -715,7 +723,7 @@ type OutgoingTransitionContext interface {
 // composition the outgoing transition of module A and the incoming transition
 // of module B.
 //
-// the outgoing transition should not take the properties of the dependency into
+// The outgoing transition should not take the properties of the dependency into
 // account, only those of the module that depends on it. For this reason, the
 // dependency is not even passed into it as an argument. Likewise, the incoming
 // transition should not take the properties of the depending module into
@@ -728,7 +736,7 @@ type OutgoingTransitionContext interface {
 // Soong makes sure that all modules are created in the desired variations and
 // that dependency edges are set up correctly. This ensures that "missing
 // variation" errors do not happen and allows for more flexible changes in the
-// value of the variation among dependency edges (as oppposed to bottom-up
+// value of the variation among dependency edges (as opposed to bottom-up
 // mutators where if module A in variation X depends on module B and module B
 // has that variation X, A must depend on variation X of B)
 //
@@ -757,27 +765,27 @@ type OutgoingTransitionContext interface {
 // thus some way is needed to change it state whereas Bazel creates each
 // configuration of a given configured target anew.
 type TransitionMutator interface {
-	// Returns the set of variations that should be created for a module no matter
+	// Split returns the set of variations that should be created for a module no matter
 	// who depends on it. Used when Make depends on a particular variation or when
 	// the module knows its variations just based on information given to it in
 	// the Blueprint file. This method should not mutate the module it is called
 	// on.
 	Split(ctx BaseModuleContext) []string
 
-	// Called on a module to determine which variation it wants from its direct
-	// dependencies. The dependency itself can override this decision. This method
-	// should not mutate the module itself.
+	// OutgoingTransition is called on a module to determine which variation it wants
+	// from its direct dependencies. The dependency itself can override this decision.
+	// This method should not mutate the module itself.
 	OutgoingTransition(ctx OutgoingTransitionContext, sourceVariation string) string
 
-	// Called on a module to determine which variation it should be in based on
-	// the variation modules that depend on it want. This gives the module a final
-	// say about its own variations. This method should not mutate the module
+	// IncomingTransition is called on a module to determine which variation it should
+	// be in based on the variation modules that depend on it want. This gives the module
+	// a final say about its own variations. This method should not mutate the module
 	// itself.
 	IncomingTransition(ctx IncomingTransitionContext, incomingVariation string) string
 
-	// Called after a module was split into multiple variations on each variation.
-	// It should not split the module any further but adding new dependencies is
-	// fine. Unlike all the other methods on TransitionMutator, this method is
+	// Mutate is called after a module was split into multiple variations on each
+	// variation.  It should not split the module any further but adding new dependencies
+	// is fine. Unlike all the other methods on TransitionMutator, this method is
 	// allowed to mutate the module.
 	Mutate(ctx BottomUpMutatorContext, variation string)
 }
@@ -841,13 +849,10 @@ func (t *transitionMutatorImpl) topDownMutator(mctx TopDownMutatorContext) {
 }
 
 type transitionContextImpl struct {
-	module Module
+	source Module
+	dep    Module
 	depTag DependencyTag
 	config interface{}
-}
-
-func (c *transitionContextImpl) Module() Module {
-	return c.module
 }
 
 func (c *transitionContextImpl) DepTag() DependencyTag {
@@ -858,11 +863,27 @@ func (c *transitionContextImpl) Config() interface{} {
 	return c.config
 }
 
+type outgoingTransitionContextImpl struct {
+	transitionContextImpl
+}
+
+func (c *outgoingTransitionContextImpl) Module() Module {
+	return c.source
+}
+
+type incomingTransitionContextImpl struct {
+	transitionContextImpl
+}
+
+func (c *incomingTransitionContextImpl) Module() Module {
+	return c.dep
+}
+
 func (t *transitionMutatorImpl) transition(mctx BaseMutatorContext) Transition {
 	return func(source Module, sourceVariation string, dep Module, depTag DependencyTag) string {
-		tc := &transitionContextImpl{module: dep, depTag: depTag, config: mctx.Config()}
-		outgoingVariation := t.mutator.OutgoingTransition(tc, sourceVariation)
-		finalVariation := t.mutator.IncomingTransition(tc, outgoingVariation)
+		tc := transitionContextImpl{source: source, dep: dep, depTag: depTag, config: mctx.Config()}
+		outgoingVariation := t.mutator.OutgoingTransition(&outgoingTransitionContextImpl{tc}, sourceVariation)
+		finalVariation := t.mutator.IncomingTransition(&incomingTransitionContextImpl{tc}, outgoingVariation)
 		return finalVariation
 	}
 }
@@ -933,6 +954,18 @@ func (c *Context) SetIgnoreUnknownModuleTypes(ignoreUnknownModuleTypes bool) {
 // for missing dependencies.
 func (c *Context) SetAllowMissingDependencies(allowMissingDependencies bool) {
 	c.allowMissingDependencies = allowMissingDependencies
+}
+
+// SetVerifyProvidersAreUnchanged makes blueprint hash all providers immediately
+// after SetProvider() is called, and then hash them again after the build finished.
+// If the hashes change, it's an error. Providers are supposed to be immutable, but
+// we don't have any more direct way to enforce that in go.
+func (c *Context) SetVerifyProvidersAreUnchanged(verifyProvidersAreUnchanged bool) {
+	c.verifyProvidersAreUnchanged = verifyProvidersAreUnchanged
+}
+
+func (c *Context) GetVerifyProvidersAreUnchanged() bool {
+	return c.verifyProvidersAreUnchanged
 }
 
 func (c *Context) SetModuleListFile(listFile string) {
@@ -1713,6 +1746,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutatorName string,
 		newModule.variant = newVariant(origModule, mutatorName, variationName, local)
 		newModule.properties = newProperties
 		newModule.providers = append([]interface{}(nil), origModule.providers...)
+		newModule.providerInitialValueHashes = append([]uint64(nil), origModule.providerInitialValueHashes...)
 
 		newModules = append(newModules, newModule)
 
@@ -4188,6 +4222,34 @@ func (c *Context) SingletonName(singleton Singleton) string {
 		}
 	}
 	return ""
+}
+
+// Checks that the hashes of all the providers match the hashes from when they were first set.
+// Does nothing on success, returns a list of errors otherwise. It's recommended to run this
+// in a goroutine.
+func (c *Context) VerifyProvidersWereUnchanged() []error {
+	if !c.buildActionsReady {
+		return []error{ErrBuildActionsNotReady}
+	}
+	var errors []error
+	for _, m := range c.modulesSorted {
+		for i, provider := range m.providers {
+			if provider != nil {
+				hash, err := proptools.HashProvider(provider)
+				if err != nil {
+					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set, and no longer hashable afterwards: %s", providerRegistry[i].typ, m.Name(), err.Error()))
+					continue
+				}
+				if provider != nil && m.providerInitialValueHashes[i] != hash {
+					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set", providerRegistry[i].typ, m.Name()))
+				}
+			} else if m.providerInitialValueHashes[i] != 0 {
+				// This should be unreachable, because in setProvider we check if the provider has already been set.
+				errors = append(errors, fmt.Errorf("provider %q on module %q was unset somehow, this is an internal error", providerRegistry[i].typ, m.Name()))
+			}
+		}
+	}
+	return errors
 }
 
 // WriteBuildFile writes the Ninja manifest text for the generated build
