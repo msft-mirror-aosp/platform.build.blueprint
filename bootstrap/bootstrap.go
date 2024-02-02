@@ -337,6 +337,7 @@ func (g *GoPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 
 	buildGoPackage(ctx, g.pkgRoot, g.properties.PkgPath, g.archiveFile,
 		srcs, genSrcs)
+	blueprint.SetProvider(ctx, blueprint.SrcsFileProviderKey, blueprint.SrcsFileProviderData{SrcPaths: srcs})
 }
 
 func (g *GoPackage) Srcs() []string {
@@ -533,6 +534,7 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		Validations: validations,
 		Optional:    !g.properties.Default,
 	})
+	blueprint.SetProvider(ctx, blueprint.SrcsFileProviderKey, blueprint.SrcsFileProviderData{SrcPaths: srcs})
 }
 
 func buildGoPluginLoader(ctx blueprint.ModuleContext, pkgPath, pluginSrc string) bool {
@@ -758,6 +760,7 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 			Rule:      generateBuildNinja,
 			Outputs:   i.Outputs,
 			Inputs:    i.Inputs,
+			Implicits: i.Implicits,
 			OrderOnly: i.OrderOnlyInputs,
 			Args: map[string]string{
 				"builder": primaryBuilderFile,
