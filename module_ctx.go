@@ -139,6 +139,14 @@ type EarlyModuleContext interface {
 	// Context.RegisterModuleType().
 	ModuleType() string
 
+	// ModuleTags returns the tags for this module that should be passed to
+	// ninja for analysis. For example:
+	// [
+	//   "module_name": "libfoo",
+	//   "module_type": "cc_library",
+	// ]
+	ModuleTags() map[string]string
+
 	// BlueprintsFile returns the name of the blueprint file that contains the definition of this
 	// module.
 	BlueprintsFile() string
@@ -326,29 +334,29 @@ type BaseModuleContext interface {
 	OtherModuleReverseDependencyVariantExists(name string) bool
 
 	// OtherModuleProvider returns the value for a provider for the given module.  If the value is
-	// not set it returns the zero value of the type of the provider, so the return value can always
-	// be type asserted to the type of the provider.  The value returned may be a deep copy of the
-	// value originally passed to SetProvider.
-	OtherModuleProvider(m Module, provider ProviderKey) interface{}
-
-	// OtherModuleHasProvider returns true if the provider for the given module has been set.
-	OtherModuleHasProvider(m Module, provider ProviderKey) bool
+	// not set it returns nil and false.  The value returned may be a deep copy of the value originally
+	// passed to SetProvider.
+	//
+	// This method shouldn't be used directly, prefer the type-safe android.OtherModuleProvider instead.
+	OtherModuleProvider(m Module, provider AnyProviderKey) (any, bool)
 
 	// Provider returns the value for a provider for the current module.  If the value is
-	// not set it returns the zero value of the type of the provider, so the return value can always
-	// be type asserted to the type of the provider.  It panics if called before the appropriate
+	// not set it returns nil and false.  It panics if called before the appropriate
 	// mutator or GenerateBuildActions pass for the provider.  The value returned may be a deep
 	// copy of the value originally passed to SetProvider.
-	Provider(provider ProviderKey) interface{}
-
-	// HasProvider returns true if the provider for the current module has been set.
-	HasProvider(provider ProviderKey) bool
+	//
+	// This method shouldn't be used directly, prefer the type-safe android.ModuleProvider instead.
+	Provider(provider AnyProviderKey) (any, bool)
 
 	// SetProvider sets the value for a provider for the current module.  It panics if not called
 	// during the appropriate mutator or GenerateBuildActions pass for the provider, if the value
 	// is not of the appropriate type, or if the value has already been set.  The value should not
 	// be modified after being passed to SetProvider.
-	SetProvider(provider ProviderKey, value interface{})
+	//
+	// This method shouldn't be used directly, prefer the type-safe android.SetProvider instead.
+	SetProvider(provider AnyProviderKey, value any)
+
+	EarlyGetMissingDependencies() []string
 }
 
 type DynamicDependerModuleContext BottomUpMutatorContext
@@ -402,6 +410,13 @@ func (d *baseModuleContext) ModuleName() string {
 
 func (d *baseModuleContext) ModuleType() string {
 	return d.module.typeName
+}
+
+func (d *baseModuleContext) ModuleTags() map[string]string {
+	return map[string]string{
+		"module_name": d.ModuleName(),
+		"module_type": d.ModuleType(),
+	}
 }
 
 func (d *baseModuleContext) ContainsProperty(name string) bool {
@@ -592,30 +607,17 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 	return found != nil
 }
 
-func (m *baseModuleContext) OtherModuleProvider(logicModule Module, provider ProviderKey) interface{} {
+func (m *baseModuleContext) OtherModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
 	module := m.context.moduleInfo[logicModule]
-	value, _ := m.context.provider(module, provider)
-	return value
+	return m.context.provider(module, provider.provider())
 }
 
-func (m *baseModuleContext) OtherModuleHasProvider(logicModule Module, provider ProviderKey) bool {
-	module := m.context.moduleInfo[logicModule]
-	_, ok := m.context.provider(module, provider)
-	return ok
+func (m *baseModuleContext) Provider(provider AnyProviderKey) (any, bool) {
+	return m.context.provider(m.module, provider.provider())
 }
 
-func (m *baseModuleContext) Provider(provider ProviderKey) interface{} {
-	value, _ := m.context.provider(m.module, provider)
-	return value
-}
-
-func (m *baseModuleContext) HasProvider(provider ProviderKey) bool {
-	_, ok := m.context.provider(m.module, provider)
-	return ok
-}
-
-func (m *baseModuleContext) SetProvider(provider ProviderKey, value interface{}) {
-	m.context.setProvider(m.module, provider, value)
+func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface{}) {
+	m.context.setProvider(m.module, provider.provider(), value)
 }
 
 func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
@@ -794,7 +796,7 @@ func (m *moduleContext) Rule(pctx PackageContext, name string,
 func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 	m.scope.ReparentTo(pctx)
 
-	def, err := parseBuildParams(m.scope, &params)
+	def, err := parseBuildParams(m.scope, &params, m.ModuleTags())
 	if err != nil {
 		panic(err)
 	}
@@ -804,6 +806,10 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 
 func (m *moduleContext) GetMissingDependencies() []string {
 	m.handledMissingDeps = true
+	return m.module.missingDeps
+}
+
+func (m *baseModuleContext) EarlyGetMissingDependencies() []string {
 	return m.module.missingDeps
 }
 
@@ -958,7 +964,7 @@ type BottomUpMutatorContext interface {
 	// if the value is not of the appropriate type, or if the module is not a newly created
 	// variant of the current module.  The value should not be modified after being passed to
 	// SetVariationProvider.
-	SetVariationProvider(module Module, provider ProviderKey, value interface{})
+	SetVariationProvider(module Module, provider AnyProviderKey, value interface{})
 }
 
 // A Mutator function is called for each Module, and can use
@@ -1007,10 +1013,10 @@ func (mctx *mutatorContext) CreateLocalVariations(variationNames ...string) []Mo
 	return mctx.createVariations(variationNames, depChooser, true)
 }
 
-func (mctx *mutatorContext) SetVariationProvider(module Module, provider ProviderKey, value interface{}) {
+func (mctx *mutatorContext) SetVariationProvider(module Module, provider AnyProviderKey, value interface{}) {
 	for _, variant := range mctx.newVariations {
 		if m := variant.module(); m != nil && m.logicModule == module {
-			mctx.context.setProvider(m, provider, value)
+			mctx.context.setProvider(m, provider.provider(), value)
 			return
 		}
 	}

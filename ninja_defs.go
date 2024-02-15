@@ -56,16 +56,15 @@ type PoolParams struct {
 // definition.
 type RuleParams struct {
 	// These fields correspond to a Ninja variable of the same name.
-	Command        string   // The command that Ninja will run for the rule.
-	Depfile        string   // The dependency file name.
-	Deps           Deps     // The format of the dependency file.
-	Description    string   // The description that Ninja will print for the rule.
-	Generator      bool     // Whether the rule generates the Ninja manifest file.
-	Pool           Pool     // The Ninja pool to which the rule belongs.
-	Restat         bool     // Whether Ninja should re-stat the rule's outputs.
-	Rspfile        string   // The response file.
-	RspfileContent string   // The response file content.
-	SymlinkOutputs []string // The list of Outputs or ImplicitOutputs that are symlinks.
+	Command        string // The command that Ninja will run for the rule.
+	Depfile        string // The dependency file name.
+	Deps           Deps   // The format of the dependency file.
+	Description    string // The description that Ninja will print for the rule.
+	Generator      bool   // Whether the rule generates the Ninja manifest file.
+	Pool           Pool   // The Ninja pool to which the rule belongs.
+	Restat         bool   // Whether Ninja should re-stat the rule's outputs.
+	Rspfile        string // The response file.
+	RspfileContent string // The response file content.
 
 	// These fields are used internally in Blueprint
 	CommandDeps      []string // Command-specific implicit dependencies to prepend to builds
@@ -85,7 +84,6 @@ type BuildParams struct {
 	Rule            Rule              // The rule to invoke.
 	Outputs         []string          // The list of explicit output targets.
 	ImplicitOutputs []string          // The list of implicit output targets.
-	SymlinkOutputs  []string          // The list of Outputs or ImplicitOutputs that are symlinks.
 	Inputs          []string          // The list of explicit input dependencies.
 	Implicits       []string          // The list of implicit input dependencies.
 	OrderOnly       []string          // The list of order-only dependencies.
@@ -131,11 +129,11 @@ func (p *poolDef) WriteTo(nw *ninjaWriter, name string) error {
 // A ruleDef describes a rule definition.  It does not include the name of the
 // rule.
 type ruleDef struct {
-	CommandDeps      []ninjaString
-	CommandOrderOnly []ninjaString
+	CommandDeps      []*ninjaString
+	CommandOrderOnly []*ninjaString
 	Comment          string
 	Pool             Pool
-	Variables        map[string]ninjaString
+	Variables        map[string]*ninjaString
 }
 
 func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
@@ -144,7 +142,7 @@ func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
 	r := &ruleDef{
 		Comment:   params.Comment,
 		Pool:      params.Pool,
-		Variables: make(map[string]ninjaString),
+		Variables: make(map[string]*ninjaString),
 	}
 
 	if params.Command == "" {
@@ -207,15 +205,6 @@ func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
 		r.Variables["rspfile_content"] = value
 	}
 
-	if len(params.SymlinkOutputs) > 0 {
-		value, err = parseNinjaString(scope, strings.Join(params.SymlinkOutputs, " "))
-		if err != nil {
-			return nil, fmt.Errorf("error parsing SymlinkOutputs param: %s",
-				err)
-		}
-		r.Variables["symlink_outputs"] = value
-	}
-
 	r.CommandDeps, err = parseNinjaStrings(scope, params.CommandDeps)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing CommandDeps param: %s", err)
@@ -229,8 +218,7 @@ func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
 	return r, nil
 }
 
-func (r *ruleDef) WriteTo(nw *ninjaWriter, name string,
-	pkgNames map[*packageContext]string) error {
+func (r *ruleDef) WriteTo(nw *ninjaWriter, name string, nameTracker *nameTracker) error {
 
 	if r.Comment != "" {
 		err := nw.Comment(r.Comment)
@@ -245,13 +233,13 @@ func (r *ruleDef) WriteTo(nw *ninjaWriter, name string,
 	}
 
 	if r.Pool != nil {
-		err = nw.ScopedAssign("pool", r.Pool.fullName(pkgNames))
+		err = nw.ScopedAssign("pool", nameTracker.Pool(r.Pool))
 		if err != nil {
 			return err
 		}
 	}
 
-	err = writeVariables(nw, r.Variables, pkgNames)
+	err = writeVariables(nw, r.Variables, nameTracker)
 	if err != nil {
 		return err
 	}
@@ -261,22 +249,45 @@ func (r *ruleDef) WriteTo(nw *ninjaWriter, name string,
 
 // A buildDef describes a build target definition.
 type buildDef struct {
-	Comment         string
-	Rule            Rule
-	RuleDef         *ruleDef
-	Outputs         []ninjaString
-	ImplicitOutputs []ninjaString
-	Inputs          []ninjaString
-	Implicits       []ninjaString
-	OrderOnly       []ninjaString
-	Validations     []ninjaString
-	Args            map[Variable]ninjaString
-	Variables       map[string]ninjaString
-	Optional        bool
+	Comment               string
+	Rule                  Rule
+	RuleDef               *ruleDef
+	Outputs               []*ninjaString
+	OutputStrings         []string
+	ImplicitOutputs       []*ninjaString
+	ImplicitOutputStrings []string
+	Inputs                []*ninjaString
+	InputStrings          []string
+	Implicits             []*ninjaString
+	ImplicitStrings       []string
+	OrderOnly             []*ninjaString
+	OrderOnlyStrings      []string
+	Validations           []*ninjaString
+	ValidationStrings     []string
+	Args                  map[Variable]*ninjaString
+	Variables             map[string]*ninjaString
+	Optional              bool
 }
 
-func parseBuildParams(scope scope, params *BuildParams) (*buildDef,
-	error) {
+func formatTags(tags map[string]string, rule Rule) string {
+	// Maps in golang do not have a guaranteed iteration order, nor is there an
+	// ordered map type in the stdlib, but we need to deterministically generate
+	// the ninja file.
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, 0, len(keys))
+	for _, k := range keys {
+		pairs = append(pairs, k+"="+tags[k])
+	}
+	pairs = append(pairs, "rule_name="+rule.name())
+	return strings.Join(pairs, ";")
+}
+
+func parseBuildParams(scope scope, params *BuildParams,
+	tags map[string]string) (*buildDef, error) {
 
 	comment := params.Comment
 	rule := params.Rule
@@ -286,9 +297,9 @@ func parseBuildParams(scope scope, params *BuildParams) (*buildDef,
 		Rule:    rule,
 	}
 
-	setVariable := func(name string, value ninjaString) {
+	setVariable := func(name string, value *ninjaString) {
 		if b.Variables == nil {
-			b.Variables = make(map[string]ninjaString)
+			b.Variables = make(map[string]*ninjaString)
 		}
 		b.Variables[name] = value
 	}
@@ -302,32 +313,32 @@ func parseBuildParams(scope scope, params *BuildParams) (*buildDef,
 	}
 
 	var err error
-	b.Outputs, err = parseNinjaStrings(scope, params.Outputs)
+	b.Outputs, b.OutputStrings, err = parseNinjaOrSimpleStrings(scope, params.Outputs)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing Outputs param: %s", err)
 	}
 
-	b.ImplicitOutputs, err = parseNinjaStrings(scope, params.ImplicitOutputs)
+	b.ImplicitOutputs, b.ImplicitOutputStrings, err = parseNinjaOrSimpleStrings(scope, params.ImplicitOutputs)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing ImplicitOutputs param: %s", err)
 	}
 
-	b.Inputs, err = parseNinjaStrings(scope, params.Inputs)
+	b.Inputs, b.InputStrings, err = parseNinjaOrSimpleStrings(scope, params.Inputs)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing Inputs param: %s", err)
 	}
 
-	b.Implicits, err = parseNinjaStrings(scope, params.Implicits)
+	b.Implicits, b.ImplicitStrings, err = parseNinjaOrSimpleStrings(scope, params.Implicits)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing Implicits param: %s", err)
 	}
 
-	b.OrderOnly, err = parseNinjaStrings(scope, params.OrderOnly)
+	b.OrderOnly, b.OrderOnlyStrings, err = parseNinjaOrSimpleStrings(scope, params.OrderOnly)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing OrderOnly param: %s", err)
 	}
 
-	b.Validations, err = parseNinjaStrings(scope, params.Validations)
+	b.Validations, b.ValidationStrings, err = parseNinjaOrSimpleStrings(scope, params.Validations)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing Validations param: %s", err)
 	}
@@ -354,16 +365,14 @@ func parseBuildParams(scope scope, params *BuildParams) (*buildDef,
 		setVariable("description", value)
 	}
 
-	if len(params.SymlinkOutputs) > 0 {
-		setVariable(
-			"symlink_outputs",
-			simpleNinjaString(strings.Join(params.SymlinkOutputs, " ")))
+	if len(tags) > 0 {
+		setVariable("tags", simpleNinjaString(formatTags(tags, rule)))
 	}
 
 	argNameScope := rule.scope()
 
 	if len(params.Args) > 0 {
-		b.Args = make(map[Variable]ninjaString)
+		b.Args = make(map[Variable]*ninjaString)
 		for name, value := range params.Args {
 			if !rule.isArg(name) {
 				return nil, fmt.Errorf("unknown argument %q", name)
@@ -388,16 +397,22 @@ func parseBuildParams(scope scope, params *BuildParams) (*buildDef,
 	return b, nil
 }
 
-func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string) error {
+func (b *buildDef) WriteTo(nw *ninjaWriter, nameTracker *nameTracker) error {
 	var (
-		comment       = b.Comment
-		rule          = b.Rule.fullName(pkgNames)
-		outputs       = b.Outputs
-		implicitOuts  = b.ImplicitOutputs
-		explicitDeps  = b.Inputs
-		implicitDeps  = b.Implicits
-		orderOnlyDeps = b.OrderOnly
-		validations   = b.Validations
+		comment             = b.Comment
+		rule                = nameTracker.Rule(b.Rule)
+		outputs             = b.Outputs
+		implicitOuts        = b.ImplicitOutputs
+		explicitDeps        = b.Inputs
+		implicitDeps        = b.Implicits
+		orderOnlyDeps       = b.OrderOnly
+		validations         = b.Validations
+		outputStrings       = b.OutputStrings
+		implicitOutStrings  = b.ImplicitOutputStrings
+		explicitDepStrings  = b.InputStrings
+		implicitDepStrings  = b.ImplicitStrings
+		orderOnlyDepStrings = b.OrderOnlyStrings
+		validationStrings   = b.ValidationStrings
 	)
 
 	if b.RuleDef != nil {
@@ -405,12 +420,15 @@ func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string)
 		orderOnlyDeps = append(b.RuleDef.CommandOrderOnly, orderOnlyDeps...)
 	}
 
-	err := nw.Build(comment, rule, outputs, implicitOuts, explicitDeps, implicitDeps, orderOnlyDeps, validations, pkgNames)
+	err := nw.Build(comment, rule, outputs, implicitOuts, explicitDeps, implicitDeps, orderOnlyDeps, validations,
+		outputStrings, implicitOutStrings, explicitDepStrings,
+		implicitDepStrings, orderOnlyDepStrings, validationStrings,
+		nameTracker)
 	if err != nil {
 		return err
 	}
 
-	err = writeVariables(nw, b.Variables, pkgNames)
+	err = writeVariables(nw, b.Variables, nameTracker)
 	if err != nil {
 		return err
 	}
@@ -422,8 +440,8 @@ func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string)
 	args := make([]nameValuePair, 0, len(b.Args))
 
 	for argVar, value := range b.Args {
-		fullName := argVar.fullName(pkgNames)
-		args = append(args, nameValuePair{fullName, value.Value(pkgNames)})
+		fullName := nameTracker.Variable(argVar)
+		args = append(args, nameValuePair{fullName, value.Value(nameTracker)})
 	}
 	sort.Slice(args, func(i, j int) bool { return args[i].name < args[j].name })
 
@@ -435,7 +453,7 @@ func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string)
 	}
 
 	if !b.Optional {
-		err = nw.Default(pkgNames, outputs...)
+		err = nw.Default(nameTracker, outputs, outputStrings)
 		if err != nil {
 			return err
 		}
@@ -444,8 +462,7 @@ func (b *buildDef) WriteTo(nw *ninjaWriter, pkgNames map[*packageContext]string)
 	return nw.BlankLine()
 }
 
-func writeVariables(nw *ninjaWriter, variables map[string]ninjaString,
-	pkgNames map[*packageContext]string) error {
+func writeVariables(nw *ninjaWriter, variables map[string]*ninjaString, nameTracker *nameTracker) error {
 	var keys []string
 	for k := range variables {
 		keys = append(keys, k)
@@ -453,7 +470,7 @@ func writeVariables(nw *ninjaWriter, variables map[string]ninjaString,
 	sort.Strings(keys)
 
 	for _, name := range keys {
-		err := nw.ScopedAssign(name, variables[name].Value(pkgNames))
+		err := nw.ScopedAssign(name, variables[name].Value(nameTracker))
 		if err != nil {
 			return err
 		}

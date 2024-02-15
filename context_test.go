@@ -18,8 +18,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1159,18 +1161,11 @@ func TestPackageIncludes(t *testing.T) {
 }
 
 func TestDeduplicateOrderOnlyDeps(t *testing.T) {
-	outputs := func(names ...string) []ninjaString {
-		r := make([]ninjaString, len(names))
-		for i, name := range names {
-			r[i] = literalNinjaString(name)
-		}
-		return r
-	}
 	b := func(output string, inputs []string, orderOnlyDeps []string) *buildDef {
 		return &buildDef{
-			Outputs:   outputs(output),
-			Inputs:    outputs(inputs...),
-			OrderOnly: outputs(orderOnlyDeps...),
+			OutputStrings:    []string{output},
+			InputStrings:     inputs,
+			OrderOnlyStrings: orderOnlyDeps,
 		}
 	}
 	m := func(bs ...*buildDef) *moduleInfo {
@@ -1179,7 +1174,12 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 	type testcase struct {
 		modules        []*moduleInfo
 		expectedPhonys []*buildDef
-		conversions    map[string][]ninjaString
+		conversions    map[string][]string
+	}
+	fnvHash := func(s string) string {
+		hash := fnv.New64a()
+		hash.Write([]byte(s))
+		return strconv.FormatUint(hash.Sum64(), 16)
 	}
 	testCases := []testcase{{
 		modules: []*moduleInfo{
@@ -1187,11 +1187,11 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 			m(b("B", nil, []string{"d"})),
 		},
 		expectedPhonys: []*buildDef{
-			b("dedup-GKw-c0PwFokMUQ6T-TUmEWnZ4_VlQ2Qpgw-vCTT0-OQ", []string{"d"}, nil),
+			b("dedup-"+fnvHash("d"), []string{"d"}, nil),
 		},
-		conversions: map[string][]ninjaString{
-			"A": outputs("dedup-GKw-c0PwFokMUQ6T-TUmEWnZ4_VlQ2Qpgw-vCTT0-OQ"),
-			"B": outputs("dedup-GKw-c0PwFokMUQ6T-TUmEWnZ4_VlQ2Qpgw-vCTT0-OQ"),
+		conversions: map[string][]string{
+			"A": []string{"dedup-" + fnvHash("d")},
+			"B": []string{"dedup-" + fnvHash("d")},
 		},
 	}, {
 		modules: []*moduleInfo{
@@ -1204,11 +1204,11 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 			m(b("B", nil, []string{"b"})),
 			m(b("C", nil, []string{"a"})),
 		},
-		expectedPhonys: []*buildDef{b("dedup-ypeBEsobvcr6wjGzmiPcTaeG7_gUfE5yuYB3ha_uSLs", []string{"a"}, nil)},
-		conversions: map[string][]ninjaString{
-			"A": outputs("dedup-ypeBEsobvcr6wjGzmiPcTaeG7_gUfE5yuYB3ha_uSLs"),
-			"B": outputs("b"),
-			"C": outputs("dedup-ypeBEsobvcr6wjGzmiPcTaeG7_gUfE5yuYB3ha_uSLs"),
+		expectedPhonys: []*buildDef{b("dedup-"+fnvHash("a"), []string{"a"}, nil)},
+		conversions: map[string][]string{
+			"A": []string{"dedup-" + fnvHash("a")},
+			"B": []string{"b"},
+			"C": []string{"dedup-" + fnvHash("a")},
 		},
 	}, {
 		modules: []*moduleInfo{
@@ -1218,13 +1218,13 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 				b("D", nil, []string{"a", "c"})),
 		},
 		expectedPhonys: []*buildDef{
-			b("dedup--44g_C5MPySMYMOb1lLzwTRymLuXe4tNWQO4UFViBgM", []string{"a", "b"}, nil),
-			b("dedup-9F3lHN7zCZFVHkHogt17VAR5lkigoAdT9E_JZuYVP8E", []string{"a", "c"}, nil)},
-		conversions: map[string][]ninjaString{
-			"A": outputs("dedup--44g_C5MPySMYMOb1lLzwTRymLuXe4tNWQO4UFViBgM"),
-			"B": outputs("dedup--44g_C5MPySMYMOb1lLzwTRymLuXe4tNWQO4UFViBgM"),
-			"C": outputs("dedup-9F3lHN7zCZFVHkHogt17VAR5lkigoAdT9E_JZuYVP8E"),
-			"D": outputs("dedup-9F3lHN7zCZFVHkHogt17VAR5lkigoAdT9E_JZuYVP8E"),
+			b("dedup-"+fnvHash("ab"), []string{"a", "b"}, nil),
+			b("dedup-"+fnvHash("ac"), []string{"a", "c"}, nil)},
+		conversions: map[string][]string{
+			"A": []string{"dedup-" + fnvHash("ab")},
+			"B": []string{"dedup-" + fnvHash("ab")},
+			"C": []string{"dedup-" + fnvHash("ac")},
+			"D": []string{"dedup-" + fnvHash("ac")},
 		},
 	}}
 	for index, tc := range testCases {
@@ -1253,7 +1253,7 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 			find := func(k string) *buildDef {
 				for _, m := range tc.modules {
 					for _, b := range m.actionDefs.buildDefs {
-						if reflect.DeepEqual(b.Outputs, outputs(k)) {
+						if reflect.DeepEqual(b.OutputStrings, []string{k}) {
 							return b
 						}
 					}
@@ -1265,7 +1265,7 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 				if actual == nil {
 					t.Errorf("Couldn't find %s", k)
 				}
-				if !reflect.DeepEqual(actual.OrderOnly, conversion) {
+				if !reflect.DeepEqual(actual.OrderOnlyStrings, conversion) {
 					t.Errorf("expected %s.OrderOnly = %v but got %v", k, conversion, actual.OrderOnly)
 				}
 			}
