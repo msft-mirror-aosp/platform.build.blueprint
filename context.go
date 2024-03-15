@@ -4955,15 +4955,17 @@ func funcName(f interface{}) string {
 
 // json representation of a dependency
 type depJson struct {
-	Name    string `json:"name"`
-	Variant string `json:"variant"`
-	TagType string `json:"tag_type"`
+	Name    string      `json:"name"`
+	Variant string      `json:"variant"`
+	TagType string      `json:"tag_type"`
+	TagData interface{} `json:"tag_data"`
 }
 
 // json representation of a provider
 type providerJson struct {
-	Type  string `json:"type"`
-	Debug string `json:"debug"` // from GetDebugString on the provider data
+	Type   string      `json:"type"`
+	Debug  string      `json:"debug"` // from GetDebugString on the provider data
+	Fields interface{} `json:"fields"`
 }
 
 // interface for getting debug info from various data.
@@ -4972,18 +4974,136 @@ type Debuggable interface {
 	GetDebugString() string
 }
 
+// Convert a slice in a reflect.Value to a value suitable for outputting to json
+func debugSlice(value reflect.Value) interface{} {
+	size := value.Len()
+	if size == 0 {
+		return nil
+	}
+	result := make([]interface{}, size)
+	for i := 0; i < size; i++ {
+		result[i] = debugValue(value.Index(i))
+	}
+	return result
+}
+
+// Convert a map in a reflect.Value to a value suitable for outputting to json
+func debugMap(value reflect.Value) interface{} {
+	if value.IsNil() {
+		return nil
+	}
+	result := make(map[string]interface{})
+	iter := value.MapRange()
+	for iter.Next() {
+		// In the (hopefully) rare case of a key collision (which will happen when multiple
+		// go-typed keys have the same string representation, we'll just overwrite the last
+		// value.
+		result[debugKey(iter.Key())] = debugValue(iter.Value())
+	}
+	return result
+}
+
+// Convert a value into a string, suitable for being a json map key.
+func debugKey(value reflect.Value) string {
+	return fmt.Sprintf("%v", value)
+}
+
+// Convert a single value (possibly a map or slice too) in a reflect.Value to a value suitable for outputting to json
+func debugValue(value reflect.Value) interface{} {
+	// Remember if we originally received a reflect.Interface.
+	wasInterface := value.Kind() == reflect.Interface
+	// Dereference pointers down to the real type
+	for value.Kind() == reflect.Ptr || value.Kind() == reflect.Interface {
+		// If it's nil, return nil
+		if value.IsNil() {
+			return nil
+		}
+		value = value.Elem()
+	}
+
+	// Skip private fields, maybe other weird corner cases of go's bizarre type system.
+	if !value.CanInterface() {
+		return nil
+	}
+
+	switch kind := value.Kind(); kind {
+	case reflect.Bool, reflect.String, reflect.Int, reflect.Uint:
+		return value.Interface()
+	case reflect.Slice:
+		return debugSlice(value)
+	case reflect.Struct:
+		// If we originally received an interface, and there is a String() method, call that.
+		// TODO: figure out why Path doesn't work correctly otherwise (in aconfigPropagatingDeclarationsInfo)
+		if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
+			return s.String()
+		}
+		return debugStruct(value)
+	case reflect.Map:
+		return debugMap(value)
+	default:
+		// TODO: add cases as we find them.
+		return fmt.Sprintf("debugValue(Kind=%v, wasInterface=%v)", kind, wasInterface)
+	}
+
+	return nil
+}
+
+// Convert an object in a reflect.Value to a value suitable for outputting to json
+func debugStruct(value reflect.Value) interface{} {
+	result := make(map[string]interface{})
+	debugStructAppend(value, &result)
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// Convert an object to a value suiable for outputting to json
+func debugStructAppend(value reflect.Value, result *map[string]interface{}) {
+	for value.Kind() == reflect.Ptr {
+		if value.IsNil() {
+			return
+		}
+		value = value.Elem()
+	}
+	if value.IsZero() {
+		return
+	}
+
+	if value.Kind() != reflect.Struct {
+		// TODO: could maybe support other types
+		return
+	}
+
+	structType := value.Type()
+	for i := 0; i < value.NumField(); i++ {
+		v := debugValue(value.Field(i))
+		if v != nil {
+			(*result)[structType.Field(i).Name] = v
+		}
+	}
+}
+
+func debugPropertyStruct(props interface{}, result *map[string]interface{}) {
+	if props == nil {
+		return
+	}
+	debugStructAppend(reflect.ValueOf(props), result)
+}
+
 // Get the debug json for a single module. Returns thae data as
 // flattened json text for easy concatenation by GenerateModuleDebugInfo.
 func getModuleDebugJson(module *moduleInfo) []byte {
 	info := struct {
-		Name       string         `json:"name"`
-		SourceFile string         `json:"source_file"`
-		SourceLine int            `json:"source_line"`
-		Type       string         `json:"type"`
-		Variant    string         `json:"variant"`
-		Deps       []depJson      `json:"deps"`
-		Providers  []providerJson `json:"providers"`
-		Debug      string         `json:"debug"` // from GetDebugString on the module
+		Name       string                 `json:"name"`
+		SourceFile string                 `json:"source_file"`
+		SourceLine int                    `json:"source_line"`
+		Type       string                 `json:"type"`
+		Variant    string                 `json:"variant"`
+		Deps       []depJson              `json:"deps"`
+		Providers  []providerJson         `json:"providers"`
+		Debug      string                 `json:"debug"` // from GetDebugString on the module
+		Properties map[string]interface{} `json:"properties"`
 	}{
 		Name:       module.logicModule.Name(),
 		SourceFile: module.pos.Filename,
@@ -5000,6 +5120,7 @@ func getModuleDebugJson(module *moduleInfo) []byte {
 				t := reflect.TypeOf(dep.tag)
 				if t != nil {
 					result[i].TagType = t.PkgPath() + "." + t.Name()
+					result[i].TagData = debugStruct(reflect.ValueOf(dep.tag))
 				}
 			}
 			return result
@@ -5022,6 +5143,12 @@ func getModuleDebugJson(module *moduleInfo) []byte {
 						include = true
 					}
 				}
+
+				if p != nil {
+					pj.Fields = debugValue(reflect.ValueOf(p))
+					include = true
+				}
+
 				if include {
 					result = append(result, pj)
 				}
@@ -5034,6 +5161,13 @@ func getModuleDebugJson(module *moduleInfo) []byte {
 			} else {
 				return ""
 			}
+		}(),
+		Properties: func() map[string]interface{} {
+			result := make(map[string]interface{})
+			for _, props := range module.properties {
+				debugPropertyStruct(props, &result)
+			}
+			return result
 		}(),
 	}
 	buf, _ := json.Marshal(info)
