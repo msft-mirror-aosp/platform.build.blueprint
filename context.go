@@ -1068,8 +1068,12 @@ func shouldVisitFile(c *Context, file *parser.File) shouldVisitFileInfo {
 	}
 
 	if blueprintPackageIncludes != nil {
-		packageMatches := blueprintPackageIncludes.MatchesIncludeTags(c)
-		if !packageMatches {
+		packageMatches, err := blueprintPackageIncludes.matchesIncludeTags(c)
+		if err != nil {
+			return shouldVisitFileInfo{
+				errs: []error{err},
+			}
+		} else if !packageMatches {
 			return shouldVisitFileInfo{
 				shouldVisitFile: false,
 				skippedModules:  skippedModules,
@@ -4121,9 +4125,47 @@ func (c *Context) ModuleErrorf(logicModule Module, format string,
 	args ...interface{}) error {
 
 	module := c.moduleInfo[logicModule]
-	return &BlueprintError{
-		Err: fmt.Errorf(format, args...),
-		Pos: module.pos,
+	if module == nil {
+		// This can happen if ModuleErrorf is called from a load hook
+		return &BlueprintError{
+			Err: fmt.Errorf(format, args...),
+		}
+	}
+
+	return &ModuleError{
+		BlueprintError: BlueprintError{
+			Err: fmt.Errorf(format, args...),
+			Pos: module.pos,
+		},
+		module: module,
+	}
+}
+
+func (c *Context) PropertyErrorf(logicModule Module, property string, format string,
+	args ...interface{}) error {
+
+	module := c.moduleInfo[logicModule]
+	if module == nil {
+		// This can happen if PropertyErrorf is called from a load hook
+		return &BlueprintError{
+			Err: fmt.Errorf(format, args...),
+		}
+	}
+
+	pos := module.propertyPos[property]
+	if !pos.IsValid() {
+		pos = module.pos
+	}
+
+	return &PropertyError{
+		ModuleError: ModuleError{
+			BlueprintError: BlueprintError{
+				Err: fmt.Errorf(format, args...),
+				Pos: pos,
+			},
+			module: module,
+		},
+		property: property,
 	}
 }
 
@@ -5265,14 +5307,14 @@ func (pi *PackageIncludes) MatchAll() []string {
 }
 
 // Returns true if all requested include tags are set in the Context object
-func (pi *PackageIncludes) MatchesIncludeTags(ctx *Context) bool {
+func (pi *PackageIncludes) matchesIncludeTags(ctx *Context) (bool, error) {
 	if len(pi.MatchAll()) == 0 {
-		ctx.ModuleErrorf(pi, "Match_all must be a non-empty list")
+		return false, ctx.ModuleErrorf(pi, "Match_all must be a non-empty list")
 	}
 	for _, includeTag := range pi.MatchAll() {
 		if !ctx.ContainsIncludeTag(includeTag) {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
