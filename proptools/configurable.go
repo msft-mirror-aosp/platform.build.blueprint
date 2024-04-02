@@ -28,7 +28,7 @@ type ConfigurableElements interface {
 }
 
 type ConfigurableEvaluator interface {
-	EvaluateConfiguration(parser.SelectType, string) (string, bool)
+	EvaluateConfiguration(typ parser.SelectType, property, condition string) (string, bool)
 	PropertyErrorf(property, fmt string, args ...interface{})
 }
 
@@ -121,7 +121,7 @@ func (c *Configurable[T]) evaluateNonTransitive(evaluator ConfigurableEvaluator)
 		}
 		return &result
 	}
-	val, defined := evaluator.EvaluateConfiguration(c.typ, c.condition)
+	val, defined := evaluator.EvaluateConfiguration(c.typ, c.propertyName, c.condition)
 	if !defined {
 		if result, ok := c.cases[default_select_branch_name]; ok {
 			return &result
@@ -173,22 +173,16 @@ func mergeConfiguredValues[T ConfigurableElements](a, b *T, propertyName string,
 		result := a + b
 		return any(&result).(*T)
 	case *bool:
-		numNonNil := 0
-		var nonNil *T
+		// Addition of bools will OR them together. This is inherited behavior
+		// from how proptools.ExtendBasicType works with non-configurable bools.
+		result := false
 		if a != nil {
-			numNonNil += 1
-			nonNil = a
+			result = result || *any(a).(*bool)
 		}
 		if b != nil {
-			numNonNil += 1
-			nonNil = b
+			result = result || *any(b).(*bool)
 		}
-		if numNonNil == 1 {
-			return nonNil
-		} else {
-			evalutor.PropertyErrorf(propertyName, "Cannot append bools")
-			return nil
-		}
+		return any(&result).(*T)
 	default:
 		panic("Should be unreachable")
 	}
