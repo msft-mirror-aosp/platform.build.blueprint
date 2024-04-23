@@ -307,7 +307,7 @@ func (ctx *unpackContext) unpackToStruct(namePrefix string, structValue reflect.
 			configurableType := fieldValue.Type()
 			configuredType := fieldValue.Interface().(configurableReflection).configuredType()
 			if unpackedValue, ok := ctx.unpackToConfigurable(propertyName, property, configurableType, configuredType); ok {
-				ExtendBasicType(fieldValue, unpackedValue, Append)
+				ExtendBasicType(fieldValue, unpackedValue.Elem(), Append)
 			}
 			if len(ctx.errs) >= maxUnpackErrors {
 				return
@@ -356,10 +356,9 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 		}
 		result := Configurable[string]{
 			propertyName: property.Name,
-			typ:          parser.SelectTypeUnconfigured,
-			cases: map[string]string{
-				default_select_branch_name: v.Value,
-			},
+			cases: []configurableCase[string]{{
+				value: &v.Value,
+			}},
 			appendWrapper: &appendWrapper[string]{},
 		}
 		return reflect.ValueOf(&result), true
@@ -374,10 +373,9 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 		}
 		result := Configurable[bool]{
 			propertyName: property.Name,
-			typ:          parser.SelectTypeUnconfigured,
-			cases: map[string]bool{
-				default_select_branch_name: v.Value,
-			},
+			cases: []configurableCase[bool]{{
+				value: &v.Value,
+			}},
 			appendWrapper: &appendWrapper[bool]{},
 		}
 		return reflect.ValueOf(&result), true
@@ -392,9 +390,9 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 		}
 		switch configuredType.Elem().Kind() {
 		case reflect.String:
-			var cases map[string][]string
+			var value []string
 			if v.Values != nil {
-				cases = map[string][]string{default_select_branch_name: make([]string, 0, len(v.Values))}
+				value = make([]string, len(v.Values))
 				itemProperty := &parser.Property{NamePos: property.NamePos, ColonPos: property.ColonPos}
 				for i, expr := range v.Values {
 					itemProperty.Name = propertyName + "[" + strconv.Itoa(i) + "]"
@@ -404,13 +402,14 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 						ctx.addError(err)
 						return reflect.ValueOf(Configurable[[]string]{}), false
 					}
-					cases[default_select_branch_name] = append(cases[default_select_branch_name], exprUnpacked.Interface().(string))
+					value[i] = exprUnpacked.Interface().(string)
 				}
 			}
 			result := Configurable[[]string]{
-				propertyName:  property.Name,
-				typ:           parser.SelectTypeUnconfigured,
-				cases:         cases,
+				propertyName: property.Name,
+				cases: []configurableCase[[]string]{{
+					value: &value,
+				}},
 				appendWrapper: &appendWrapper[[]string]{},
 			}
 			return reflect.ValueOf(&result), true
@@ -420,49 +419,87 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 	case *parser.Operator:
 		property.Value = v.Value.Eval()
 		return ctx.unpackToConfigurable(propertyName, property, configurableType, configuredType)
+	case *parser.Variable:
+		property.Value = v.Value.Eval()
+		return ctx.unpackToConfigurable(propertyName, property, configurableType, configuredType)
 	case *parser.Select:
 		resultPtr := reflect.New(configurableType)
 		result := resultPtr.Elem()
-		cases := reflect.MakeMapWithSize(reflect.MapOf(reflect.TypeOf(""), configuredType), len(v.Cases))
-		for i, c := range v.Cases {
-			switch configuredType.Kind() {
-			case reflect.String, reflect.Bool:
-				p := &parser.Property{
-					Name:    property.Name + "[" + strconv.Itoa(i) + "]",
-					NamePos: c.ColonPos,
-					Value:   c.Value,
-				}
-				val, err := propertyToValue(configuredType, p)
-				if err != nil {
-					ctx.addError(&UnpackError{
-						err,
-						c.Value.Pos(),
-					})
-					return reflect.New(configurableType), false
-				}
-				cases.SetMapIndex(reflect.ValueOf(c.Pattern.Value), val)
-			case reflect.Slice:
-				if configuredType.Elem().Kind() != reflect.String {
-					panic("This should be unreachable because ConfigurableElements only accepts slices of strings")
-				}
-				p := &parser.Property{
-					Name:    property.Name + "[" + strconv.Itoa(i) + "]",
-					NamePos: c.ColonPos,
-					Value:   c.Value,
-				}
-				val, ok := ctx.unpackToSlice(p.Name, p, configuredType)
-				if !ok {
-					return reflect.New(configurableType), false
-				}
-				cases.SetMapIndex(reflect.ValueOf(c.Pattern.Value), val)
-			default:
-				panic("This should be unreachable because ConfigurableElements only accepts strings, boools, or slices of strings")
+		conditions := make([]ConfigurableCondition, len(v.Conditions))
+		for i, cond := range v.Conditions {
+			args := make([]string, len(cond.Args))
+			for j, arg := range cond.Args {
+				args[j] = arg.Value
 			}
+			conditions[i] = ConfigurableCondition{
+				FunctionName: cond.FunctionName,
+				Args:         args,
+			}
+		}
+
+		configurableCaseType := configurableCaseType(configuredType)
+		cases := reflect.MakeSlice(reflect.SliceOf(configurableCaseType), 0, len(v.Cases))
+		for i, c := range v.Cases {
+			p := &parser.Property{
+				Name:    property.Name + "[" + strconv.Itoa(i) + "]",
+				NamePos: c.ColonPos,
+				Value:   c.Value,
+			}
+
+			patterns := make([]configurablePattern, len(c.Patterns))
+			for i, pat := range c.Patterns {
+				switch pat := pat.(type) {
+				case *parser.String:
+					if pat.Value == "__soong_conditions_default__" {
+						patterns[i].typ = configurablePatternTypeDefault
+					} else {
+						patterns[i].typ = configurablePatternTypeString
+						patterns[i].stringValue = pat.Value
+					}
+				case *parser.Bool:
+					patterns[i].typ = configurablePatternTypeBool
+					patterns[i].boolValue = pat.Value
+				default:
+					panic("unimplemented")
+				}
+			}
+
+			var value reflect.Value
+			// Map the "unset" keyword to a nil pointer in the cases map
+			if _, ok := c.Value.(parser.UnsetProperty); ok {
+				value = reflect.Zero(reflect.PointerTo(configuredType))
+			} else {
+				var err error
+				switch configuredType.Kind() {
+				case reflect.String, reflect.Bool:
+					value, err = propertyToValue(reflect.PointerTo(configuredType), p)
+					if err != nil {
+						ctx.addError(&UnpackError{
+							err,
+							c.Value.Pos(),
+						})
+						return reflect.New(configurableType), false
+					}
+				case reflect.Slice:
+					if configuredType.Elem().Kind() != reflect.String {
+						panic("This should be unreachable because ConfigurableElements only accepts slices of strings")
+					}
+					value, ok = ctx.unpackToSlice(p.Name, p, reflect.PointerTo(configuredType))
+					if !ok {
+						return reflect.New(configurableType), false
+					}
+				default:
+					panic("This should be unreachable because ConfigurableElements only accepts strings, boools, or slices of strings")
+				}
+			}
+
+			case_ := reflect.New(configurableCaseType)
+			case_.Interface().(configurableCaseReflection).initialize(patterns, value.Interface())
+			cases = reflect.Append(cases, case_.Elem())
 		}
 		resultPtr.Interface().(configurablePtrReflection).initialize(
 			property.Name,
-			v.Typ,
-			v.Condition.Value,
+			conditions,
 			cases.Interface(),
 		)
 		if v.Append != nil {
@@ -475,7 +512,7 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 			if !ok {
 				return reflect.New(configurableType), false
 			}
-			result.Interface().(configurableReflection).setAppend(val.Elem().Interface())
+			result.Interface().(configurableReflection).setAppend(val.Elem().Interface(), false)
 		}
 		return resultPtr, true
 	default:
@@ -504,8 +541,27 @@ func (ctx *unpackContext) reportSelectOnNonConfigurablePropertyError(
 	return true
 }
 
-// unpackSlice creates a value of a given slice type from the property which should be a list
+// unpackSlice creates a value of a given slice or pointer to slice type from the property,
+// which should be a list
 func (ctx *unpackContext) unpackToSlice(
+	sliceName string, property *parser.Property, sliceType reflect.Type) (reflect.Value, bool) {
+	if sliceType.Kind() == reflect.Pointer {
+		sliceType = sliceType.Elem()
+		result := reflect.New(sliceType)
+		slice, ok := ctx.unpackToSliceInner(sliceName, property, sliceType)
+		if !ok {
+			return result, ok
+		}
+		result.Elem().Set(slice)
+		return result, true
+	}
+	return ctx.unpackToSliceInner(sliceName, property, sliceType)
+}
+
+// unpackToSliceInner creates a value of a given slice type from the property,
+// which should be a list. It doesn't support pointers to slice types like unpackToSlice
+// does.
+func (ctx *unpackContext) unpackToSliceInner(
 	sliceName string, property *parser.Property, sliceType reflect.Type) (reflect.Value, bool) {
 	propValueAsList, ok := property.Value.Eval().(*parser.List)
 	if !ok {
