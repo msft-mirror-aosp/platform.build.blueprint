@@ -17,6 +17,7 @@ package proptools
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -153,9 +154,18 @@ func ExtendMatchingProperties(dst []interface{}, src interface{},
 type Order int
 
 const (
+	// When merging properties, strings and lists will be concatenated, and booleans will be OR'd together
 	Append Order = iota
+	// Same as append, but acts as if the arguments to the extend* functions were swapped. The src value will be
+	// prepended to the dst value instead of appended.
 	Prepend
+	// Instead of concatenating/ORing properties, the dst value will be completely replaced by the src value.
+	// Replace currently only works for slices, maps, and configurable properties. Due to legacy behavior,
+	// pointer properties will always act as if they're using replace ordering.
 	Replace
+	// Same as replace, but acts as if the arguments to the extend* functions were swapped. The src value will be
+	// used only if the dst value was unset.
+	Prepend_replace
 )
 
 type ExtendPropertyFilterFunc func(dstField, srcField reflect.StructField) (bool, error)
@@ -317,7 +327,7 @@ func extendPropertiesRecursive(dstValues []reflect.Value, srcValue reflect.Value
 						// of destinations to consider.  Make a copy of dstValues if necessary
 						// to avoid modifying the backing array of an input parameter.
 						if !dstValuesCopied {
-							dstValues = append([]reflect.Value(nil), dstValues...)
+							dstValues = slices.Clone(dstValues)
 							dstValuesCopied = true
 						}
 						dstValues = append(dstValues, embeddedDstValue)
@@ -374,12 +384,16 @@ func extendPropertiesRecursive(dstValues []reflect.Value, srcValue reflect.Value
 					continue
 				}
 			case reflect.Bool, reflect.String, reflect.Slice, reflect.Map:
-				if srcFieldValue.Type() != dstFieldValue.Type() {
+				// If the types don't match or srcFieldValue cannot be converted to a Configurable type, it's an error
+				ct, err := configurableType(srcFieldValue.Type())
+				if srcFieldValue.Type() != dstFieldValue.Type() && (err != nil || dstFieldValue.Type() != ct) {
 					return extendPropertyErrorf(propertyName(srcField), "mismatched types %s and %s",
 						dstFieldValue.Type(), srcFieldValue.Type())
 				}
 			case reflect.Ptr:
-				if srcFieldValue.Type() != dstFieldValue.Type() {
+				// If the types don't match or srcFieldValue cannot be converted to a Configurable type, it's an error
+				ct, err := configurableType(srcFieldValue.Type().Elem())
+				if srcFieldValue.Type() != dstFieldValue.Type() && (err != nil || dstFieldValue.Type() != ct) {
 					return extendPropertyErrorf(propertyName(srcField), "mismatched types %s and %s",
 						dstFieldValue.Type(), srcFieldValue.Type())
 				}
@@ -419,6 +433,14 @@ func extendPropertiesRecursive(dstValues []reflect.Value, srcValue reflect.Value
 				}
 			}
 
+			if HasTag(dstField, "android", "replace_instead_of_append") {
+				if order == Append {
+					order = Replace
+				} else if order == Prepend {
+					order = Prepend_replace
+				}
+			}
+
 			ExtendBasicType(dstFieldValue, srcFieldValue, order)
 		}
 
@@ -437,20 +459,63 @@ func extendPropertiesRecursive(dstValues []reflect.Value, srcValue reflect.Value
 }
 
 func ExtendBasicType(dstFieldValue, srcFieldValue reflect.Value, order Order) {
-	prepend := order == Prepend
+	prepend := order == Prepend || order == Prepend_replace
+
+	if !srcFieldValue.IsValid() {
+		return
+	}
+
+	// If dst is a Configurable and src isn't, promote src to a Configurable.
+	// This isn't necessary if all property structs are using Configurable values,
+	// but it's helpful to avoid having to change as many places in the code when
+	// converting properties to Configurable properties. For example, load hooks
+	// make their own mini-property structs and append them onto the main property
+	// structs when they want to change the default values of properties.
+	srcFieldType := srcFieldValue.Type()
+	if isConfigurable(dstFieldValue.Type()) && !isConfigurable(srcFieldType) {
+		var value reflect.Value
+		if srcFieldType.Kind() == reflect.Pointer {
+			srcFieldType = srcFieldType.Elem()
+			if srcFieldValue.IsNil() {
+				value = srcFieldValue
+			} else {
+				// Copy the pointer
+				value = reflect.New(srcFieldType)
+				value.Elem().Set(srcFieldValue.Elem())
+			}
+		} else {
+			value = reflect.New(srcFieldType)
+			value.Elem().Set(srcFieldValue)
+		}
+		caseType := configurableCaseType(srcFieldType)
+		case_ := reflect.New(caseType)
+		case_.Interface().(configurableCaseReflection).initialize(nil, value.Interface())
+		cases := reflect.MakeSlice(reflect.SliceOf(caseType), 0, 1)
+		cases = reflect.Append(cases, case_.Elem())
+		ct, err := configurableType(srcFieldType)
+		if err != nil {
+			// Should be unreachable due to earlier checks
+			panic(err.Error())
+		}
+		temp := reflect.New(ct)
+		temp.Interface().(configurablePtrReflection).initialize("", nil, cases.Interface())
+		srcFieldValue = temp.Elem()
+	}
 
 	switch srcFieldValue.Kind() {
 	case reflect.Struct:
 		if !isConfigurable(srcFieldValue.Type()) {
 			panic("Should be unreachable")
 		}
-		if dstFieldValue.Interface().(configurableReflection).isEmpty() {
-			dstFieldValue.Set(srcFieldValue)
-		} else if prepend {
-			srcFieldValue.Interface().(configurableReflection).setAppend(dstFieldValue.Interface())
-			dstFieldValue.Set(srcFieldValue)
+		replace := order == Prepend_replace || order == Replace
+		unpackedDst := dstFieldValue.Interface().(configurableReflection)
+		if unpackedDst.isEmpty() {
+			// Properties that were never initialized via unpacking from a bp file value
+			// will have a nil inner value, making them unable to be modified without a pointer
+			// like we don't have here. So instead replace the whole configurable object.
+			dstFieldValue.Set(reflect.ValueOf(srcFieldValue.Interface().(configurableReflection).clone()))
 		} else {
-			dstFieldValue.Interface().(configurableReflection).setAppend(srcFieldValue.Interface())
+			unpackedDst.setAppend(srcFieldValue.Interface(), replace, prepend)
 		}
 	case reflect.Bool:
 		// Boolean OR
@@ -549,14 +614,9 @@ func ExtendBasicType(dstFieldValue, srcFieldValue reflect.Value, order Order) {
 			if !isConfigurable(srcFieldValue.Type()) {
 				panic("Should be unreachable")
 			}
-			if dstFieldValue.Interface().(configurableReflection).isEmpty() {
-				dstFieldValue.Set(srcFieldValue)
-			} else if prepend {
-				srcFieldValue.Interface().(configurableReflection).setAppend(dstFieldValue.Interface())
-				dstFieldValue.Set(srcFieldValue)
-			} else {
-				dstFieldValue.Interface().(configurableReflection).setAppend(srcFieldValue.Interface())
-			}
+			panic("Don't use pointers to Configurable properties. All Configurable properties can be unset, " +
+				"and the 'replacing' behavior can be accomplished with the `blueprint:\"replace_instead_of_append\" " +
+				"struct field tag. There's no reason to have a pointer configurable property.")
 		default:
 			panic(fmt.Errorf("unexpected pointer kind %s", ptrKind))
 		}

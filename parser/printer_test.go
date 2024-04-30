@@ -567,7 +567,7 @@ foo {
         // test2
         "b": "b2",
         // test3
-        _: "c2",
+        default: "c2",
     }),
 }
 `,
@@ -579,7 +579,7 @@ foo {
         // test2
         "b": "b2",
         // test3
-        _: "c2",
+        default: "c2",
     }),
 }
 `,
@@ -591,7 +591,7 @@ foo {
 foo {
     stuff: select(soong_config_variable("my_namespace", "my_variable"), {
         // test2
-        _: "c2",
+        default: "c2",
     }),
 }
 `,
@@ -612,11 +612,11 @@ foo {
         // test2
         "b": "b2",
         // test3
-        _: "c2",
+        default: "c2",
     }) + select(release_variable("RELEASE_TEST"), {
         "d": "d2",
         "e": "e2",
-        _: "f2",
+        default: "f2",
     }),
 }
 `,
@@ -628,11 +628,72 @@ foo {
         // test2
         "b": "b2",
         // test3
-        _: "c2",
+        default: "c2",
     }) + select(release_variable("RELEASE_TEST"), {
         "d": "d2",
         "e": "e2",
-        _: "f2",
+        default: "f2",
+    }),
+}
+`,
+	},
+	{
+		name: "Select with unset property",
+		input: `
+foo {
+    stuff: select(soong_config_variable("my_namespace", "my_variable"), {
+        "foo": unset,
+        default: "c2",
+    }),
+}
+`,
+		output: `
+foo {
+    stuff: select(soong_config_variable("my_namespace", "my_variable"), {
+        "foo": unset,
+        default: "c2",
+    }),
+}
+`,
+	},
+	{
+		name: "Multi-condition select",
+		input: `
+foo {
+    stuff: select((arch(), os()), {
+        ("x86", "linux"): "a",
+        (default, default): "b",
+    }),
+}
+`,
+		output: `
+foo {
+    stuff: select((arch(), os()), {
+        ("x86", "linux"): "a",
+        (default, default): "b",
+    }),
+}
+`,
+	},
+	{
+		name: "Multi-condition select with conditions on new lines",
+		input: `
+foo {
+    stuff: select((arch(), 
+    os()), {
+        ("x86", "linux"): "a",
+        (default, default): "b",
+    }),
+}
+`,
+		output: `
+foo {
+    stuff: select((
+        arch(),
+        os(),
+    ), {
+        ("x86", "linux"): "a",
+        (default, default): "b",
     }),
 }
 `,
