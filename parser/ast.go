@@ -60,6 +60,8 @@ type Module struct {
 	Type    string
 	TypePos scanner.Position
 	Map
+	//TODO(delmerico) make this a private field once ag/21588220 lands
+	Name__internal_only *string
 }
 
 func (m *Module) Copy() *Module {
@@ -85,6 +87,28 @@ func (m *Module) definitionTag() {}
 
 func (m *Module) Pos() scanner.Position { return m.TypePos }
 func (m *Module) End() scanner.Position { return m.Map.End() }
+
+func (m *Module) Name() string {
+	if m.Name__internal_only != nil {
+		return *m.Name__internal_only
+	}
+	for _, prop := range m.Properties {
+		if prop.Name == "name" {
+			if stringProp, ok := prop.Value.(*String); ok {
+				name := stringProp.Value
+				m.Name__internal_only = &name
+			} else {
+				name := prop.Value.String()
+				m.Name__internal_only = &name
+			}
+		}
+	}
+	if m.Name__internal_only == nil {
+		name := ""
+		m.Name__internal_only = &name
+	}
+	return *m.Name__internal_only
+}
 
 // A Property is a name: value pair within a Map, which may be a top level Module.
 type Property struct {
@@ -165,6 +189,7 @@ const (
 	ListType
 	MapType
 	NotEvaluatedType
+	UnsetType
 )
 
 func (t Type) String() string {
@@ -181,6 +206,8 @@ func (t Type) String() string {
 		return "map"
 	case NotEvaluatedType:
 		return "notevaluated"
+	case UnsetType:
+		return "unset"
 	default:
 		panic(fmt.Errorf("Unknown type %d", t))
 	}
@@ -543,3 +570,132 @@ func endPos(pos scanner.Position, n int) scanner.Position {
 	pos.Column += n
 	return pos
 }
+
+type ConfigurableCondition struct {
+	position     scanner.Position
+	FunctionName string
+	Args         []String
+}
+
+func (c *ConfigurableCondition) Equals(other ConfigurableCondition) bool {
+	if c.FunctionName != other.FunctionName {
+		return false
+	}
+	if len(c.Args) != len(other.Args) {
+		return false
+	}
+	for i := range c.Args {
+		if c.Args[i] != other.Args[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *ConfigurableCondition) String() string {
+	var sb strings.Builder
+	sb.WriteString(c.FunctionName)
+	sb.WriteRune('(')
+	for i, arg := range c.Args {
+		sb.WriteRune('"')
+		sb.WriteString(arg.Value)
+		sb.WriteRune('"')
+		if i < len(c.Args)-1 {
+			sb.WriteString(", ")
+		}
+	}
+	sb.WriteRune(')')
+	return sb.String()
+}
+
+type Select struct {
+	KeywordPos     scanner.Position // the keyword "select"
+	Conditions     []ConfigurableCondition
+	LBracePos      scanner.Position
+	RBracePos      scanner.Position
+	Cases          []*SelectCase // the case statements
+	Append         Expression
+	ExpressionType Type
+}
+
+func (s *Select) Pos() scanner.Position { return s.KeywordPos }
+func (s *Select) End() scanner.Position { return endPos(s.RBracePos, 1) }
+
+func (s *Select) Copy() Expression {
+	ret := *s
+	ret.Cases = make([]*SelectCase, len(ret.Cases))
+	for i, selectCase := range s.Cases {
+		ret.Cases[i] = selectCase.Copy()
+	}
+	if s.Append != nil {
+		ret.Append = s.Append.Copy()
+	}
+	return &ret
+}
+
+func (s *Select) Eval() Expression {
+	return s
+}
+
+func (s *Select) String() string {
+	return "<select>"
+}
+
+func (s *Select) Type() Type {
+	if s.ExpressionType == UnsetType && s.Append != nil {
+		return s.Append.Type()
+	}
+	return s.ExpressionType
+}
+
+type SelectCase struct {
+	Patterns []Expression
+	ColonPos scanner.Position
+	Value    Expression
+}
+
+func (c *SelectCase) Copy() *SelectCase {
+	ret := *c
+	ret.Value = c.Value.Copy()
+	return &ret
+}
+
+func (c *SelectCase) String() string {
+	return "<select case>"
+}
+
+func (c *SelectCase) Pos() scanner.Position { return c.Patterns[0].Pos() }
+func (c *SelectCase) End() scanner.Position { return c.Value.End() }
+
+// UnsetProperty is the expression type of the "unset" keyword that can be
+// used in select statements to make the property unset. For example:
+//
+//	my_module_type {
+//	  name: "foo",
+//	  some_prop: select(soong_config_variable("my_namespace", "my_var"), {
+//	    "foo": unset,
+//	    "default": "bar",
+//	  })
+//	}
+type UnsetProperty struct {
+	Position scanner.Position
+}
+
+func (n UnsetProperty) Copy() Expression {
+	return UnsetProperty{Position: n.Position}
+}
+
+func (n UnsetProperty) String() string {
+	return "unset"
+}
+
+func (n UnsetProperty) Type() Type {
+	return UnsetType
+}
+
+func (n UnsetProperty) Eval() Expression {
+	return UnsetProperty{Position: n.Position}
+}
+
+func (n UnsetProperty) Pos() scanner.Position { return n.Position }
+func (n UnsetProperty) End() scanner.Position { return n.Position }

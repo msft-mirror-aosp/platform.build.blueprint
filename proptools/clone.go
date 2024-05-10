@@ -66,7 +66,11 @@ func copyProperties(dstValue, srcValue reflect.Value) {
 		case reflect.Bool, reflect.String, reflect.Int, reflect.Uint:
 			dstFieldValue.Set(srcFieldValue)
 		case reflect.Struct:
-			copyProperties(dstFieldValue, srcFieldValue)
+			if isConfigurable(srcFieldValue.Type()) {
+				dstFieldValue.Set(reflect.ValueOf(srcFieldValue.Interface().(configurableReflection).clone()))
+			} else {
+				copyProperties(dstFieldValue, srcFieldValue)
+			}
 		case reflect.Slice:
 			if !srcFieldValue.IsNil() {
 				if srcFieldValue != dstFieldValue {

@@ -17,7 +17,6 @@ package proptools
 import (
 	"bytes"
 	"reflect"
-
 	"testing"
 
 	"github.com/google/blueprint/parser"
@@ -722,6 +721,261 @@ var validUnpackTestCases = []struct {
 			},
 		},
 	},
+	{
+		name: "String configurable property that isn't configured",
+		input: `
+			m {
+				foo: "bar"
+			}
+		`,
+		output: []interface{}{
+			&struct {
+				Foo Configurable[string]
+			}{
+				Foo: Configurable[string]{
+					propertyName: "foo",
+					inner: &configurableInner[string]{
+						single: singleConfigurable[string]{
+							cases: []ConfigurableCase[string]{{
+								value: StringPtr("bar"),
+							}},
+						},
+					},
+				},
+			},
+		},
+	},
+	{
+		name: "Bool configurable property that isn't configured",
+		input: `
+			m {
+				foo: true,
+			}
+		`,
+		output: []interface{}{
+			&struct {
+				Foo Configurable[bool]
+			}{
+				Foo: Configurable[bool]{
+					propertyName: "foo",
+					inner: &configurableInner[bool]{
+						single: singleConfigurable[bool]{
+							cases: []ConfigurableCase[bool]{{
+								value: BoolPtr(true),
+							}},
+						},
+					},
+				},
+			},
+		},
+	},
+	{
+		name: "String list configurable property that isn't configured",
+		input: `
+			m {
+				foo: ["a", "b"],
+			}
+		`,
+		output: []interface{}{
+			&struct {
+				Foo Configurable[[]string]
+			}{
+				Foo: Configurable[[]string]{
+					propertyName: "foo",
+					inner: &configurableInner[[]string]{
+						single: singleConfigurable[[]string]{
+							cases: []ConfigurableCase[[]string]{{
+								value: &[]string{"a", "b"},
+							}},
+						},
+					},
+				},
+			},
+		},
+	},
+	{
+		name: "Configurable property",
+		input: `
+			m {
+				foo: select(soong_config_variable("my_namespace", "my_variable"), {
+					"a": "a2",
+					"b": "b2",
+					default: "c2",
+				})
+			}
+		`,
+		output: []interface{}{
+			&struct {
+				Foo Configurable[string]
+			}{
+				Foo: Configurable[string]{
+					propertyName: "foo",
+					inner: &configurableInner[string]{
+						single: singleConfigurable[string]{
+							conditions: []ConfigurableCondition{{
+								functionName: "soong_config_variable",
+								args: []string{
+									"my_namespace",
+									"my_variable",
+								},
+							}},
+							cases: []ConfigurableCase[string]{
+								{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "a",
+									}},
+									value: StringPtr("a2"),
+								},
+								{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "b",
+									}},
+									value: StringPtr("b2"),
+								},
+								{
+									patterns: []ConfigurablePattern{{
+										typ: configurablePatternTypeDefault,
+									}},
+									value: StringPtr("c2"),
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	},
+	{
+		name: "Configurable property appending",
+		input: `
+			m {
+				foo: select(soong_config_variable("my_namespace", "my_variable"), {
+					"a": "a2",
+					"b": "b2",
+					default: "c2",
+				}) + select(soong_config_variable("my_namespace", "my_2nd_variable"), {
+					"d": "d2",
+					"e": "e2",
+					default: "f2",
+				})
+			}
+		`,
+		output: []interface{}{
+			&struct {
+				Foo Configurable[string]
+			}{
+				Foo: Configurable[string]{
+					propertyName: "foo",
+					inner: &configurableInner[string]{
+						single: singleConfigurable[string]{
+							conditions: []ConfigurableCondition{{
+								functionName: "soong_config_variable",
+								args: []string{
+									"my_namespace",
+									"my_variable",
+								},
+							}},
+							cases: []ConfigurableCase[string]{
+								{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "a",
+									}},
+									value: StringPtr("a2"),
+								},
+								{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "b",
+									}},
+									value: StringPtr("b2"),
+								},
+								{
+									patterns: []ConfigurablePattern{{
+										typ: configurablePatternTypeDefault,
+									}},
+									value: StringPtr("c2"),
+								},
+							},
+						},
+						next: &configurableInner[string]{
+							single: singleConfigurable[string]{
+								conditions: []ConfigurableCondition{{
+									functionName: "soong_config_variable",
+									args: []string{
+										"my_namespace",
+										"my_2nd_variable",
+									},
+								}},
+								cases: []ConfigurableCase[string]{
+									{
+										patterns: []ConfigurablePattern{{
+											typ:         configurablePatternTypeString,
+											stringValue: "d",
+										}},
+										value: StringPtr("d2"),
+									},
+									{
+										patterns: []ConfigurablePattern{{
+											typ:         configurablePatternTypeString,
+											stringValue: "e",
+										}},
+										value: StringPtr("e2"),
+									},
+									{
+										patterns: []ConfigurablePattern{{
+											typ: configurablePatternTypeDefault,
+										}},
+										value: StringPtr("f2"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	},
+	{
+		name: "Unpack variable to configurable property",
+		input: `
+			my_string_variable = "asdf"
+			my_bool_variable = true
+			m {
+				foo: my_string_variable,
+				bar: my_bool_variable,
+			}
+		`,
+		output: []interface{}{
+			&struct {
+				Foo Configurable[string]
+				Bar Configurable[bool]
+			}{
+				Foo: Configurable[string]{
+					propertyName: "foo",
+					inner: &configurableInner[string]{
+						single: singleConfigurable[string]{
+							cases: []ConfigurableCase[string]{{
+								value: StringPtr("asdf"),
+							}},
+						},
+					},
+				},
+				Bar: Configurable[bool]{
+					propertyName: "bar",
+					inner: &configurableInner[bool]{
+						single: singleConfigurable[bool]{
+							cases: []ConfigurableCase[bool]{{
+								value: BoolPtr(true),
+							}},
+						},
+					},
+				},
+			},
+		},
+	},
 }
 
 func TestUnpackProperties(t *testing.T) {
@@ -962,6 +1216,37 @@ func TestUnpackErrors(t *testing.T) {
 				`<input>:3:16: can't assign string value to list property "map_list"`,
 			},
 		},
+		{
+			name: "non-existent property",
+			input: `
+				m {
+					foo: {
+						foo_prop1: true,
+						foo_prop2: false,
+						foo_prop3: true,
+					},
+					bar: {
+						bar_prop: false,
+					},
+					baz: true,
+					exist: false,
+				}
+			`,
+			output: []interface{}{
+				&struct {
+					Foo struct {
+						Foo_prop1 bool
+					}
+					Exist bool
+				}{},
+			},
+			errors: []string{
+				`<input>:5:16: unrecognized property "foo.foo_prop2"`,
+				`<input>:6:16: unrecognized property "foo.foo_prop3"`,
+				`<input>:9:15: unrecognized property "bar.bar_prop"`,
+				`<input>:11:9: unrecognized property "baz"`,
+			},
+		},
 	}
 
 	for _, testCase := range testCases {
@@ -1195,4 +1480,59 @@ func BenchmarkUnpackProperties(b *testing.B) {
         `
 		run(b, props, bp)
 	})
+}
+
+func TestRemoveUnnecessaryUnusedNames(t *testing.T) {
+	testCases := []struct {
+		name   string
+		input  []string
+		output []string
+	}{
+		{
+			name:   "no unused names",
+			input:  []string{},
+			output: []string{},
+		},
+		{
+			name:   "only one unused name",
+			input:  []string{"a.b.c"},
+			output: []string{"a.b.c"},
+		},
+		{
+			name:   "unused names in a chain",
+			input:  []string{"a", "a.b", "a.b.c"},
+			output: []string{"a.b.c"},
+		},
+		{
+			name:   "unused names unrelated",
+			input:  []string{"a.b.c", "s.t", "x.y"},
+			output: []string{"a.b.c", "s.t", "x.y"},
+		},
+		{
+			name:   "unused names partially related one",
+			input:  []string{"a.b", "a.b.c", "a.b.d"},
+			output: []string{"a.b.c", "a.b.d"},
+		},
+		{
+			name:   "unused names partially related two",
+			input:  []string{"a", "a.b.c", "a.c"},
+			output: []string{"a.b.c", "a.c"},
+		},
+		{
+			name:   "unused names partially related three",
+			input:  []string{"a.b.c", "b.c", "c"},
+			output: []string{"a.b.c", "b.c", "c"},
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			simplifiedNames := removeUnnecessaryUnusedNames(testCase.input)
+			if !reflect.DeepEqual(simplifiedNames, testCase.output) {
+				t.Errorf("test case: %s", testCase.name)
+				t.Errorf("  input: %s", testCase.input)
+				t.Errorf("  expect: %s", testCase.output)
+				t.Errorf("  got: %s", simplifiedNames)
+			}
+		})
+	}
 }

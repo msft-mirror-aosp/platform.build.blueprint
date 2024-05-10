@@ -52,16 +52,16 @@ type SingletonContext interface {
 	// return value can always be type-asserted to the type of the provider.  The return value should
 	// always be considered read-only.  It panics if called before the appropriate mutator or
 	// GenerateBuildActions pass for the provider on the module.
-	ModuleProvider(module Module, provider ProviderKey) interface{}
-
-	// ModuleHasProvider returns true if the provider for the given module has been set.
-	ModuleHasProvider(m Module, provider ProviderKey) bool
+	ModuleProvider(module Module, provider AnyProviderKey) (any, bool)
 
 	// ModuleErrorf reports an error at the line number of the module type in the module definition.
 	ModuleErrorf(module Module, format string, args ...interface{})
 
 	// Errorf reports an error at the specified position of the module definition file.
 	Errorf(format string, args ...interface{})
+
+	// OtherModulePropertyErrorf reports an error on the line number of the given property of the given module
+	OtherModulePropertyErrorf(module Module, property string, format string, args ...interface{})
 
 	// Failed returns true if any errors have been reported.  In most cases the singleton can continue with generating
 	// build rules after an error, allowing it to report additional errors in a single run, but in cases where the error
@@ -202,13 +202,8 @@ func (s *singletonContext) ModuleType(logicModule Module) string {
 	return s.context.ModuleType(logicModule)
 }
 
-func (s *singletonContext) ModuleProvider(logicModule Module, provider ProviderKey) interface{} {
+func (s *singletonContext) ModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
 	return s.context.ModuleProvider(logicModule, provider)
-}
-
-// ModuleHasProvider returns true if the provider for the given module has been set.
-func (s *singletonContext) ModuleHasProvider(logicModule Module, provider ProviderKey) bool {
-	return s.context.ModuleHasProvider(logicModule, provider)
 }
 
 func (s *singletonContext) BlueprintFile(logicModule Module) string {
@@ -230,6 +225,12 @@ func (s *singletonContext) ModuleErrorf(logicModule Module, format string,
 func (s *singletonContext) Errorf(format string, args ...interface{}) {
 	// TODO: Make this not result in the error being printed as "internal error"
 	s.error(fmt.Errorf(format, args...))
+}
+
+func (s *singletonContext) OtherModulePropertyErrorf(logicModule Module, property string, format string,
+	args ...interface{}) {
+
+	s.error(s.context.PropertyErrorf(logicModule, property, format, args...))
 }
 
 func (s *singletonContext) Failed() bool {
@@ -265,7 +266,10 @@ func (s *singletonContext) Rule(pctx PackageContext, name string,
 func (s *singletonContext) Build(pctx PackageContext, params BuildParams) {
 	s.scope.ReparentTo(pctx)
 
-	def, err := parseBuildParams(s.scope, &params)
+	def, err := parseBuildParams(s.scope, &params, map[string]string{
+		"module_name": s.name,
+		"module_type": "singleton",
+	})
 	if err != nil {
 		panic(err)
 	}
@@ -286,7 +290,7 @@ func (s *singletonContext) Eval(pctx PackageContext, str string) (string, error)
 		return "", err
 	}
 
-	return ninjaStr.Eval(s.globals.variables)
+	return s.globals.Eval(ninjaStr)
 }
 
 func (s *singletonContext) RequireNinjaVersion(major, minor, micro int) {

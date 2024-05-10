@@ -15,8 +15,9 @@
 package bootstrap
 
 import (
+	"encoding/json"
 	"fmt"
-	"go/build"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -33,33 +34,27 @@ var (
 	pluginGenSrcCmd = pctx.StaticVariable("pluginGenSrcCmd", filepath.Join("$ToolDir", "loadplugins"))
 
 	parallelCompile = pctx.StaticVariable("parallelCompile", func() string {
-		// Parallel compilation is only supported on >= go1.9
-		for _, r := range build.Default.ReleaseTags {
-			if r == "go1.9" {
-				numCpu := runtime.NumCPU()
-				// This will cause us to recompile all go programs if the
-				// number of cpus changes. We don't get a lot of benefit from
-				// higher values, so cap this to make it cheaper to move trees
-				// between machines.
-				if numCpu > 8 {
-					numCpu = 8
-				}
-				return fmt.Sprintf("-c %d", numCpu)
-			}
+		numCpu := runtime.NumCPU()
+		// This will cause us to recompile all go programs if the
+		// number of cpus changes. We don't get a lot of benefit from
+		// higher values, so cap this to make it cheaper to move trees
+		// between machines.
+		if numCpu > 8 {
+			numCpu = 8
 		}
-		return ""
+		return fmt.Sprintf("-c %d", numCpu)
 	}())
 
 	compile = pctx.StaticRule("compile",
 		blueprint.RuleParams{
 			Command: "GOROOT='$goRoot' $compileCmd $parallelCompile -o $out.tmp " +
-				"$debugFlags -p $pkgPath -complete $incFlags -pack $in && " +
+				"$debugFlags -p $pkgPath -complete $incFlags $embedFlags -pack $in && " +
 				"if cmp --quiet $out.tmp $out; then rm $out.tmp; else mv -f $out.tmp $out; fi",
 			CommandDeps: []string{"$compileCmd"},
 			Description: "compile $out",
 			Restat:      true,
 		},
-		"pkgPath", "incFlags")
+		"pkgPath", "incFlags", "embedFlags")
 
 	link = pctx.StaticRule("link",
 		blueprint.RuleParams{
@@ -162,7 +157,7 @@ type GoBinaryTool interface {
 }
 
 func pluginDeps(ctx blueprint.BottomUpMutatorContext) {
-	if pkg, ok := ctx.Module().(*goPackage); ok {
+	if pkg, ok := ctx.Module().(*GoPackage); ok {
 		if ctx.PrimaryModule() == ctx.Module() {
 			for _, plugin := range pkg.properties.PluginFor {
 				ctx.AddReverseDependency(ctx.Module(), nil, plugin)
@@ -197,25 +192,27 @@ func isGoPluginFor(name string) func(blueprint.Module) bool {
 }
 
 func IsBootstrapModule(module blueprint.Module) bool {
-	_, isPackage := module.(*goPackage)
-	_, isBinary := module.(*goBinary)
+	_, isPackage := module.(*GoPackage)
+	_, isBinary := module.(*GoBinary)
 	return isPackage || isBinary
 }
 
 func isBootstrapBinaryModule(module blueprint.Module) bool {
-	_, isBinary := module.(*goBinary)
+	_, isBinary := module.(*GoBinary)
 	return isBinary
 }
 
-// A goPackage is a module for building Go packages.
-type goPackage struct {
+// A GoPackage is a module for building Go packages.
+type GoPackage struct {
 	blueprint.SimpleName
 	properties struct {
 		Deps      []string
 		PkgPath   string
 		Srcs      []string
 		TestSrcs  []string
+		TestData  []string
 		PluginFor []string
+		EmbedSrcs []string
 
 		Darwin struct {
 			Srcs     []string
@@ -238,39 +235,39 @@ type goPackage struct {
 	testResultFile []string
 }
 
-var _ goPackageProducer = (*goPackage)(nil)
+var _ goPackageProducer = (*GoPackage)(nil)
 
 func newGoPackageModuleFactory() func() (blueprint.Module, []interface{}) {
 	return func() (blueprint.Module, []interface{}) {
-		module := &goPackage{}
+		module := &GoPackage{}
 		return module, []interface{}{&module.properties, &module.SimpleName.Properties}
 	}
 }
 
-func (g *goPackage) DynamicDependencies(ctx blueprint.DynamicDependerModuleContext) []string {
+func (g *GoPackage) DynamicDependencies(ctx blueprint.DynamicDependerModuleContext) []string {
 	if ctx.Module() != ctx.PrimaryModule() {
 		return nil
 	}
 	return g.properties.Deps
 }
 
-func (g *goPackage) GoPkgPath() string {
+func (g *GoPackage) GoPkgPath() string {
 	return g.properties.PkgPath
 }
 
-func (g *goPackage) GoPkgRoot() string {
+func (g *GoPackage) GoPkgRoot() string {
 	return g.pkgRoot
 }
 
-func (g *goPackage) GoPackageTarget() string {
+func (g *GoPackage) GoPackageTarget() string {
 	return g.archiveFile
 }
 
-func (g *goPackage) GoTestTargets() []string {
+func (g *GoPackage) GoTestTargets() []string {
 	return g.testResultFile
 }
 
-func (g *goPackage) IsPluginFor(name string) bool {
+func (g *GoPackage) IsPluginFor(name string) bool {
 	for _, plugin := range g.properties.PluginFor {
 		if plugin == name {
 			return true
@@ -279,11 +276,11 @@ func (g *goPackage) IsPluginFor(name string) bool {
 	return false
 }
 
-func (g *goPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
+func (g *GoPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	// Allow the primary builder to create multiple variants.  Any variants after the first
 	// will copy outputs from the first.
 	if ctx.Module() != ctx.PrimaryModule() {
-		primary := ctx.PrimaryModule().(*goPackage)
+		primary := ctx.PrimaryModule().(*GoPackage)
 		g.pkgRoot = primary.pkgRoot
 		g.archiveFile = primary.archiveFile
 		g.testResultFile = primary.testResultFile
@@ -326,12 +323,10 @@ func (g *goPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		testSrcs = append(g.properties.TestSrcs, g.properties.Linux.TestSrcs...)
 	}
 
-	if ctx.Config().(BootstrapConfig).RunGoTests() {
-		testArchiveFile := filepath.Join(testRoot(ctx),
-			filepath.FromSlash(g.properties.PkgPath)+".a")
-		g.testResultFile = buildGoTest(ctx, testRoot(ctx), testArchiveFile,
-			g.properties.PkgPath, srcs, genSrcs, testSrcs)
-	}
+	testArchiveFile := filepath.Join(testRoot(ctx),
+		filepath.FromSlash(g.properties.PkgPath)+".a")
+	g.testResultFile = buildGoTest(ctx, testRoot(ctx), testArchiveFile,
+		g.properties.PkgPath, srcs, genSrcs, testSrcs, g.properties.EmbedSrcs)
 
 	// Don't build for test-only packages
 	if len(srcs) == 0 && len(genSrcs) == 0 {
@@ -344,16 +339,51 @@ func (g *goPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	}
 
 	buildGoPackage(ctx, g.pkgRoot, g.properties.PkgPath, g.archiveFile,
-		srcs, genSrcs)
+		srcs, genSrcs, g.properties.EmbedSrcs)
+	blueprint.SetProvider(ctx, blueprint.SrcsFileProviderKey, blueprint.SrcsFileProviderData{SrcPaths: srcs})
 }
 
-// A goBinary is a module for building executable binaries from Go sources.
-type goBinary struct {
+func (g *GoPackage) Srcs() []string {
+	return g.properties.Srcs
+}
+
+func (g *GoPackage) LinuxSrcs() []string {
+	return g.properties.Linux.Srcs
+}
+
+func (g *GoPackage) DarwinSrcs() []string {
+	return g.properties.Darwin.Srcs
+}
+
+func (g *GoPackage) TestSrcs() []string {
+	return g.properties.TestSrcs
+}
+
+func (g *GoPackage) LinuxTestSrcs() []string {
+	return g.properties.Linux.TestSrcs
+}
+
+func (g *GoPackage) DarwinTestSrcs() []string {
+	return g.properties.Darwin.TestSrcs
+}
+
+func (g *GoPackage) Deps() []string {
+	return g.properties.Deps
+}
+
+func (g *GoPackage) TestData() []string {
+	return g.properties.TestData
+}
+
+// A GoBinary is a module for building executable binaries from Go sources.
+type GoBinary struct {
 	blueprint.SimpleName
 	properties struct {
 		Deps           []string
 		Srcs           []string
 		TestSrcs       []string
+		TestData       []string
+		EmbedSrcs      []string
 		PrimaryBuilder bool
 		Default        bool
 
@@ -370,32 +400,64 @@ type goBinary struct {
 	installPath string
 }
 
-var _ GoBinaryTool = (*goBinary)(nil)
+var _ GoBinaryTool = (*GoBinary)(nil)
 
 func newGoBinaryModuleFactory() func() (blueprint.Module, []interface{}) {
 	return func() (blueprint.Module, []interface{}) {
-		module := &goBinary{}
+		module := &GoBinary{}
 		return module, []interface{}{&module.properties, &module.SimpleName.Properties}
 	}
 }
 
-func (g *goBinary) DynamicDependencies(ctx blueprint.DynamicDependerModuleContext) []string {
+func (g *GoBinary) DynamicDependencies(ctx blueprint.DynamicDependerModuleContext) []string {
 	if ctx.Module() != ctx.PrimaryModule() {
 		return nil
 	}
 	return g.properties.Deps
 }
 
-func (g *goBinary) isGoBinary() {}
-func (g *goBinary) InstallPath() string {
+func (g *GoBinary) isGoBinary() {}
+func (g *GoBinary) InstallPath() string {
 	return g.installPath
 }
 
-func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
+func (g *GoBinary) Srcs() []string {
+	return g.properties.Srcs
+}
+
+func (g *GoBinary) LinuxSrcs() []string {
+	return g.properties.Linux.Srcs
+}
+
+func (g *GoBinary) DarwinSrcs() []string {
+	return g.properties.Darwin.Srcs
+}
+
+func (g *GoBinary) TestSrcs() []string {
+	return g.properties.TestSrcs
+}
+
+func (g *GoBinary) LinuxTestSrcs() []string {
+	return g.properties.Linux.TestSrcs
+}
+
+func (g *GoBinary) DarwinTestSrcs() []string {
+	return g.properties.Darwin.TestSrcs
+}
+
+func (g *GoBinary) Deps() []string {
+	return g.properties.Deps
+}
+
+func (g *GoBinary) TestData() []string {
+	return g.properties.TestData
+}
+
+func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	// Allow the primary builder to create multiple variants.  Any variants after the first
 	// will copy outputs from the first.
 	if ctx.Module() != ctx.PrimaryModule() {
-		primary := ctx.PrimaryModule().(*goBinary)
+		primary := ctx.PrimaryModule().(*GoBinary)
 		g.installPath = primary.installPath
 		return
 	}
@@ -434,12 +496,10 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		testSrcs = append(g.properties.TestSrcs, g.properties.Linux.TestSrcs...)
 	}
 
-	if ctx.Config().(BootstrapConfig).RunGoTests() {
-		testDeps = buildGoTest(ctx, testRoot(ctx), testArchiveFile,
-			name, srcs, genSrcs, testSrcs)
-	}
+	testDeps = buildGoTest(ctx, testRoot(ctx), testArchiveFile,
+		name, srcs, genSrcs, testSrcs, g.properties.EmbedSrcs)
 
-	buildGoPackage(ctx, objDir, "main", archiveFile, srcs, genSrcs)
+	buildGoPackage(ctx, objDir, "main", archiveFile, srcs, genSrcs, g.properties.EmbedSrcs)
 
 	var linkDeps []string
 	var libDirFlags []string
@@ -466,13 +526,19 @@ func (g *goBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		Optional:  true,
 	})
 
+	var validations []string
+	if ctx.Config().(BootstrapConfig).RunGoTests() {
+		validations = testDeps
+	}
+
 	ctx.Build(pctx, blueprint.BuildParams{
 		Rule:        cp,
 		Outputs:     []string{g.installPath},
 		Inputs:      []string{aoutFile},
-		Validations: testDeps,
+		Validations: validations,
 		Optional:    !g.properties.Default,
 	})
+	blueprint.SetProvider(ctx, blueprint.SrcsFileProviderKey, blueprint.SrcsFileProviderData{SrcPaths: srcs})
 }
 
 func buildGoPluginLoader(ctx blueprint.ModuleContext, pkgPath, pluginSrc string) bool {
@@ -499,8 +565,30 @@ func buildGoPluginLoader(ctx blueprint.ModuleContext, pkgPath, pluginSrc string)
 	return ret
 }
 
+func generateEmbedcfgFile(files []string, srcDir string, embedcfgFile string) {
+	embedcfg := struct {
+		Patterns map[string][]string
+		Files    map[string]string
+	}{
+		map[string][]string{},
+		map[string]string{},
+	}
+
+	for _, file := range files {
+		embedcfg.Patterns[file] = []string{file}
+		embedcfg.Files[file] = filepath.Join(srcDir, file)
+	}
+
+	embedcfgData, err := json.Marshal(&embedcfg)
+	if err != nil {
+		panic(err)
+	}
+
+	os.WriteFile(embedcfgFile, []byte(embedcfgData), 0644)
+}
+
 func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
-	pkgPath string, archiveFile string, srcs []string, genSrcs []string) {
+	pkgPath string, archiveFile string, srcs []string, genSrcs []string, embedSrcs []string) {
 
 	srcDir := moduleSrcDir(ctx)
 	srcFiles := pathtools.PrefixPaths(srcs, srcDir)
@@ -525,6 +613,12 @@ func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
 		compileArgs["incFlags"] = strings.Join(incFlags, " ")
 	}
 
+	if len(embedSrcs) > 0 {
+		embedcfgFile := archiveFile + ".embedcfg"
+		generateEmbedcfgFile(embedSrcs, srcDir, embedcfgFile)
+		compileArgs["embedFlags"] = "-embedcfg " + embedcfgFile
+	}
+
 	ctx.Build(pctx, blueprint.BuildParams{
 		Rule:      compile,
 		Outputs:   []string{archiveFile},
@@ -536,7 +630,7 @@ func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
 }
 
 func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
-	pkgPath string, srcs, genSrcs, testSrcs []string) []string {
+	pkgPath string, srcs, genSrcs, testSrcs []string, embedSrcs []string) []string {
 
 	if len(testSrcs) == 0 {
 		return nil
@@ -551,7 +645,7 @@ func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
 	testPassed := filepath.Join(testRoot, "test.passed")
 
 	buildGoPackage(ctx, testRoot, pkgPath, testPkgArchive,
-		append(srcs, testSrcs...), genSrcs)
+		append(srcs, testSrcs...), genSrcs, embedSrcs)
 
 	ctx.Build(pctx, blueprint.BuildParams{
 		Rule:    goTestMain,
@@ -626,25 +720,27 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	// Find the module that's marked as the "primary builder", which means it's
 	// creating the binary that we'll use to generate the non-bootstrap
 	// build.ninja file.
-	var primaryBuilders []*goBinary
+	var primaryBuilders []*GoBinary
 	// blueprintTools contains blueprint go binaries that will be built in StageMain
 	var blueprintTools []string
+	// blueprintTools contains the test outputs of go tests that can be run in StageMain
+	var blueprintTests []string
 	// blueprintGoPackages contains all blueprint go packages that can be built in StageMain
 	var blueprintGoPackages []string
 	ctx.VisitAllModulesIf(IsBootstrapModule,
 		func(module blueprint.Module) {
 			if ctx.PrimaryModule(module) == module {
-				if binaryModule, ok := module.(*goBinary); ok {
+				if binaryModule, ok := module.(*GoBinary); ok {
 					blueprintTools = append(blueprintTools, binaryModule.InstallPath())
 					if binaryModule.properties.PrimaryBuilder {
 						primaryBuilders = append(primaryBuilders, binaryModule)
 					}
 				}
 
-				if packageModule, ok := module.(*goPackage); ok {
+				if packageModule, ok := module.(*GoPackage); ok {
 					blueprintGoPackages = append(blueprintGoPackages,
 						packageModule.GoPackageTarget())
-					blueprintGoPackages = append(blueprintGoPackages,
+					blueprintTests = append(blueprintTests,
 						packageModule.GoTestTargets()...)
 				}
 			}
@@ -696,6 +792,7 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 			Rule:      generateBuildNinja,
 			Outputs:   i.Outputs,
 			Inputs:    i.Inputs,
+			Implicits: i.Implicits,
 			OrderOnly: i.OrderOnlyInputs,
 			Args: map[string]string{
 				"builder": primaryBuilderFile,
@@ -716,6 +813,13 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 		Rule:    blueprint.Phony,
 		Outputs: []string{"blueprint_tools"},
 		Inputs:  blueprintTools,
+	})
+
+	// Add a phony target for running various tests that are part of blueprint
+	ctx.Build(pctx, blueprint.BuildParams{
+		Rule:    blueprint.Phony,
+		Outputs: []string{"blueprint_tests"},
+		Inputs:  blueprintTests,
 	})
 
 	// Add a phony target for running go tests

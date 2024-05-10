@@ -16,23 +16,28 @@ package blueprint
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/ioutil"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"runtime/pprof"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"text/scanner"
 	"text/template"
+	"unsafe"
 
 	"github.com/google/blueprint/metrics"
 	"github.com/google/blueprint/parser"
@@ -82,10 +87,11 @@ type Context struct {
 	moduleGroups        []*moduleGroup
 	moduleInfo          map[Module]*moduleInfo
 	modulesSorted       []*moduleInfo
-	preSingletonInfo    []*singletonInfo
 	singletonInfo       []*singletonInfo
 	mutatorInfo         []*mutatorInfo
 	variantMutatorNames []string
+
+	transitionMutators []*transitionMutatorImpl
 
 	depsModified uint32 // positive if a mutator modified the dependencies
 
@@ -98,18 +104,20 @@ type Context struct {
 	// set by SetAllowMissingDependencies
 	allowMissingDependencies bool
 
+	verifyProvidersAreUnchanged bool
+
 	// set during PrepareBuildActions
-	pkgNames        map[*packageContext]string
+	nameTracker     *nameTracker
 	liveGlobals     *liveTracker
-	globalVariables map[Variable]ninjaString
+	globalVariables map[Variable]*ninjaString
 	globalPools     map[Pool]*poolDef
 	globalRules     map[Rule]*ruleDef
 
 	// set during PrepareBuildActions
-	outDir             ninjaString // The builddir special Ninja variable
-	requiredNinjaMajor int         // For the ninja_required_version variable
-	requiredNinjaMinor int         // For the ninja_required_version variable
-	requiredNinjaMicro int         // For the ninja_required_version variable
+	outDir             *ninjaString // The builddir special Ninja variable
+	requiredNinjaMajor int          // For the ninja_required_version variable
+	requiredNinjaMinor int          // For the ninja_required_version variable
+	requiredNinjaMicro int          // For the ninja_required_version variable
 
 	subninjas []string
 
@@ -135,11 +143,54 @@ type Context struct {
 	// True for any mutators that have already run over all modules
 	finishedMutators map[*mutatorInfo]bool
 
-	// Can be set by tests to avoid invalidating Module values after mutators.
-	skipCloneModulesAfterMutators bool
+	// If true, RunBlueprint will skip cloning modules at the end of RunBlueprint.
+	// Cloning modules intentionally invalidates some Module values after
+	// mutators run (to ensure that mutators don't set such Module values in a way
+	// which ruins the integrity of the graph). However, keeping Module values
+	// changed by mutators may be a desirable outcome (such as for tooling or tests).
+	SkipCloneModulesAfterMutators bool
 
 	// String values that can be used to gate build graph traversal
 	includeTags *IncludeTags
+
+	sourceRootDirs *SourceRootDirs
+}
+
+// A container for String keys. The keys can be used to gate build graph traversal
+type SourceRootDirs struct {
+	dirs []string
+}
+
+func (dirs *SourceRootDirs) Add(names ...string) {
+	dirs.dirs = append(dirs.dirs, names...)
+}
+
+func (dirs *SourceRootDirs) SourceRootDirAllowed(path string) (bool, string) {
+	sort.Slice(dirs.dirs, func(i, j int) bool {
+		return len(dirs.dirs[i]) < len(dirs.dirs[j])
+	})
+	last := len(dirs.dirs)
+	for i := range dirs.dirs {
+		// iterate from longest paths (most specific)
+		prefix := dirs.dirs[last-i-1]
+		disallowedPrefix := false
+		if len(prefix) >= 1 && prefix[0] == '-' {
+			prefix = prefix[1:]
+			disallowedPrefix = true
+		}
+		if strings.HasPrefix(path, prefix) {
+			if disallowedPrefix {
+				return false, prefix
+			} else {
+				return true, prefix
+			}
+		}
+	}
+	return true, ""
+}
+
+func (c *Context) AddSourceRootDirs(dirs ...string) {
+	c.sourceRootDirs.Add(dirs...)
 }
 
 // A container for String keys. The keys can be used to gate build graph traversal
@@ -295,17 +346,23 @@ type moduleInfo struct {
 	waitingCount int
 
 	// set during each runMutator
-	splitModules modulesOrAliases
+	splitModules           modulesOrAliases
+	obsoletedByNewVariants bool
 
 	// Used by TransitionMutator implementations
 	transitionVariations     []string
 	currentTransitionMutator string
 	requiredVariationsLock   sync.Mutex
 
+	// outgoingTransitionCache stores the final variation for each dependency, indexed by the source variation
+	// index in transitionVariations and then by the index of the dependency in directDeps
+	outgoingTransitionCache [][]string
+
 	// set during PrepareBuildActions
 	actionDefs localBuildActions
 
-	providers []interface{}
+	providers                  []interface{}
+	providerInitialValueHashes []uint64
 
 	startedMutator  *mutatorInfo
 	finishedMutator *mutatorInfo
@@ -369,15 +426,7 @@ type Variation struct {
 type variationMap map[string]string
 
 func (vm variationMap) clone() variationMap {
-	if vm == nil {
-		return nil
-	}
-	newVm := make(variationMap)
-	for k, v := range vm {
-		newVm[k] = v
-	}
-
-	return newVm
+	return maps.Clone(vm)
 }
 
 // Compare this variationMap to another one.  Returns true if the every entry in this map
@@ -392,7 +441,7 @@ func (vm variationMap) subsetOf(other variationMap) bool {
 }
 
 func (vm variationMap) equal(other variationMap) bool {
-	return reflect.DeepEqual(vm, other)
+	return maps.Equal(vm, other)
 }
 
 type singletonInfo struct {
@@ -400,6 +449,7 @@ type singletonInfo struct {
 	factory   SingletonFactory
 	singleton Singleton
 	name      string
+	parallel  bool
 
 	// set during PrepareBuildActions
 	actionDefs localBuildActions
@@ -407,28 +457,31 @@ type singletonInfo struct {
 
 type mutatorInfo struct {
 	// set during RegisterMutator
-	topDownMutator  TopDownMutator
-	bottomUpMutator BottomUpMutator
-	name            string
-	parallel        bool
+	topDownMutator    TopDownMutator
+	bottomUpMutator   BottomUpMutator
+	name              string
+	parallel          bool
+	transitionMutator *transitionMutatorImpl
 }
 
 func newContext() *Context {
 	eventHandler := metrics.EventHandler{}
 	return &Context{
-		Context:            context.Background(),
-		EventHandler:       &eventHandler,
-		moduleFactories:    make(map[string]ModuleFactory),
-		nameInterface:      NewSimpleNameInterface(),
-		moduleInfo:         make(map[Module]*moduleInfo),
-		globs:              make(map[globKey]pathtools.GlobResult),
-		fs:                 pathtools.OsFs,
-		finishedMutators:   make(map[*mutatorInfo]bool),
-		includeTags:        &IncludeTags{},
-		outDir:             nil,
-		requiredNinjaMajor: 1,
-		requiredNinjaMinor: 7,
-		requiredNinjaMicro: 0,
+		Context:                     context.Background(),
+		EventHandler:                &eventHandler,
+		moduleFactories:             make(map[string]ModuleFactory),
+		nameInterface:               NewSimpleNameInterface(),
+		moduleInfo:                  make(map[Module]*moduleInfo),
+		globs:                       make(map[globKey]pathtools.GlobResult),
+		fs:                          pathtools.OsFs,
+		finishedMutators:            make(map[*mutatorInfo]bool),
+		includeTags:                 &IncludeTags{},
+		sourceRootDirs:              &SourceRootDirs{},
+		outDir:                      nil,
+		requiredNinjaMajor:          1,
+		requiredNinjaMinor:          7,
+		requiredNinjaMicro:          0,
+		verifyProvidersAreUnchanged: true,
 	}
 }
 
@@ -512,7 +565,7 @@ type ModuleFactory func() (m Module, propertyStructs []interface{})
 // to global variables must be synchronized.
 func (c *Context) RegisterModuleType(name string, factory ModuleFactory) {
 	if _, present := c.moduleFactories[name]; present {
-		panic(errors.New("module type name is already registered"))
+		panic(fmt.Errorf("module type %q is already registered", name))
 	}
 	c.moduleFactories[name] = factory
 }
@@ -524,16 +577,18 @@ type SingletonFactory func() Singleton
 
 // RegisterSingletonType registers a singleton type that will be invoked to
 // generate build actions.  Each registered singleton type is instantiated
-// and invoked exactly once as part of the generate phase.  Each registered
-// singleton is invoked in registration order.
+// and invoked exactly once as part of the generate phase.
+//
+// Those singletons registered with parallel=true are run in parallel, after
+// which the other registered singletons are run in registration order.
 //
 // The singleton type names given here must be unique for the context.  The
 // factory function should be a named function so that its package and name can
 // be included in the generated Ninja file for debugging purposes.
-func (c *Context) RegisterSingletonType(name string, factory SingletonFactory) {
+func (c *Context) RegisterSingletonType(name string, factory SingletonFactory, parallel bool) {
 	for _, s := range c.singletonInfo {
 		if s.name == name {
-			panic(errors.New("singleton name is already registered"))
+			panic(fmt.Errorf("singleton %q is already registered", name))
 		}
 	}
 
@@ -541,28 +596,7 @@ func (c *Context) RegisterSingletonType(name string, factory SingletonFactory) {
 		factory:   factory,
 		singleton: factory(),
 		name:      name,
-	})
-}
-
-// RegisterPreSingletonType registers a presingleton type that will be invoked to
-// generate build actions before any Blueprint files have been read.  Each registered
-// presingleton type is instantiated and invoked exactly once at the beginning of the
-// parse phase.  Each registered presingleton is invoked in registration order.
-//
-// The presingleton type names given here must be unique for the context.  The
-// factory function should be a named function so that its package and name can
-// be included in the generated Ninja file for debugging purposes.
-func (c *Context) RegisterPreSingletonType(name string, factory SingletonFactory) {
-	for _, s := range c.preSingletonInfo {
-		if s.name == name {
-			panic(errors.New("presingleton name is already registered"))
-		}
-	}
-
-	c.preSingletonInfo = append(c.preSingletonInfo, &singletonInfo{
-		factory:   factory,
-		singleton: factory(),
-		name:      name,
+		parallel:  parallel,
 	})
 }
 
@@ -608,7 +642,7 @@ func singletonTypeName(singleton Singleton) string {
 func (c *Context) RegisterTopDownMutator(name string, mutator TopDownMutator) MutatorHandle {
 	for _, m := range c.mutatorInfo {
 		if m.name == name && m.topDownMutator != nil {
-			panic(fmt.Errorf("mutator name %s is already registered", name))
+			panic(fmt.Errorf("mutator %q is already registered", name))
 		}
 	}
 
@@ -635,7 +669,7 @@ func (c *Context) RegisterTopDownMutator(name string, mutator TopDownMutator) Mu
 func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) MutatorHandle {
 	for _, m := range c.variantMutatorNames {
 		if m == name {
-			panic(fmt.Errorf("mutator name %s is already registered", name))
+			panic(fmt.Errorf("mutator %q is already registered", name))
 		}
 	}
 
@@ -650,239 +684,22 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 	return info
 }
 
-type IncomingTransitionContext interface {
-	// Module returns the target of the dependency edge for which the transition
-	// is being computed
-	Module() Module
-
-	// Config returns the config object that was passed to
-	// Context.PrepareBuildActions.
-	Config() interface{}
-}
-
-type OutgoingTransitionContext interface {
-	// Module returns the target of the dependency edge for which the transition
-	// is being computed
-	Module() Module
-
-	// DepTag() Returns the dependency tag through which this dependency is
-	// reached
-	DepTag() DependencyTag
-}
-
-// Transition mutators implement a top-down mechanism where a module tells its
-// direct dependencies what variation they should be built in but the dependency
-// has the final say.
-//
-// When implementing a transition mutator, one needs to implement four methods:
-//   - Split() that tells what variations a module has by itself
-//   - OutgoingTransition() where a module tells what it wants from its
-//     dependency
-//   - IncomingTransition() where a module has the final say about its own
-//     variation
-//   - Mutate() that changes the state of a module depending on its variation
-//
-// That the effective variation of module B when depended on by module A is the
-// composition the outgoing transition of module A and the incoming transition
-// of module B.
-//
-// the outgoing transition should not take the properties of the dependency into
-// account, only those of the module that depends on it. For this reason, the
-// dependency is not even passed into it as an argument. Likewise, the incoming
-// transition should not take the properties of the depending module into
-// account and is thus not informed about it. This makes for a nice
-// decomposition of the decision logic.
-//
-// A given transition mutator only affects its own variation; other variations
-// stay unchanged along the dependency edges.
-//
-// Soong makes sure that all modules are created in the desired variations and
-// that dependency edges are set up correctly. This ensures that "missing
-// variation" errors do not happen and allows for more flexible changes in the
-// value of the variation among dependency edges (as oppposed to bottom-up
-// mutators where if module A in variation X depends on module B and module B
-// has that variation X, A must depend on variation X of B)
-//
-// The limited power of the context objects passed to individual mutators
-// methods also makes it more difficult to shoot oneself in the foot. Complete
-// safety is not guaranteed because no one prevents individual transition
-// mutators from mutating modules in illegal ways and for e.g. Split() or
-// Mutate() to run their own visitations of the transitive dependency of the
-// module and both of these are bad ideas, but it's better than no guardrails at
-// all.
-//
-// This model is pretty close to Bazel's configuration transitions. The mapping
-// between concepts in Soong and Bazel is as follows:
-//   - Module == configured target
-//   - Variant == configuration
-//   - Variation name == configuration flag
-//   - Variation == configuration flag value
-//   - Outgoing transition == attribute transition
-//   - Incoming transition == rule transition
-//
-// The Split() method does not have a Bazel equivalent and Bazel split
-// transitions do not have a Soong equivalent.
-//
-// Mutate() does not make sense in Bazel due to the different models of the
-// two systems: when creating new variations, Soong clones the old module and
-// thus some way is needed to change it state whereas Bazel creates each
-// configuration of a given configured target anew.
-type TransitionMutator interface {
-	// Returns the set of variations that should be created for a module no matter
-	// who depends on it. Used when Make depends on a particular variation or when
-	// the module knows its variations just based on information given to it in
-	// the Blueprint file. This method should not mutate the module it is called
-	// on.
-	Split(ctx BaseModuleContext) []string
-
-	// Called on a module to determine which variation it wants from its direct
-	// dependencies. The dependency itself can override this decision. This method
-	// should not mutate the module itself.
-	OutgoingTransition(ctx OutgoingTransitionContext, sourceVariation string) string
-
-	// Called on a module to determine which variation it should be in based on
-	// the variation modules that depend on it want. This gives the module a final
-	// say about its own variations. This method should not mutate the module
-	// itself.
-	IncomingTransition(ctx IncomingTransitionContext, incomingVariation string) string
-
-	// Called after a module was split into multiple variations on each variation.
-	// It should not split the module any further but adding new dependencies is
-	// fine. Unlike all the other methods on TransitionMutator, this method is
-	// allowed to mutate the module.
-	Mutate(ctx BottomUpMutatorContext, variation string)
-}
-
-type transitionMutatorImpl struct {
-	name    string
-	mutator TransitionMutator
-}
-
-// Adds each argument in items to l if it's not already there.
-func addToStringListIfNotPresent(l []string, items ...string) []string {
-OUTER:
-	for _, i := range items {
-		for _, existing := range l {
-			if existing == i {
-				continue OUTER
-			}
-		}
-
-		l = append(l, i)
-	}
-
-	return l
-}
-
-func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation string) {
-	m.requiredVariationsLock.Lock()
-	defer m.requiredVariationsLock.Unlock()
-
-	// This is only a consistency check. Leaking the variations of a transition
-	// mutator to another one could well lead to issues that are difficult to
-	// track down.
-	if m.currentTransitionMutator != "" && m.currentTransitionMutator != t.name {
-		panic(fmt.Errorf("transition mutator is %s in mutator %s", m.currentTransitionMutator, t.name))
-	}
-
-	m.currentTransitionMutator = t.name
-	m.transitionVariations = addToStringListIfNotPresent(m.transitionVariations, variation)
-}
-
-func (t *transitionMutatorImpl) topDownMutator(mctx TopDownMutatorContext) {
-	module := mctx.(*mutatorContext).module
-	mutatorSplits := t.mutator.Split(mctx)
-	if mutatorSplits == nil || len(mutatorSplits) == 0 {
-		panic(fmt.Errorf("transition mutator %s returned no splits for module %s", t.name, mctx.ModuleName()))
-	}
-
-	// transitionVariations for given a module can be mutated by the module itself
-	// and modules that directly depend on it. Since this is a top-down mutator,
-	// all modules that directly depend on this module have already been processed
-	// so no locking is necessary.
-	module.transitionVariations = addToStringListIfNotPresent(module.transitionVariations, mutatorSplits...)
-	sort.Strings(module.transitionVariations)
-
-	for _, srcVariation := range module.transitionVariations {
-		for _, dep := range module.directDeps {
-			finalVariation := t.transition(mctx)(mctx.Module(), srcVariation, dep.module.logicModule, dep.tag)
-			t.addRequiredVariation(dep.module, finalVariation)
-		}
-	}
-}
-
-type transitionContextImpl struct {
-	module Module
-	depTag DependencyTag
-	config interface{}
-}
-
-func (c *transitionContextImpl) Module() Module {
-	return c.module
-}
-
-func (c *transitionContextImpl) DepTag() DependencyTag {
-	return c.depTag
-}
-
-func (c *transitionContextImpl) Config() interface{} {
-	return c.config
-}
-
-func (t *transitionMutatorImpl) transition(mctx BaseMutatorContext) Transition {
-	return func(source Module, sourceVariation string, dep Module, depTag DependencyTag) string {
-		tc := &transitionContextImpl{module: dep, depTag: depTag, config: mctx.Config()}
-		outgoingVariation := t.mutator.OutgoingTransition(tc, sourceVariation)
-		finalVariation := t.mutator.IncomingTransition(tc, outgoingVariation)
-		return finalVariation
-	}
-}
-
-func (t *transitionMutatorImpl) bottomUpMutator(mctx BottomUpMutatorContext) {
-	mc := mctx.(*mutatorContext)
-	// Fetch and clean up transition mutator state. No locking needed since the
-	// only time interaction between multiple modules is required is during the
-	// computation of the variations required by a given module.
-	variations := mc.module.transitionVariations
-	mc.module.transitionVariations = nil
-	mc.module.currentTransitionMutator = ""
-
-	if len(variations) < 1 {
-		panic(fmt.Errorf("no variations found for module %s by mutator %s",
-			mctx.ModuleName(), t.name))
-	}
-
-	if len(variations) == 1 && variations[0] == "" {
-		// Module is not split, just apply the transition
-		mc.applyTransition(t.transition(mctx))
-	} else {
-		mc.createVariationsWithTransition(t.transition(mctx), variations...)
-	}
-}
-
-func (t *transitionMutatorImpl) mutateMutator(mctx BottomUpMutatorContext) {
-	module := mctx.(*mutatorContext).module
-	currentVariation := module.variant.variations[t.name]
-	t.mutator.Mutate(mctx, currentVariation)
-}
-
-func (c *Context) RegisterTransitionMutator(name string, mutator TransitionMutator) {
-	impl := &transitionMutatorImpl{name: name, mutator: mutator}
-
-	c.RegisterTopDownMutator(name+"_deps", impl.topDownMutator).Parallel()
-	c.RegisterBottomUpMutator(name, impl.bottomUpMutator).Parallel()
-	c.RegisterBottomUpMutator(name+"_mutate", impl.mutateMutator).Parallel()
-}
-
 type MutatorHandle interface {
 	// Set the mutator to visit modules in parallel while maintaining ordering.  Calling any
 	// method on the mutator context is thread-safe, but the mutator must handle synchronization
 	// for any modifications to global state or any modules outside the one it was invoked on.
 	Parallel() MutatorHandle
+
+	setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle
 }
 
 func (mutator *mutatorInfo) Parallel() MutatorHandle {
 	mutator.parallel = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle {
+	mutator.transitionMutator = impl
 	return mutator
 }
 
@@ -904,6 +721,18 @@ func (c *Context) SetIgnoreUnknownModuleTypes(ignoreUnknownModuleTypes bool) {
 // for missing dependencies.
 func (c *Context) SetAllowMissingDependencies(allowMissingDependencies bool) {
 	c.allowMissingDependencies = allowMissingDependencies
+}
+
+// SetVerifyProvidersAreUnchanged makes blueprint hash all providers immediately
+// after SetProvider() is called, and then hash them again after the build finished.
+// If the hashes change, it's an error. Providers are supposed to be immutable, but
+// we don't have any more direct way to enforce that in go.
+func (c *Context) SetVerifyProvidersAreUnchanged(verifyProvidersAreUnchanged bool) {
+	c.verifyProvidersAreUnchanged = verifyProvidersAreUnchanged
+}
+
+func (c *Context) GetVerifyProvidersAreUnchanged() bool {
+	return c.verifyProvidersAreUnchanged
 }
 
 func (c *Context) SetModuleListFile(listFile string) {
@@ -966,15 +795,25 @@ func (c *Context) ParseBlueprintsFiles(rootFile string,
 	return c.ParseFileList(baseDir, pathsToParse, config)
 }
 
+type shouldVisitFileInfo struct {
+	shouldVisitFile bool
+	skippedModules  []string
+	reasonForSkip   string
+	errs            []error
+}
+
 // Returns a boolean for whether this file should be analyzed
 // Evaluates to true if the file either
 // 1. does not contain a blueprint_package_includes
 // 2. contains a blueprint_package_includes and all requested tags are set
 // This should be processed before adding any modules to the build graph
-func shouldVisitFile(c *Context, file *parser.File) (bool, []error) {
+func shouldVisitFile(c *Context, file *parser.File) shouldVisitFileInfo {
+	skippedModules := []string{}
+	var blueprintPackageIncludes *PackageIncludes
 	for _, def := range file.Defs {
 		switch def := def.(type) {
 		case *parser.Module:
+			skippedModules = append(skippedModules, def.Name())
 			if def.Type != "blueprint_package_includes" {
 				continue
 			}
@@ -982,14 +821,47 @@ func shouldVisitFile(c *Context, file *parser.File) (bool, []error) {
 			if len(errs) > 0 {
 				// This file contains errors in blueprint_package_includes
 				// Visit anyways so that we can report errors on other modules in the file
-				return true, errs
+				return shouldVisitFileInfo{
+					shouldVisitFile: true,
+					errs:            errs,
+				}
 			}
 			logicModule, _ := c.cloneLogicModule(module)
-			pi := logicModule.(*PackageIncludes)
-			return pi.MatchesIncludeTags(c), []error{}
+			blueprintPackageIncludes = logicModule.(*PackageIncludes)
 		}
 	}
-	return true, []error{}
+
+	if blueprintPackageIncludes != nil {
+		packageMatches, err := blueprintPackageIncludes.matchesIncludeTags(c)
+		if err != nil {
+			return shouldVisitFileInfo{
+				errs: []error{err},
+			}
+		} else if !packageMatches {
+			return shouldVisitFileInfo{
+				shouldVisitFile: false,
+				skippedModules:  skippedModules,
+				reasonForSkip: fmt.Sprintf(
+					"module is defined in %q which contains a blueprint_package_includes module with unsatisfied tags",
+					file.Name,
+				),
+			}
+		}
+	}
+
+	shouldVisit, invalidatingPrefix := c.sourceRootDirs.SourceRootDirAllowed(file.Name)
+	if !shouldVisit {
+		return shouldVisitFileInfo{
+			shouldVisitFile: shouldVisit,
+			skippedModules:  skippedModules,
+			reasonForSkip: fmt.Sprintf(
+				"%q is a descendant of %q, and that path prefix was not included in PRODUCT_SOURCE_ROOT_DIRS",
+				file.Name,
+				invalidatingPrefix,
+			),
+		}
+	}
+	return shouldVisitFileInfo{shouldVisitFile: true}
 }
 
 func (c *Context) ParseFileList(rootDir string, filePaths []string,
@@ -1007,9 +879,15 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string,
 		added chan<- struct{}
 	}
 
+	type newSkipInfo struct {
+		shouldVisitFileInfo
+		file string
+	}
+
 	moduleCh := make(chan newModuleInfo)
 	errsCh := make(chan []error)
 	doneCh := make(chan struct{})
+	skipCh := make(chan newSkipInfo)
 	var numErrs uint32
 	var numGoroutines int32
 
@@ -1044,12 +922,17 @@ func (c *Context) ParseFileList(rootDir string, filePaths []string,
 			}
 			return nil
 		}
-		shouldVisit, errs := shouldVisitFile(c, file)
+		shouldVisitInfo := shouldVisitFile(c, file)
+		errs := shouldVisitInfo.errs
 		if len(errs) > 0 {
 			atomic.AddUint32(&numErrs, uint32(len(errs)))
 			errsCh <- errs
 		}
-		if !shouldVisit {
+		if !shouldVisitInfo.shouldVisitFile {
+			skipCh <- newSkipInfo{
+				file:                file.Name,
+				shouldVisitFileInfo: shouldVisitInfo,
+			}
 			// TODO: Write a file that lists the skipped bp files
 			return
 		}
@@ -1105,6 +988,14 @@ loop:
 			n := atomic.AddInt32(&numGoroutines, -1)
 			if n == 0 {
 				break loop
+			}
+		case skipped := <-skipCh:
+			nctx := newNamespaceContextFromFilename(skipped.file)
+			for _, name := range skipped.skippedModules {
+				c.nameInterface.NewSkippedModule(nctx, name, SkippedModuleInfo{
+					filename: skipped.file,
+					reason:   skipped.reasonForSkip,
+				})
 			}
 		}
 	}
@@ -1592,12 +1483,12 @@ func newVariant(module *moduleInfo, mutatorName string, variationName string,
 	return variant{newVariantName, newVariations, newDependencyVariations}
 }
 
-func (c *Context) createVariations(origModule *moduleInfo, mutatorName string,
+func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 	depChooser depChooser, variationNames []string, local bool) (modulesOrAliases, []error) {
 
 	if len(variationNames) == 0 {
 		panic(fmt.Errorf("mutator %q passed zero-length variation list for module %q",
-			mutatorName, origModule.Name()))
+			mutator.name, origModule.Name()))
 	}
 
 	var newModules modulesOrAliases
@@ -1608,7 +1499,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutatorName string,
 		var newLogicModule Module
 		var newProperties []interface{}
 
-		if i == 0 {
+		if i == 0 && mutator.transitionMutator == nil {
 			// Reuse the existing module for the first new variant
 			// This both saves creating a new module, and causes the insertion in c.moduleInfo below
 			// with logicModule as the key to replace the original entry in c.moduleInfo
@@ -1619,17 +1510,18 @@ func (c *Context) createVariations(origModule *moduleInfo, mutatorName string,
 
 		m := *origModule
 		newModule := &m
-		newModule.directDeps = append([]depInfo(nil), origModule.directDeps...)
+		newModule.directDeps = slices.Clone(origModule.directDeps)
 		newModule.reverseDeps = nil
 		newModule.forwardDeps = nil
 		newModule.logicModule = newLogicModule
-		newModule.variant = newVariant(origModule, mutatorName, variationName, local)
+		newModule.variant = newVariant(origModule, mutator.name, variationName, local)
 		newModule.properties = newProperties
-		newModule.providers = append([]interface{}(nil), origModule.providers...)
+		newModule.providers = slices.Clone(origModule.providers)
+		newModule.providerInitialValueHashes = slices.Clone(origModule.providerInitialValueHashes)
 
 		newModules = append(newModules, newModule)
 
-		newErrs := c.convertDepsToVariation(newModule, depChooser)
+		newErrs := c.convertDepsToVariation(newModule, i, depChooser)
 		if len(newErrs) > 0 {
 			errs = append(errs, newErrs...)
 		}
@@ -1637,7 +1529,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutatorName string,
 
 	// Mark original variant as invalid.  Modules that depend on this module will still
 	// depend on origModule, but we'll fix it when the mutator is called on them.
-	origModule.logicModule = nil
+	origModule.obsoletedByNewVariants = true
 	origModule.splitModules = newModules
 
 	atomic.AddUint32(&c.depsModified, 1)
@@ -1645,37 +1537,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutatorName string,
 	return newModules, errs
 }
 
-type depChooser func(source *moduleInfo, dep depInfo) (*moduleInfo, string)
-
-// This function is called for every dependency edge to determine which
-// variation of the dependency is needed. Its inputs are the depending module,
-// its variation, the dependency and the dependency tag.
-type Transition func(source Module, sourceVariation string, dep Module, depTag DependencyTag) string
-
-func chooseDepByTransition(mutatorName string, transition Transition) depChooser {
-	return func(source *moduleInfo, dep depInfo) (*moduleInfo, string) {
-		sourceVariation := source.variant.variations[mutatorName]
-		depLogicModule := dep.module.logicModule
-		if depLogicModule == nil {
-			// This is really a lie because the original dependency before the split
-			// went away when it was split. We choose an arbitrary split module
-			// instead and hope that whatever information the transition wants from it
-			// is the same as in the original one
-			// TODO(lberki): this can be fixed by calling transition() once and saving
-			// its results somewhere
-			depLogicModule = dep.module.splitModules[0].moduleOrAliasTarget().logicModule
-		}
-
-		desiredVariation := transition(source.logicModule, sourceVariation, depLogicModule, dep.tag)
-		for _, m := range dep.module.splitModules {
-			if m.moduleOrAliasVariant().variations[mutatorName] == desiredVariation {
-				return m.moduleOrAliasTarget(), ""
-			}
-		}
-
-		return nil, desiredVariation
-	}
-}
+type depChooser func(source *moduleInfo, variationIndex, depIndex int, dep depInfo) (*moduleInfo, string)
 
 func chooseDep(candidates modulesOrAliases, mutatorName, variationName string, defaultVariationName *string) (*moduleInfo, string) {
 	for _, m := range candidates {
@@ -1696,24 +1558,31 @@ func chooseDep(candidates modulesOrAliases, mutatorName, variationName string, d
 	return nil, variationName
 }
 
+func chooseDepByIndexes(mutatorName string, variations [][]string) depChooser {
+	return func(source *moduleInfo, variationIndex, depIndex int, dep depInfo) (*moduleInfo, string) {
+		desiredVariation := variations[variationIndex][depIndex]
+		return chooseDep(dep.module.splitModules, mutatorName, desiredVariation, nil)
+	}
+}
+
 func chooseDepExplicit(mutatorName string,
 	variationName string, defaultVariationName *string) depChooser {
-	return func(source *moduleInfo, dep depInfo) (*moduleInfo, string) {
+	return func(source *moduleInfo, variationIndex, depIndex int, dep depInfo) (*moduleInfo, string) {
 		return chooseDep(dep.module.splitModules, mutatorName, variationName, defaultVariationName)
 	}
 }
 
 func chooseDepInherit(mutatorName string, defaultVariationName *string) depChooser {
-	return func(source *moduleInfo, dep depInfo) (*moduleInfo, string) {
+	return func(source *moduleInfo, variationIndex, depIndex int, dep depInfo) (*moduleInfo, string) {
 		sourceVariation := source.variant.variations[mutatorName]
 		return chooseDep(dep.module.splitModules, mutatorName, sourceVariation, defaultVariationName)
 	}
 }
 
-func (c *Context) convertDepsToVariation(module *moduleInfo, depChooser depChooser) (errs []error) {
+func (c *Context) convertDepsToVariation(module *moduleInfo, variationIndex int, depChooser depChooser) (errs []error) {
 	for i, dep := range module.directDeps {
-		if dep.module.logicModule == nil {
-			newDep, missingVariation := depChooser(module, dep)
+		if dep.module.obsoletedByNewVariants {
+			newDep, missingVariation := depChooser(module, variationIndex, i, dep)
 			if newDep == nil {
 				errs = append(errs, &BlueprintError{
 					Err: fmt.Errorf("failed to find variation %q for module %q needed by %q",
@@ -1861,26 +1730,23 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 
 		c.liveGlobals = newLiveTracker(c, config)
 
-		deps, errs = c.generateSingletonBuildActions(config, c.preSingletonInfo, c.liveGlobals)
-		if len(errs) > 0 {
-			return
-		}
-
 		errs = c.updateDependencies()
 		if len(errs) > 0 {
 			return
 		}
 
-		var mutatorDeps []string
-		mutatorDeps, errs = c.runMutators(ctx, config)
+		deps, errs = c.runMutators(ctx, config)
 		if len(errs) > 0 {
 			return
 		}
-		deps = append(deps, mutatorDeps...)
 
-		if !c.skipCloneModulesAfterMutators {
+		c.BeginEvent("clone_modules")
+		if !c.SkipCloneModulesAfterMutators {
 			c.cloneModules()
 		}
+		defer c.EndEvent("clone_modules")
+
+		c.clearTransitionMutatorInputVariants()
 
 		c.dependenciesReady = true
 	})
@@ -1918,8 +1784,8 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 // findExactVariantOrSingle searches the moduleGroup for a module with the same variant as module,
 // and returns the matching module, or nil if one is not found.  A group with exactly one module
 // is always considered matching.
-func findExactVariantOrSingle(module *moduleInfo, possible *moduleGroup, reverse bool) *moduleInfo {
-	found, _ := findVariant(module, possible, nil, false, reverse)
+func (c *Context) findExactVariantOrSingle(module *moduleInfo, config any, possible *moduleGroup, reverse bool) *moduleInfo {
+	found, _ := c.findVariant(module, config, possible, nil, false, reverse)
 	if found == nil {
 		for _, moduleOrAlias := range possible.modules {
 			if m := moduleOrAlias.module(); m != nil {
@@ -1934,7 +1800,7 @@ func findExactVariantOrSingle(module *moduleInfo, possible *moduleGroup, reverse
 	return found
 }
 
-func (c *Context) addDependency(module *moduleInfo, tag DependencyTag, depName string) (*moduleInfo, []error) {
+func (c *Context) addDependency(module *moduleInfo, config any, tag DependencyTag, depName string) (*moduleInfo, []error) {
 	if _, ok := tag.(BaseDependencyTag); ok {
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
@@ -1951,7 +1817,7 @@ func (c *Context) addDependency(module *moduleInfo, tag DependencyTag, depName s
 		return nil, c.discoveredMissingDependencies(module, depName, nil)
 	}
 
-	if m := findExactVariantOrSingle(module, possibleDeps, false); m != nil {
+	if m := c.findExactVariantOrSingle(module, config, possibleDeps, false); m != nil {
 		module.newDirectDeps = append(module.newDirectDeps, depInfo{m, tag})
 		atomic.AddUint32(&c.depsModified, 1)
 		return m, nil
@@ -1971,7 +1837,7 @@ func (c *Context) addDependency(module *moduleInfo, tag DependencyTag, depName s
 	}}
 }
 
-func (c *Context) findReverseDependency(module *moduleInfo, destName string) (*moduleInfo, []error) {
+func (c *Context) findReverseDependency(module *moduleInfo, config any, destName string) (*moduleInfo, []error) {
 	if destName == module.Name() {
 		return nil, []error{&BlueprintError{
 			Err: fmt.Errorf("%q depends on itself", destName),
@@ -1988,7 +1854,7 @@ func (c *Context) findReverseDependency(module *moduleInfo, destName string) (*m
 		}}
 	}
 
-	if m := findExactVariantOrSingle(module, possibleDeps, true); m != nil {
+	if m := c.findExactVariantOrSingle(module, config, possibleDeps, true); m != nil {
 		return m, nil
 	}
 
@@ -2006,7 +1872,53 @@ func (c *Context) findReverseDependency(module *moduleInfo, destName string) (*m
 	}}
 }
 
-func findVariant(module *moduleInfo, possibleDeps *moduleGroup, variations []Variation, far bool, reverse bool) (*moduleInfo, variationMap) {
+// applyTransitions takes a variationMap being used to add a dependency on a module in a moduleGroup
+// and applies the OutgoingTransition and IncomingTransition methods of each completed TransitionMutator to
+// modify the requested variation.  It finds a variant that existed before the TransitionMutator ran that is
+// a subset of the requested variant to use as the module context for IncomingTransition.
+func (c *Context) applyTransitions(config any, module *moduleInfo, group *moduleGroup, variant variationMap,
+	requestedVariations []Variation) {
+	for _, transitionMutator := range c.transitionMutators {
+		// Apply the outgoing transition if it was not explicitly requested.
+		explicitlyRequested := slices.ContainsFunc(requestedVariations, func(variation Variation) bool {
+			return variation.Mutator == transitionMutator.name
+		})
+		sourceVariation := variant[transitionMutator.name]
+		outgoingVariation := sourceVariation
+		if !explicitlyRequested {
+			ctx := &outgoingTransitionContextImpl{
+				transitionContextImpl{context: c, source: module, dep: nil, depTag: nil, config: config},
+			}
+			outgoingVariation = transitionMutator.mutator.OutgoingTransition(ctx, sourceVariation)
+		}
+
+		// Find an appropriate module to use as the context for the IncomingTransition.
+		appliedIncomingTransition := false
+		for _, inputVariant := range transitionMutator.inputVariants[group] {
+			if inputVariant.variant.variations.subsetOf(variant) {
+				// Apply the incoming transition.
+				ctx := &incomingTransitionContextImpl{
+					transitionContextImpl{context: c, source: nil, dep: inputVariant,
+						depTag: nil, config: config},
+				}
+
+				finalVariation := transitionMutator.mutator.IncomingTransition(ctx, outgoingVariation)
+				variant[transitionMutator.name] = finalVariation
+				appliedIncomingTransition = true
+				break
+			}
+		}
+		if !appliedIncomingTransition && !explicitlyRequested {
+			// The transition mutator didn't apply anything to the target variant, remove the variation unless it
+			// was explicitly requested when adding the dependency.
+			delete(variant, transitionMutator.name)
+		}
+	}
+}
+
+func (c *Context) findVariant(module *moduleInfo, config any,
+	possibleDeps *moduleGroup, requestedVariations []Variation, far bool, reverse bool) (*moduleInfo, variationMap) {
+
 	// We can't just append variant.Variant to module.dependencyVariant.variantName and
 	// compare the strings because the result won't be in mutator registration order.
 	// Create a new map instead, and then deep compare the maps.
@@ -2021,12 +1933,14 @@ func findVariant(module *moduleInfo, possibleDeps *moduleGroup, variations []Var
 			newVariant = module.variant.variations.clone()
 		}
 	}
-	for _, v := range variations {
+	for _, v := range requestedVariations {
 		if newVariant == nil {
 			newVariant = make(variationMap)
 		}
 		newVariant[v.Mutator] = v.Variation
 	}
+
+	c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
 
 	check := func(variant variationMap) bool {
 		if far {
@@ -2047,7 +1961,7 @@ func findVariant(module *moduleInfo, possibleDeps *moduleGroup, variations []Var
 	return foundDep, newVariant
 }
 
-func (c *Context) addVariationDependency(module *moduleInfo, variations []Variation,
+func (c *Context) addVariationDependency(module *moduleInfo, config any, variations []Variation,
 	tag DependencyTag, depName string, far bool) (*moduleInfo, []error) {
 	if _, ok := tag.(BaseDependencyTag); ok {
 		panic("BaseDependencyTag is not allowed to be used directly!")
@@ -2058,7 +1972,7 @@ func (c *Context) addVariationDependency(module *moduleInfo, variations []Variat
 		return nil, c.discoveredMissingDependencies(module, depName, nil)
 	}
 
-	foundDep, newVariant := findVariant(module, possibleDeps, variations, far, false)
+	foundDep, newVariant := c.findVariant(module, config, possibleDeps, variations, far, false)
 
 	if foundDep == nil {
 		if c.allowMissingDependencies {
@@ -2579,6 +2493,7 @@ type jsonVariations []Variation
 
 type jsonModuleName struct {
 	Name                 string
+	Variant              string
 	Variations           jsonVariations
 	DependencyVariations jsonVariations
 }
@@ -2614,6 +2529,7 @@ func toJsonVariationMap(vm variationMap) jsonVariations {
 func jsonModuleNameFromModuleInfo(m *moduleInfo) *jsonModuleName {
 	return &jsonModuleName{
 		Name:                 m.Name(),
+		Variant:              m.variant.name,
 		Variations:           toJsonVariationMap(m.variant.variations),
 		DependencyVariations: toJsonVariationMap(m.variant.dependencyVariations),
 	}
@@ -2627,6 +2543,7 @@ type JSONDataSupplier interface {
 type JSONAction struct {
 	Inputs  []string
 	Outputs []string
+	Desc    string
 }
 
 // JSONActionSupplier allows JSON representation of additional actions that are not registered in
@@ -2658,10 +2575,11 @@ func jsonModuleFromModuleInfo(m *moduleInfo) *JsonModule {
 	return result
 }
 
-func jsonModuleWithActionsFromModuleInfo(m *moduleInfo) *JsonModule {
+func jsonModuleWithActionsFromModuleInfo(m *moduleInfo, nameTracker *nameTracker) *JsonModule {
 	result := &JsonModule{
 		jsonModuleName: jsonModuleName{
-			Name: m.Name(),
+			Name:    m.Name(),
+			Variant: m.variant.name,
 		},
 		Deps:      make([]jsonDep, 0),
 		Type:      m.typeName,
@@ -2670,14 +2588,23 @@ func jsonModuleWithActionsFromModuleInfo(m *moduleInfo) *JsonModule {
 	}
 	var actions []JSONAction
 	for _, bDef := range m.actionDefs.buildDefs {
-		actions = append(actions, JSONAction{
-			Inputs: append(
-				getNinjaStringsWithNilPkgNames(bDef.Inputs),
-				getNinjaStringsWithNilPkgNames(bDef.Implicits)...),
-			Outputs: append(
-				getNinjaStringsWithNilPkgNames(bDef.Outputs),
-				getNinjaStringsWithNilPkgNames(bDef.ImplicitOutputs)...),
-		})
+		a := JSONAction{
+			Inputs: append(append(append(
+				bDef.InputStrings,
+				bDef.ImplicitStrings...),
+				getNinjaStrings(bDef.Inputs, nameTracker)...),
+				getNinjaStrings(bDef.Implicits, nameTracker)...),
+
+			Outputs: append(append(append(
+				bDef.OutputStrings,
+				bDef.ImplicitOutputStrings...),
+				getNinjaStrings(bDef.Outputs, nameTracker)...),
+				getNinjaStrings(bDef.ImplicitOutputs, nameTracker)...),
+		}
+		if d, ok := bDef.Variables["description"]; ok {
+			a.Desc = d.Value(nameTracker)
+		}
+		actions = append(actions, a)
 	}
 
 	if j, ok := m.logicModule.(JSONActionSupplier); ok {
@@ -2693,14 +2620,42 @@ func jsonModuleWithActionsFromModuleInfo(m *moduleInfo) *JsonModule {
 	return result
 }
 
-// Gets a list of strings from the given list of ninjaStrings by invoking ninjaString.Value with
-// nil pkgNames on each of the input ninjaStrings.
-func getNinjaStringsWithNilPkgNames(nStrs []ninjaString) []string {
+// Gets a list of strings from the given list of ninjaStrings by invoking ninjaString.Value on each.
+func getNinjaStrings(nStrs []*ninjaString, nameTracker *nameTracker) []string {
 	var strs []string
 	for _, nstr := range nStrs {
-		strs = append(strs, nstr.Value(nil))
+		strs = append(strs, nstr.Value(nameTracker))
 	}
 	return strs
+}
+
+func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*JsonModule) (bool, int)) map[string]int {
+	outputToWeight := make(map[string]int)
+	for _, m := range c.modulesSorted {
+		jmWithActions := jsonModuleWithActionsFromModuleInfo(m, c.nameTracker)
+		if ok, weight := predicate(jmWithActions); ok {
+			for _, a := range jmWithActions.Module["Actions"].([]JSONAction) {
+				for _, o := range a.Outputs {
+					if val, ok := outputToWeight[o]; ok {
+						if val > weight {
+							continue
+						}
+					}
+					outputToWeight[o] = weight
+				}
+			}
+		}
+	}
+	return outputToWeight
+}
+
+func inList(s string, l []string) bool {
+	for _, element := range l {
+		if s == element {
+			return true
+		}
+	}
+	return false
 }
 
 // PrintJSONGraph prints info of modules in a JSON file.
@@ -2709,7 +2664,7 @@ func (c *Context) PrintJSONGraphAndActions(wGraph io.Writer, wActions io.Writer)
 	modulesToActions := make([]*JsonModule, 0)
 	for _, m := range c.modulesSorted {
 		jm := jsonModuleFromModuleInfo(m)
-		jmWithActions := jsonModuleWithActionsFromModuleInfo(m)
+		jmWithActions := jsonModuleWithActionsFromModuleInfo(m, c.nameTracker)
 		for _, d := range m.directDeps {
 			jm.Deps = append(jm.Deps, jsonDep{
 				jsonModuleName: *jsonModuleNameFromModuleInfo(d.module),
@@ -2796,12 +2751,12 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 
 		deps = append(deps, depsPackages...)
 
-		c.memoizeFullNames(c.liveGlobals, pkgNames)
+		nameTracker := c.memoizeFullNames(c.liveGlobals, pkgNames)
 
 		// This will panic if it finds a problem since it's a programming error.
-		c.checkForVariableReferenceCycles(c.liveGlobals.variables, pkgNames)
+		c.checkForVariableReferenceCycles(c.liveGlobals.variables, nameTracker)
 
-		c.pkgNames = pkgNames
+		c.nameTracker = nameTracker
 		c.globalVariables = c.liveGlobals.variables
 		c.globalPools = c.liveGlobals.pools
 		c.globalRules = c.liveGlobals.rules
@@ -2908,6 +2863,11 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		deps       []string
 	}
 
+	type newVariationPair struct {
+		newVariations   modulesOrAliases
+		origLogicModule Module
+	}
+
 	reverseDeps := make(map[*moduleInfo][]depInfo)
 	var rename []rename
 	var replace []replace
@@ -2915,7 +2875,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 
 	errsCh := make(chan []error)
 	globalStateCh := make(chan globalStateChange)
-	newVariationsCh := make(chan modulesOrAliases)
+	newVariationsCh := make(chan newVariationPair)
 	done := make(chan bool)
 
 	c.depsModified = 0
@@ -2931,9 +2891,11 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 				config:  config,
 				module:  module,
 			},
-			name:    mutator.name,
+			mutator: mutator,
 			pauseCh: pause,
 		}
+
+		origLogicModule := module.logicModule
 
 		module.startedMutator = mutator
 
@@ -2960,7 +2922,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		}
 
 		if len(mctx.newVariations) > 0 {
-			newVariationsCh <- mctx.newVariations
+			newVariationsCh <- newVariationPair{mctx.newVariations, origLogicModule}
 		}
 
 		if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 {
@@ -2975,6 +2937,8 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 
 		return false
 	}
+
+	var obsoleteLogicModules []Module
 
 	// Process errs and reverseDeps in a single goroutine
 	go func() {
@@ -2991,7 +2955,10 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 				newModules = append(newModules, globalStateChange.newModules...)
 				deps = append(deps, globalStateChange.deps...)
 			case newVariations := <-newVariationsCh:
-				for _, moduleOrAlias := range newVariations {
+				if newVariations.origLogicModule != newVariations.newVariations[0].module().logicModule {
+					obsoleteLogicModules = append(obsoleteLogicModules, newVariations.origLogicModule)
+				}
+				for _, moduleOrAlias := range newVariations.newVariations {
 					if m := moduleOrAlias.module(); m != nil {
 						newModuleInfo[m.logicModule] = m
 					}
@@ -3023,7 +2990,18 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		return nil, errs
 	}
 
+	for _, obsoleteLogicModule := range obsoleteLogicModules {
+		delete(newModuleInfo, obsoleteLogicModule)
+	}
+
 	c.moduleInfo = newModuleInfo
+
+	isTransitionMutator := mutator.transitionMutator != nil
+
+	var transitionMutatorInputVariants map[*moduleGroup][]*moduleInfo
+	if isTransitionMutator {
+		transitionMutatorInputVariants = make(map[*moduleGroup][]*moduleInfo)
+	}
 
 	for _, group := range c.moduleGroups {
 		for i := 0; i < len(group.modules); i++ {
@@ -3035,18 +3013,22 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 
 			// Update module group to contain newly split variants
 			if module.splitModules != nil {
+				if isTransitionMutator {
+					// For transition mutators, save the pre-split variant for reusing later in applyTransitions.
+					transitionMutatorInputVariants[group] = append(transitionMutatorInputVariants[group], module)
+				}
 				group.modules, i = spliceModules(group.modules, i, module.splitModules)
 			}
 
 			// Fix up any remaining dependencies on modules that were split into variants
 			// by replacing them with the first variant
 			for j, dep := range module.directDeps {
-				if dep.module.logicModule == nil {
+				if dep.module.obsoletedByNewVariants {
 					module.directDeps[j].module = dep.module.splitModules.firstModule()
 				}
 			}
 
-			if module.createdBy != nil && module.createdBy.logicModule == nil {
+			if module.createdBy != nil && module.createdBy.obsoletedByNewVariants {
 				module.createdBy = module.createdBy.splitModules.firstModule()
 			}
 
@@ -3071,7 +3053,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		// change inside the loop
 		for i := 0; i < len(group.modules); i++ {
 			if alias := group.modules[i].alias(); alias != nil {
-				if alias.target.logicModule == nil {
+				if alias.target.obsoletedByNewVariants {
 					newTarget := findAliasTarget(alias.target.variant)
 					if newTarget != nil {
 						alias.target = newTarget
@@ -3083,6 +3065,11 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 				}
 			}
 		}
+	}
+
+	if isTransitionMutator {
+		mutator.transitionMutator.inputVariants = transitionMutatorInputVariants
+		c.transitionMutators = append(c.transitionMutators, mutator.transitionMutator)
 	}
 
 	// Add in any new reverse dependencies that were added by the mutator
@@ -3118,6 +3105,14 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 	}
 
 	return deps, errs
+}
+
+// clearTransitionMutatorInputVariants removes the inputVariants field from every
+// TransitionMutator now that all dependencies have been resolved.
+func (c *Context) clearTransitionMutatorInputVariants() {
+	for _, mutator := range c.transitionMutators {
+		mutator.inputVariants = nil
+	}
 }
 
 // Replaces every build logic module with a clone of itself.  Prevents introducing problems where
@@ -3182,6 +3177,8 @@ func spliceModules(modules modulesOrAliases, i int, newModules modulesOrAliases)
 func (c *Context) generateModuleBuildActions(config interface{},
 	liveGlobals *liveTracker) ([]string, []error) {
 
+	c.BeginEvent("generateModuleBuildActions")
+	defer c.EndEvent("generateModuleBuildActions")
 	var deps []string
 	var errs []error
 
@@ -3279,56 +3276,135 @@ func (c *Context) generateModuleBuildActions(config interface{},
 	return deps, errs
 }
 
-func (c *Context) generateSingletonBuildActions(config interface{},
-	singletons []*singletonInfo, liveGlobals *liveTracker) ([]string, []error) {
+func (c *Context) generateOneSingletonBuildActions(config interface{},
+	info *singletonInfo, liveGlobals *liveTracker) ([]string, []error) {
 
 	var deps []string
 	var errs []error
 
-	for _, info := range singletons {
-		// The parent scope of the singletonContext's local scope gets overridden to be that of the
-		// calling Go package on a per-call basis.  Since the initial parent scope doesn't matter we
-		// just set it to nil.
-		scope := newLocalScope(nil, singletonNamespacePrefix(info.name))
+	// The parent scope of the singletonContext's local scope gets overridden to be that of the
+	// calling Go package on a per-call basis.  Since the initial parent scope doesn't matter we
+	// just set it to nil.
+	scope := newLocalScope(nil, singletonNamespacePrefix(info.name))
 
-		sctx := &singletonContext{
-			name:    info.name,
-			context: c,
-			config:  config,
-			scope:   scope,
-			globals: liveGlobals,
-		}
+	sctx := &singletonContext{
+		name:    info.name,
+		context: c,
+		config:  config,
+		scope:   scope,
+		globals: liveGlobals,
+	}
 
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					in := fmt.Sprintf("GenerateBuildActions for singleton %s", info.name)
-					if err, ok := r.(panicError); ok {
-						err.addIn(in)
-						sctx.error(err)
-					} else {
-						sctx.error(newPanicErrorf(r, in))
-					}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				in := fmt.Sprintf("GenerateBuildActions for singleton %s", info.name)
+				if err, ok := r.(panicError); ok {
+					err.addIn(in)
+					sctx.error(err)
+				} else {
+					sctx.error(newPanicErrorf(r, in))
 				}
-			}()
-			info.singleton.GenerateBuildActions(sctx)
+			}
 		}()
+		info.singleton.GenerateBuildActions(sctx)
+	}()
 
-		if len(sctx.errs) > 0 {
-			errs = append(errs, sctx.errs...)
+	if len(sctx.errs) > 0 {
+		errs = append(errs, sctx.errs...)
+		return deps, errs
+	}
+
+	deps = append(deps, sctx.ninjaFileDeps...)
+
+	newErrs := c.processLocalBuildActions(&info.actionDefs,
+		&sctx.actionDefs, liveGlobals)
+	errs = append(errs, newErrs...)
+	return deps, errs
+}
+
+func (c *Context) generateParallelSingletonBuildActions(config interface{},
+	singletons []*singletonInfo, liveGlobals *liveTracker) ([]string, []error) {
+
+	c.BeginEvent("generateParallelSingletonBuildActions")
+	defer c.EndEvent("generateParallelSingletonBuildActions")
+
+	var deps []string
+	var errs []error
+
+	wg := sync.WaitGroup{}
+	cancelCh := make(chan struct{})
+	depsCh := make(chan []string)
+	errsCh := make(chan []error)
+
+	go func() {
+		for {
+			select {
+			case <-cancelCh:
+				close(cancelCh)
+				return
+			case dep := <-depsCh:
+				deps = append(deps, dep...)
+			case newErrs := <-errsCh:
+				if len(errs) <= maxErrors {
+					errs = append(errs, newErrs...)
+				}
+			}
+		}
+	}()
+
+	for _, info := range singletons {
+		if !info.parallel {
+			// Skip any singletons registered with parallel=false.
+			continue
+		}
+		wg.Add(1)
+		go func(inf *singletonInfo) {
+			defer wg.Done()
+			newDeps, newErrs := c.generateOneSingletonBuildActions(config, inf, liveGlobals)
+			depsCh <- newDeps
+			errsCh <- newErrs
+		}(info)
+	}
+	wg.Wait()
+
+	cancelCh <- struct{}{}
+	<-cancelCh
+
+	return deps, errs
+}
+
+func (c *Context) generateSingletonBuildActions(config interface{},
+	singletons []*singletonInfo, liveGlobals *liveTracker) ([]string, []error) {
+
+	c.BeginEvent("generateSingletonBuildActions")
+	defer c.EndEvent("generateSingletonBuildActions")
+
+	var deps []string
+	var errs []error
+
+	// Run one singleton.  Use a variable to simplify manual validation testing.
+	var runSingleton = func(info *singletonInfo) {
+		c.BeginEvent("singleton:" + info.name)
+		defer c.EndEvent("singleton:" + info.name)
+		newDeps, newErrs := c.generateOneSingletonBuildActions(config, info, liveGlobals)
+		deps = append(deps, newDeps...)
+		errs = append(errs, newErrs...)
+	}
+
+	// Force a resort of the module groups before running singletons so that two singletons running in parallel
+	// don't cause a data race when they trigger a resort in VisitAllModules.
+	c.sortedModuleGroups()
+
+	// First, take care of any singletons that want to run in parallel.
+	deps, errs = c.generateParallelSingletonBuildActions(config, singletons, liveGlobals)
+
+	for _, info := range singletons {
+		if !info.parallel {
+			runSingleton(info)
 			if len(errs) > maxErrors {
 				break
 			}
-			continue
-		}
-
-		deps = append(deps, sctx.ninjaFileDeps...)
-
-		newErrs := c.processLocalBuildActions(&info.actionDefs,
-			&sctx.actionDefs, liveGlobals)
-		errs = append(errs, newErrs...)
-		if len(errs) > maxErrors {
-			break
 		}
 	}
 
@@ -3422,20 +3498,29 @@ type rename struct {
 	name  string
 }
 
-func (c *Context) moduleMatchingVariant(module *moduleInfo, name string) *moduleInfo {
-	group := c.moduleGroupFromName(name, module.namespace())
+// moduleVariantsThatDependOn takes the name of a module and a dependency and returns the all the variants of the
+// module that depends on the dependency.
+func (c *Context) moduleVariantsThatDependOn(name string, dep *moduleInfo) []*moduleInfo {
+	group := c.moduleGroupFromName(name, dep.namespace())
+	var variants []*moduleInfo
 
 	if group == nil {
 		return nil
 	}
 
-	for _, m := range group.modules {
-		if module.variant.name == m.moduleOrAliasVariant().name {
-			return m.moduleOrAliasTarget()
+	for _, module := range group.modules {
+		m := module.module()
+		if m == nil {
+			continue
+		}
+		for _, moduleDep := range m.directDeps {
+			if moduleDep.module == dep {
+				variants = append(variants, m)
+			}
 		}
 	}
 
-	return nil
+	return variants
 }
 
 func (c *Context) handleRenames(renames []rename) []error {
@@ -3488,8 +3573,8 @@ func (c *Context) discoveredMissingDependencies(module *moduleInfo, depName stri
 }
 
 func (c *Context) missingDependencyError(module *moduleInfo, depName string) (errs error) {
-	err := c.nameInterface.MissingDependencyError(module.Name(), module.namespace(), depName)
-
+	guess := namesLike(depName, module.Name(), c.moduleGroups)
+	err := c.nameInterface.MissingDependencyError(module.Name(), module.namespace(), depName, guess)
 	return &BlueprintError{
 		Err: err,
 		Pos: module.pos,
@@ -3582,6 +3667,25 @@ func (c *Context) visitAllModuleVariants(module *moduleInfo,
 	}
 }
 
+func (c *Context) visitAllModuleInfos(visit func(*moduleInfo)) {
+	var module *moduleInfo
+
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
+				funcName(visit), module))
+		}
+	}()
+
+	for _, moduleGroup := range c.sortedModuleGroups() {
+		for _, moduleOrAlias := range moduleGroup.modules {
+			if module = moduleOrAlias.module(); module != nil {
+				visit(module)
+			}
+		}
+	}
+}
+
 func (c *Context) requireNinjaVersion(major, minor, micro int) {
 	if major != 1 {
 		panic("ninja version with major version != 1 not supported")
@@ -3595,7 +3699,7 @@ func (c *Context) requireNinjaVersion(major, minor, micro int) {
 	}
 }
 
-func (c *Context) setOutDir(value ninjaString) {
+func (c *Context) setOutDir(value *ninjaString) {
 	if c.outDir == nil {
 		c.outDir = value
 	}
@@ -3663,20 +3767,27 @@ func (c *Context) makeUniquePackageNames(
 // memoizeFullNames stores the full name of each live global variable, rule and pool since each is
 // guaranteed to be used at least twice, once in the definition and once for each usage, and many
 // are used much more than once.
-func (c *Context) memoizeFullNames(liveGlobals *liveTracker, pkgNames map[*packageContext]string) {
+func (c *Context) memoizeFullNames(liveGlobals *liveTracker, pkgNames map[*packageContext]string) *nameTracker {
+	nameTracker := &nameTracker{
+		pkgNames:  pkgNames,
+		variables: make(map[Variable]string),
+		rules:     make(map[Rule]string),
+		pools:     make(map[Pool]string),
+	}
 	for v := range liveGlobals.variables {
-		v.memoizeFullName(pkgNames)
+		nameTracker.variables[v] = v.fullName(pkgNames)
 	}
 	for r := range liveGlobals.rules {
-		r.memoizeFullName(pkgNames)
+		nameTracker.rules[r] = r.fullName(pkgNames)
 	}
 	for p := range liveGlobals.pools {
-		p.memoizeFullName(pkgNames)
+		nameTracker.pools[p] = p.fullName(pkgNames)
 	}
+	return nameTracker
 }
 
 func (c *Context) checkForVariableReferenceCycles(
-	variables map[Variable]ninjaString, pkgNames map[*packageContext]string) {
+	variables map[Variable]*ninjaString, nameTracker *nameTracker) {
 
 	visited := make(map[Variable]bool)  // variables that were already checked
 	checking := make(map[Variable]bool) // variables actively being checked
@@ -3706,12 +3817,12 @@ func (c *Context) checkForVariableReferenceCycles(
 						msgs := []string{"detected variable reference cycle:"}
 
 						// Iterate backwards through the cycle list.
-						curName := v.fullName(pkgNames)
-						curValue := value.Value(pkgNames)
+						curName := nameTracker.Variable(v)
+						curValue := value.Value(nameTracker)
 						for i := len(cycle) - 1; i >= 0; i-- {
 							next := cycle[i]
-							nextName := next.fullName(pkgNames)
-							nextValue := variables[next].Value(pkgNames)
+							nextName := nameTracker.Variable(next)
+							nextValue := variables[next].Value(nameTracker)
 
 							msgs = append(msgs, fmt.Sprintf(
 								"    %q depends on %q", curName, nextName))
@@ -3759,13 +3870,16 @@ func (c *Context) AllTargets() (map[string]string, error) {
 	targets := map[string]string{}
 	var collectTargets = func(actionDefs localBuildActions) error {
 		for _, buildDef := range actionDefs.buildDefs {
-			ruleName := buildDef.Rule.fullName(c.pkgNames)
+			ruleName := c.nameTracker.Rule(buildDef.Rule)
 			for _, output := range append(buildDef.Outputs, buildDef.ImplicitOutputs...) {
 				outputValue, err := output.Eval(c.globalVariables)
 				if err != nil {
 					return err
 				}
 				targets[outputValue] = ruleName
+			}
+			for _, output := range append(buildDef.OutputStrings, buildDef.ImplicitOutputStrings...) {
+				targets[output] = ruleName
 			}
 		}
 		return nil
@@ -3798,7 +3912,7 @@ func (c *Context) OutDir() (string, error) {
 // ModuleTypePropertyStructs returns a mapping from module type name to a list of pointers to
 // property structs returned by the factory for that module type.
 func (c *Context) ModuleTypePropertyStructs() map[string][]interface{} {
-	ret := make(map[string][]interface{})
+	ret := make(map[string][]interface{}, len(c.moduleFactories))
 	for moduleType, factory := range c.moduleFactories {
 		_, ret[moduleType] = factory()
 	}
@@ -3834,22 +3948,12 @@ func (c *Context) ModuleType(logicModule Module) string {
 }
 
 // ModuleProvider returns the value, if any, for the provider for a module.  If the value for the
-// provider was not set it returns the zero value of the type of the provider, which means the
-// return value can always be type-asserted to the type of the provider.  The return value should
-// always be considered read-only.  It panics if called before the appropriate mutator or
-// GenerateBuildActions pass for the provider on the module.  The value returned may be a deep
-// copy of the value originally passed to SetProvider.
-func (c *Context) ModuleProvider(logicModule Module, provider ProviderKey) interface{} {
+// provider was not set it returns nil and false.  The return value should always be considered read-only.
+// It panics if called before the appropriate mutator or GenerateBuildActions pass for the provider on the
+// module.  The value returned may be a deep copy of the value originally passed to SetProvider.
+func (c *Context) ModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
 	module := c.moduleInfo[logicModule]
-	value, _ := c.provider(module, provider)
-	return value
-}
-
-// ModuleHasProvider returns true if the provider for the given module has been set.
-func (c *Context) ModuleHasProvider(logicModule Module, provider ProviderKey) bool {
-	module := c.moduleInfo[logicModule]
-	_, ok := c.provider(module, provider)
-	return ok
+	return c.provider(module, provider.provider())
 }
 
 func (c *Context) BlueprintFile(logicModule Module) string {
@@ -3861,9 +3965,47 @@ func (c *Context) ModuleErrorf(logicModule Module, format string,
 	args ...interface{}) error {
 
 	module := c.moduleInfo[logicModule]
-	return &BlueprintError{
-		Err: fmt.Errorf(format, args...),
-		Pos: module.pos,
+	if module == nil {
+		// This can happen if ModuleErrorf is called from a load hook
+		return &BlueprintError{
+			Err: fmt.Errorf(format, args...),
+		}
+	}
+
+	return &ModuleError{
+		BlueprintError: BlueprintError{
+			Err: fmt.Errorf(format, args...),
+			Pos: module.pos,
+		},
+		module: module,
+	}
+}
+
+func (c *Context) PropertyErrorf(logicModule Module, property string, format string,
+	args ...interface{}) error {
+
+	module := c.moduleInfo[logicModule]
+	if module == nil {
+		// This can happen if PropertyErrorf is called from a load hook
+		return &BlueprintError{
+			Err: fmt.Errorf(format, args...),
+		}
+	}
+
+	pos := module.propertyPos[property]
+	if !pos.IsValid() {
+		pos = module.pos
+	}
+
+	return &PropertyError{
+		ModuleError: ModuleError{
+			BlueprintError: BlueprintError{
+				Err: fmt.Errorf(format, args...),
+				Pos: pos,
+			},
+			module: module,
+		},
+		property: property,
 	}
 }
 
@@ -3986,10 +4128,38 @@ func (c *Context) SingletonName(singleton Singleton) string {
 	return ""
 }
 
+// Checks that the hashes of all the providers match the hashes from when they were first set.
+// Does nothing on success, returns a list of errors otherwise. It's recommended to run this
+// in a goroutine.
+func (c *Context) VerifyProvidersWereUnchanged() []error {
+	if !c.buildActionsReady {
+		return []error{ErrBuildActionsNotReady}
+	}
+	var errors []error
+	for _, m := range c.modulesSorted {
+		for i, provider := range m.providers {
+			if provider != nil {
+				hash, err := proptools.HashProvider(provider)
+				if err != nil {
+					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set, and no longer hashable afterwards: %s", providerRegistry[i].typ, m.Name(), err.Error()))
+					continue
+				}
+				if provider != nil && m.providerInitialValueHashes[i] != hash {
+					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set", providerRegistry[i].typ, m.Name()))
+				}
+			} else if m.providerInitialValueHashes[i] != 0 {
+				// This should be unreachable, because in setProvider we check if the provider has already been set.
+				errors = append(errors, fmt.Errorf("provider %q on module %q was unset somehow, this is an internal error", providerRegistry[i].typ, m.Name()))
+			}
+		}
+	}
+	return errors
+}
+
 // WriteBuildFile writes the Ninja manifest text for the generated build
 // actions to w.  If this is called before PrepareBuildActions successfully
 // completes then ErrBuildActionsNotReady is returned.
-func (c *Context) WriteBuildFile(w io.StringWriter) error {
+func (c *Context) WriteBuildFile(w StringWriterWriter) error {
 	var err error
 	pprof.Do(c.Context, pprof.Labels("blueprint", "WriteBuildFile"), func(ctx context.Context) {
 		if !c.buildActionsReady {
@@ -3999,59 +4169,46 @@ func (c *Context) WriteBuildFile(w io.StringWriter) error {
 
 		nw := newNinjaWriter(w)
 
-		err = c.writeBuildFileHeader(nw)
-		if err != nil {
+		if err = c.writeBuildFileHeader(nw); err != nil {
 			return
 		}
 
-		err = c.writeNinjaRequiredVersion(nw)
-		if err != nil {
+		if err = c.writeNinjaRequiredVersion(nw); err != nil {
 			return
 		}
 
-		err = c.writeSubninjas(nw)
-		if err != nil {
+		if err = c.writeSubninjas(nw); err != nil {
 			return
 		}
 
 		// TODO: Group the globals by package.
 
-		err = c.writeGlobalVariables(nw)
-		if err != nil {
+		if err = c.writeGlobalVariables(nw); err != nil {
 			return
 		}
 
-		err = c.writeGlobalPools(nw)
-		if err != nil {
+		if err = c.writeGlobalPools(nw); err != nil {
 			return
 		}
 
-		err = c.writeBuildDir(nw)
-		if err != nil {
+		if err = c.writeBuildDir(nw); err != nil {
 			return
 		}
 
-		err = c.writeGlobalRules(nw)
-		if err != nil {
+		if err = c.writeGlobalRules(nw); err != nil {
 			return
 		}
 
-		err = c.writeAllModuleActions(nw)
-		if err != nil {
+		if err = c.writeAllModuleActions(nw); err != nil {
 			return
 		}
 
-		err = c.writeAllSingletonActions(nw)
-		if err != nil {
+		if err = c.writeAllSingletonActions(nw); err != nil {
 			return
 		}
 	})
 
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 type pkgAssociation struct {
@@ -4087,7 +4244,7 @@ func (c *Context) writeBuildFileHeader(nw *ninjaWriter) error {
 
 	var pkgs []pkgAssociation
 	maxNameLen := 0
-	for pkg, name := range c.pkgNames {
+	for pkg, name := range c.nameTracker.pkgNames {
 		pkgs = append(pkgs, pkgAssociation{
 			PkgName: name,
 			PkgPath: pkg.pkgPath,
@@ -4140,7 +4297,7 @@ func (c *Context) writeSubninjas(nw *ninjaWriter) error {
 
 func (c *Context) writeBuildDir(nw *ninjaWriter) error {
 	if c.outDir != nil {
-		err := nw.Assign("builddir", c.outDir.Value(c.pkgNames))
+		err := nw.Assign("builddir", c.outDir.Value(c.nameTracker))
 		if err != nil {
 			return err
 		}
@@ -4151,29 +4308,6 @@ func (c *Context) writeBuildDir(nw *ninjaWriter) error {
 		}
 	}
 	return nil
-}
-
-type globalEntity interface {
-	fullName(pkgNames map[*packageContext]string) string
-}
-
-type globalEntitySorter struct {
-	pkgNames map[*packageContext]string
-	entities []globalEntity
-}
-
-func (s *globalEntitySorter) Len() int {
-	return len(s.entities)
-}
-
-func (s *globalEntitySorter) Less(i, j int) bool {
-	iName := s.entities[i].fullName(s.pkgNames)
-	jName := s.entities[j].fullName(s.pkgNames)
-	return iName < jName
-}
-
-func (s *globalEntitySorter) Swap(i, j int) {
-	s.entities[i], s.entities[j] = s.entities[j], s.entities[i]
 }
 
 func (c *Context) writeGlobalVariables(nw *ninjaWriter) error {
@@ -4194,7 +4328,7 @@ func (c *Context) writeGlobalVariables(nw *ninjaWriter) error {
 			}
 		}
 
-		err := nw.Assign(v.fullName(c.pkgNames), value.Value(c.pkgNames))
+		err := nw.Assign(c.nameTracker.Variable(v), value.Value(c.nameTracker))
 		if err != nil {
 			return err
 		}
@@ -4207,15 +4341,16 @@ func (c *Context) writeGlobalVariables(nw *ninjaWriter) error {
 		return nil
 	}
 
-	globalVariables := make([]globalEntity, 0, len(c.globalVariables))
+	globalVariables := make([]Variable, 0, len(c.globalVariables))
 	for variable := range c.globalVariables {
 		globalVariables = append(globalVariables, variable)
 	}
 
-	sort.Sort(&globalEntitySorter{c.pkgNames, globalVariables})
+	slices.SortFunc(globalVariables, func(a, b Variable) int {
+		return cmp.Compare(c.nameTracker.Variable(a), c.nameTracker.Variable(b))
+	})
 
-	for _, entity := range globalVariables {
-		v := entity.(Variable)
+	for _, v := range globalVariables {
 		if !visited[v] {
 			err := walk(v)
 			if err != nil {
@@ -4228,16 +4363,17 @@ func (c *Context) writeGlobalVariables(nw *ninjaWriter) error {
 }
 
 func (c *Context) writeGlobalPools(nw *ninjaWriter) error {
-	globalPools := make([]globalEntity, 0, len(c.globalPools))
+	globalPools := make([]Pool, 0, len(c.globalPools))
 	for pool := range c.globalPools {
 		globalPools = append(globalPools, pool)
 	}
 
-	sort.Sort(&globalEntitySorter{c.pkgNames, globalPools})
+	slices.SortFunc(globalPools, func(a, b Pool) int {
+		return cmp.Compare(c.nameTracker.Pool(a), c.nameTracker.Pool(b))
+	})
 
-	for _, entity := range globalPools {
-		pool := entity.(Pool)
-		name := pool.fullName(c.pkgNames)
+	for _, pool := range globalPools {
+		name := c.nameTracker.Pool(pool)
 		def := c.globalPools[pool]
 		err := def.WriteTo(nw, name)
 		if err != nil {
@@ -4254,18 +4390,19 @@ func (c *Context) writeGlobalPools(nw *ninjaWriter) error {
 }
 
 func (c *Context) writeGlobalRules(nw *ninjaWriter) error {
-	globalRules := make([]globalEntity, 0, len(c.globalRules))
+	globalRules := make([]Rule, 0, len(c.globalRules))
 	for rule := range c.globalRules {
 		globalRules = append(globalRules, rule)
 	}
 
-	sort.Sort(&globalEntitySorter{c.pkgNames, globalRules})
+	slices.SortFunc(globalRules, func(a, b Rule) int {
+		return cmp.Compare(c.nameTracker.Rule(a), c.nameTracker.Rule(b))
+	})
 
-	for _, entity := range globalRules {
-		rule := entity.(Rule)
-		name := rule.fullName(c.pkgNames)
+	for _, rule := range globalRules {
+		name := c.nameTracker.Rule(rule)
 		def := c.globalRules[rule]
-		err := def.WriteTo(nw, name, c.pkgNames)
+		err := def.WriteTo(nw, name, c.nameTracker)
 		if err != nil {
 			return err
 		}
@@ -4332,9 +4469,10 @@ func (s moduleSorter) Swap(i, j int) {
 }
 
 func (c *Context) writeAllModuleActions(nw *ninjaWriter) error {
+	c.BeginEvent("modules")
+	defer c.EndEvent("modules")
 	headerTemplate := template.New("moduleHeader")
-	_, err := headerTemplate.Parse(moduleHeaderTemplate)
-	if err != nil {
+	if _, err := headerTemplate.Parse(moduleHeaderTemplate); err != nil {
 		// This is a programming error.
 		panic(err)
 	}
@@ -4344,6 +4482,11 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter) error {
 		modules = append(modules, module)
 	}
 	sort.Sort(moduleSorter{modules, c.nameInterface})
+
+	phonys := c.deduplicateOrderOnlyDeps(modules)
+	if err := c.writeLocalBuildActions(nw, phonys); err != nil {
+		return err
+	}
 
 	buf := bytes.NewBuffer(nil)
 
@@ -4371,28 +4514,23 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter) error {
 			"pos":       relPos,
 			"variant":   module.variant.name,
 		}
-		err = headerTemplate.Execute(buf, infoMap)
-		if err != nil {
+		if err := headerTemplate.Execute(buf, infoMap); err != nil {
 			return err
 		}
 
-		err = nw.Comment(buf.String())
-		if err != nil {
+		if err := nw.Comment(buf.String()); err != nil {
 			return err
 		}
 
-		err = nw.BlankLine()
-		if err != nil {
+		if err := nw.BlankLine(); err != nil {
 			return err
 		}
 
-		err = c.writeLocalBuildActions(nw, &module.actionDefs)
-		if err != nil {
+		if err := c.writeLocalBuildActions(nw, &module.actionDefs); err != nil {
 			return err
 		}
 
-		err = nw.BlankLine()
-		if err != nil {
+		if err := nw.BlankLine(); err != nil {
 			return err
 		}
 	}
@@ -4401,6 +4539,8 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter) error {
 }
 
 func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
+	c.BeginEvent("singletons")
+	defer c.EndEvent("singletons")
 	headerTemplate := template.New("singletonHeader")
 	_, err := headerTemplate.Parse(singletonHeaderTemplate)
 	if err != nil {
@@ -4470,6 +4610,119 @@ func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
 	c.BeforePrepareBuildActionsHook = hookFn
 }
 
+// phonyCandidate represents the state of a set of deps that decides its eligibility
+// to be extracted as a phony output
+type phonyCandidate struct {
+	sync.Once
+	phony            *buildDef      // the phony buildDef that wraps the set
+	first            *buildDef      // the first buildDef that uses this set
+	orderOnlyStrings []string       // the original OrderOnlyStrings of the first buildDef that uses this set
+	orderOnly        []*ninjaString // the original OrderOnly of the first buildDef that uses this set
+}
+
+// keyForPhonyCandidate gives a unique identifier for a set of deps.
+// If any of the deps use a variable, we return an empty string to signal
+// that this set of deps is ineligible for extraction.
+func keyForPhonyCandidate(deps []*ninjaString, stringDeps []string) uint64 {
+	hasher := fnv.New64a()
+	write := func(s string) {
+		// The hasher doesn't retain or modify the input slice, so pass the string data directly to avoid
+		// an extra allocation and copy.
+		_, err := hasher.Write(unsafe.Slice(unsafe.StringData(s), len(s)))
+		if err != nil {
+			panic(fmt.Errorf("write failed: %w", err))
+		}
+	}
+	for _, d := range deps {
+		if len(d.Variables()) != 0 {
+			return 0
+		}
+		write(d.Value(nil))
+	}
+	for _, d := range stringDeps {
+		write(d)
+	}
+	return hasher.Sum64()
+}
+
+// scanBuildDef is called for every known buildDef `b` that has a non-empty `b.OrderOnly`.
+// If `b.OrderOnly` is not present in `candidates`, it gets stored.
+// But if `b.OrderOnly` already exists in `candidates`, then `b.OrderOnly`
+// (and phonyCandidate#first.OrderOnly) will be replaced with phonyCandidate#phony.Outputs
+func scanBuildDef(candidates *sync.Map, b *buildDef) {
+	key := keyForPhonyCandidate(b.OrderOnly, b.OrderOnlyStrings)
+	if key == 0 {
+		return
+	}
+	if v, loaded := candidates.LoadOrStore(key, &phonyCandidate{
+		first:            b,
+		orderOnly:        b.OrderOnly,
+		orderOnlyStrings: b.OrderOnlyStrings,
+	}); loaded {
+		m := v.(*phonyCandidate)
+		if slices.EqualFunc(m.orderOnly, b.OrderOnly, ninjaStringsEqual) &&
+			slices.Equal(m.orderOnlyStrings, b.OrderOnlyStrings) {
+			m.Do(func() {
+				// this is the second occurrence and hence it makes sense to
+				// extract it as a phony output
+				m.phony = &buildDef{
+					Rule:          Phony,
+					OutputStrings: []string{fmt.Sprintf("dedup-%x", key)},
+					Inputs:        m.first.OrderOnly, //we could also use b.OrderOnly
+					InputStrings:  m.first.OrderOnlyStrings,
+					Optional:      true,
+				}
+				// the previously recorded build-def, which first had these deps as its
+				// order-only deps, should now use this phony output instead
+				m.first.OrderOnlyStrings = m.phony.OutputStrings
+				m.first.OrderOnly = nil
+				m.first = nil
+			})
+			b.OrderOnlyStrings = m.phony.OutputStrings
+			b.OrderOnly = nil
+		}
+	}
+}
+
+// deduplicateOrderOnlyDeps searches for common sets of order-only dependencies across all
+// buildDef instances in the provided moduleInfo instances. Each such
+// common set forms a new buildDef representing a phony output that then becomes
+// the sole order-only dependency of those buildDef instances
+func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildActions {
+	c.BeginEvent("deduplicate_order_only_deps")
+	defer c.EndEvent("deduplicate_order_only_deps")
+
+	candidates := sync.Map{} //used as map[key]*candidate
+	parallelVisit(modules, unorderedVisitorImpl{}, parallelVisitLimit,
+		func(m *moduleInfo, pause chan<- pauseSpec) bool {
+			for _, b := range m.actionDefs.buildDefs {
+				if len(b.OrderOnly) > 0 || len(b.OrderOnlyStrings) > 0 {
+					scanBuildDef(&candidates, b)
+				}
+			}
+			return false
+		})
+
+	// now collect all created phonys to return
+	var phonys []*buildDef
+	candidates.Range(func(_ any, v any) bool {
+		candidate := v.(*phonyCandidate)
+		if candidate.phony != nil {
+			phonys = append(phonys, candidate.phony)
+		}
+		return true
+	})
+
+	c.EventHandler.Do("sort_phony_builddefs", func() {
+		// sorting for determinism, the phony output names are stable
+		sort.Slice(phonys, func(i int, j int) bool {
+			return phonys[i].OutputStrings[0] < phonys[j].OutputStrings[0]
+		})
+	})
+
+	return &localBuildActions{buildDefs: phonys}
+}
+
 func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
 	defs *localBuildActions) error {
 
@@ -4482,7 +4735,7 @@ func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
 		if err != nil {
 			panic(err)
 		}
-		err = nw.Assign(name, value.Value(c.pkgNames))
+		err = nw.Assign(name, value.Value(c.nameTracker))
 		if err != nil {
 			return err
 		}
@@ -4505,7 +4758,7 @@ func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
 			panic(err)
 		}
 
-		err = def.WriteTo(nw, name, c.pkgNames)
+		err = def.WriteTo(nw, name, c.nameTracker)
 		if err != nil {
 			return err
 		}
@@ -4518,7 +4771,7 @@ func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
 
 	// Write the build definitions.
 	for _, buildDef := range defs.buildDefs {
-		err := buildDef.WriteTo(nw, c.pkgNames)
+		err := buildDef.WriteTo(nw, c.nameTracker)
 		if err != nil {
 			return err
 		}
@@ -4582,6 +4835,260 @@ func funcName(f interface{}) string {
 	return runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name()
 }
 
+// json representation of a dependency
+type depJson struct {
+	Name    string      `json:"name"`
+	Variant string      `json:"variant"`
+	TagType string      `json:"tag_type"`
+	TagData interface{} `json:"tag_data"`
+}
+
+// json representation of a provider
+type providerJson struct {
+	Type   string      `json:"type"`
+	Debug  string      `json:"debug"` // from GetDebugString on the provider data
+	Fields interface{} `json:"fields"`
+}
+
+// interface for getting debug info from various data.
+// TODO: Consider having this return a json object instead
+type Debuggable interface {
+	GetDebugString() string
+}
+
+// Convert a slice in a reflect.Value to a value suitable for outputting to json
+func debugSlice(value reflect.Value) interface{} {
+	size := value.Len()
+	if size == 0 {
+		return nil
+	}
+	result := make([]interface{}, size)
+	for i := 0; i < size; i++ {
+		result[i] = debugValue(value.Index(i))
+	}
+	return result
+}
+
+// Convert a map in a reflect.Value to a value suitable for outputting to json
+func debugMap(value reflect.Value) interface{} {
+	if value.IsNil() {
+		return nil
+	}
+	result := make(map[string]interface{})
+	iter := value.MapRange()
+	for iter.Next() {
+		// In the (hopefully) rare case of a key collision (which will happen when multiple
+		// go-typed keys have the same string representation, we'll just overwrite the last
+		// value.
+		result[debugKey(iter.Key())] = debugValue(iter.Value())
+	}
+	return result
+}
+
+// Convert a value into a string, suitable for being a json map key.
+func debugKey(value reflect.Value) string {
+	return fmt.Sprintf("%v", value)
+}
+
+// Convert a single value (possibly a map or slice too) in a reflect.Value to a value suitable for outputting to json
+func debugValue(value reflect.Value) interface{} {
+	// Remember if we originally received a reflect.Interface.
+	wasInterface := value.Kind() == reflect.Interface
+	// Dereference pointers down to the real type
+	for value.Kind() == reflect.Ptr || value.Kind() == reflect.Interface {
+		// If it's nil, return nil
+		if value.IsNil() {
+			return nil
+		}
+		value = value.Elem()
+	}
+
+	// Skip private fields, maybe other weird corner cases of go's bizarre type system.
+	if !value.CanInterface() {
+		return nil
+	}
+
+	switch kind := value.Kind(); kind {
+	case reflect.Bool, reflect.String, reflect.Int, reflect.Uint:
+		return value.Interface()
+	case reflect.Slice:
+		return debugSlice(value)
+	case reflect.Struct:
+		// If we originally received an interface, and there is a String() method, call that.
+		// TODO: figure out why Path doesn't work correctly otherwise (in aconfigPropagatingDeclarationsInfo)
+		if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
+			return s.String()
+		}
+		return debugStruct(value)
+	case reflect.Map:
+		return debugMap(value)
+	default:
+		// TODO: add cases as we find them.
+		return fmt.Sprintf("debugValue(Kind=%v, wasInterface=%v)", kind, wasInterface)
+	}
+
+	return nil
+}
+
+// Convert an object in a reflect.Value to a value suitable for outputting to json
+func debugStruct(value reflect.Value) interface{} {
+	result := make(map[string]interface{})
+	debugStructAppend(value, &result)
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// Convert an object to a value suiable for outputting to json
+func debugStructAppend(value reflect.Value, result *map[string]interface{}) {
+	for value.Kind() == reflect.Ptr {
+		if value.IsNil() {
+			return
+		}
+		value = value.Elem()
+	}
+	if value.IsZero() {
+		return
+	}
+
+	if value.Kind() != reflect.Struct {
+		// TODO: could maybe support other types
+		return
+	}
+
+	structType := value.Type()
+	for i := 0; i < value.NumField(); i++ {
+		v := debugValue(value.Field(i))
+		if v != nil {
+			(*result)[structType.Field(i).Name] = v
+		}
+	}
+}
+
+func debugPropertyStruct(props interface{}, result *map[string]interface{}) {
+	if props == nil {
+		return
+	}
+	debugStructAppend(reflect.ValueOf(props), result)
+}
+
+// Get the debug json for a single module. Returns thae data as
+// flattened json text for easy concatenation by GenerateModuleDebugInfo.
+func getModuleDebugJson(module *moduleInfo) []byte {
+	info := struct {
+		Name       string                 `json:"name"`
+		SourceFile string                 `json:"source_file"`
+		SourceLine int                    `json:"source_line"`
+		Type       string                 `json:"type"`
+		Variant    string                 `json:"variant"`
+		Deps       []depJson              `json:"deps"`
+		Providers  []providerJson         `json:"providers"`
+		Debug      string                 `json:"debug"` // from GetDebugString on the module
+		Properties map[string]interface{} `json:"properties"`
+	}{
+		Name:       module.logicModule.Name(),
+		SourceFile: module.pos.Filename,
+		SourceLine: module.pos.Line,
+		Type:       module.typeName,
+		Variant:    module.variant.name,
+		Deps: func() []depJson {
+			result := make([]depJson, len(module.directDeps))
+			for i, dep := range module.directDeps {
+				result[i] = depJson{
+					Name:    dep.module.logicModule.Name(),
+					Variant: dep.module.variant.name,
+				}
+				t := reflect.TypeOf(dep.tag)
+				if t != nil {
+					result[i].TagType = t.PkgPath() + "." + t.Name()
+					result[i].TagData = debugStruct(reflect.ValueOf(dep.tag))
+				}
+			}
+			return result
+		}(),
+		Providers: func() []providerJson {
+			result := make([]providerJson, 0, len(module.providers))
+			for _, p := range module.providers {
+				pj := providerJson{}
+				include := false
+
+				t := reflect.TypeOf(p)
+				if t != nil {
+					pj.Type = t.PkgPath() + "." + t.Name()
+					include = true
+				}
+
+				if dbg, ok := p.(Debuggable); ok {
+					pj.Debug = dbg.GetDebugString()
+					if pj.Debug != "" {
+						include = true
+					}
+				}
+
+				if p != nil {
+					pj.Fields = debugValue(reflect.ValueOf(p))
+					include = true
+				}
+
+				if include {
+					result = append(result, pj)
+				}
+			}
+			return result
+		}(),
+		Debug: func() string {
+			if dbg, ok := module.logicModule.(Debuggable); ok {
+				return dbg.GetDebugString()
+			} else {
+				return ""
+			}
+		}(),
+		Properties: func() map[string]interface{} {
+			result := make(map[string]interface{})
+			for _, props := range module.properties {
+				debugPropertyStruct(props, &result)
+			}
+			return result
+		}(),
+	}
+	buf, _ := json.Marshal(info)
+	return buf
+}
+
+// Generate out/soong/soong-debug-info.json Called if GENERATE_SOONG_DEBUG=true.
+func (this *Context) GenerateModuleDebugInfo(filename string) {
+	err := os.MkdirAll(filepath.Dir(filename), 0777)
+	if err != nil {
+		// We expect this to be writable
+		panic(fmt.Sprintf("couldn't create directory for soong module debug file %s: %s", filepath.Dir(filename), err))
+	}
+
+	f, err := os.Create(filename)
+	if err != nil {
+		// We expect this to be writable
+		panic(fmt.Sprintf("couldn't create soong module debug file %s: %s", filename, err))
+	}
+	defer f.Close()
+
+	needComma := false
+	f.WriteString("{\n\"modules\": [\n")
+
+	// TODO: Optimize this (parallel execution, etc) if it gets slow.
+	this.visitAllModuleInfos(func(module *moduleInfo) {
+		if needComma {
+			f.WriteString(",\n")
+		} else {
+			needComma = true
+		}
+
+		moduleData := getModuleDebugJson(module)
+		f.Write(moduleData)
+	})
+
+	f.WriteString("\n]\n}")
+}
+
 var fileHeaderTemplate = `******************************************************************************
 ***            This file is generated and should not be edited             ***
 ******************************************************************************
@@ -4640,14 +5147,14 @@ func (pi *PackageIncludes) MatchAll() []string {
 }
 
 // Returns true if all requested include tags are set in the Context object
-func (pi *PackageIncludes) MatchesIncludeTags(ctx *Context) bool {
+func (pi *PackageIncludes) matchesIncludeTags(ctx *Context) (bool, error) {
 	if len(pi.MatchAll()) == 0 {
-		ctx.ModuleErrorf(pi, "Match_all must be a non-empty list")
+		return false, ctx.ModuleErrorf(pi, "Match_all must be a non-empty list")
 	}
 	for _, includeTag := range pi.MatchAll() {
 		if !ctx.ContainsIncludeTag(includeTag) {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }

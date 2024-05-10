@@ -53,6 +53,12 @@ func FieldNameForProperty(propertyName string) string {
 	return fieldName
 }
 
+// Clear takes a pointer to a field and clears the value pointed to by the pointer with zero value.
+func Clear[T any](ptr *T) {
+	var zeroValue T
+	*ptr = zeroValue
+}
+
 // BoolPtr returns a pointer to a new bool containing the given value.
 func BoolPtr(b bool) *bool {
 	return &b
@@ -99,6 +105,15 @@ func String(s *string) string {
 	return StringDefault(s, "")
 }
 
+// Slice takes a pointer to a slice and returns the value of the slice if the pointer is non-nil,
+// or a nil slice.
+func Slice[T any](s *[]T) []T {
+	if s != nil {
+		return *s
+	}
+	return nil
+}
+
 // IntDefault takes a pointer to an int64 and returns the value pointed to by the pointer cast to int
 // if it is non-nil, or def if the pointer is nil.
 func IntDefault(i *int64, def int) int {
@@ -130,6 +145,18 @@ func isSliceOfStruct(t reflect.Type) bool {
 	return isSlice(t) && isStruct(t.Elem())
 }
 
+func isStringOrStringPtr(t reflect.Type) bool {
+	return t.Kind() == reflect.String || (t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.String)
+}
+
 func isMapOfStruct(t reflect.Type) bool {
 	return t.Kind() == reflect.Map && isStruct(t.Elem())
+}
+
+func isConfigurable(t reflect.Type) bool {
+	return isStruct(t) && t.NumField() > 0 && typeFields(t)[0].Type == configurableMarkerType
+}
+
+func IsConfigurable(t reflect.Type) bool {
+	return isConfigurable(t)
 }
