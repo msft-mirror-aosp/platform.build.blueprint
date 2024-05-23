@@ -186,8 +186,11 @@ func (t *transitionMutatorImpl) topDownMutator(mctx TopDownMutatorContext) {
 	// and modules that directly depend on it. Since this is a top-down mutator,
 	// all modules that directly depend on this module have already been processed
 	// so no locking is necessary.
-	module.transitionVariations = addToStringListIfNotPresent(module.transitionVariations, mutatorSplits...)
+	// Sort the module transitions, but keep the mutatorSplits in the order returned
+	// by Split, as the order can be significant when inter-variant dependencies are
+	// used.
 	sort.Strings(module.transitionVariations)
+	module.transitionVariations = addToStringListIfNotPresent(mutatorSplits, module.transitionVariations...)
 
 	outgoingTransitionCache := make([][]string, len(module.transitionVariations))
 	for srcVariationIndex, srcVariation := range module.transitionVariations {
@@ -294,7 +297,7 @@ func (t *transitionMutatorImpl) mutateMutator(mctx BottomUpMutatorContext) {
 func (c *Context) RegisterTransitionMutator(name string, mutator TransitionMutator) {
 	impl := &transitionMutatorImpl{name: name, mutator: mutator}
 
-	c.RegisterTopDownMutator(name+"_deps", impl.topDownMutator).Parallel()
+	c.RegisterTopDownMutator(name+"_propagate", impl.topDownMutator).Parallel()
 	c.RegisterBottomUpMutator(name, impl.bottomUpMutator).Parallel().setTransitionMutator(impl)
 	c.RegisterBottomUpMutator(name+"_mutate", impl.mutateMutator).Parallel()
 }
