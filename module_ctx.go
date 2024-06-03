@@ -166,6 +166,9 @@ type EarlyModuleContext interface {
 	// PropertyErrorf reports an error at the line number of a property in the module definition.
 	PropertyErrorf(property, fmt string, args ...interface{})
 
+	// OtherModulePropertyErrorf reports an error at the line number of a property in the given module definition.
+	OtherModulePropertyErrorf(logicModule Module, property string, format string, args ...interface{})
+
 	// Failed returns true if any errors have been reported.  In most cases the module can continue with generating
 	// build rules after an error, allowing it to report additional errors in a single run, but in cases where the error
 	// has prevented the module from creating necessary data it can return early when Failed returns true.
@@ -357,6 +360,8 @@ type BaseModuleContext interface {
 	SetProvider(provider AnyProviderKey, value any)
 
 	EarlyGetMissingDependencies() []string
+
+	base() *baseModuleContext
 }
 
 type DynamicDependerModuleContext BottomUpMutatorContext
@@ -454,34 +459,19 @@ func (d *baseModuleContext) Errorf(pos scanner.Position,
 func (d *baseModuleContext) ModuleErrorf(format string,
 	args ...interface{}) {
 
-	d.error(&ModuleError{
-		BlueprintError: BlueprintError{
-			Err: fmt.Errorf(format, args...),
-			Pos: d.module.pos,
-		},
-		module: d.module,
-	})
+	d.error(d.context.ModuleErrorf(d.module.logicModule, format, args...))
 }
 
 func (d *baseModuleContext) PropertyErrorf(property, format string,
 	args ...interface{}) {
 
-	pos := d.module.propertyPos[property]
+	d.error(d.context.PropertyErrorf(d.module.logicModule, property, format, args...))
+}
 
-	if !pos.IsValid() {
-		pos = d.module.pos
-	}
+func (d *baseModuleContext) OtherModulePropertyErrorf(logicModule Module, property string, format string,
+	args ...interface{}) {
 
-	d.error(&PropertyError{
-		ModuleError: ModuleError{
-			BlueprintError: BlueprintError{
-				Err: fmt.Errorf(format, args...),
-				Pos: pos,
-			},
-			module: d.module,
-		},
-		property: property,
-	})
+	d.error(d.context.PropertyErrorf(logicModule, property, format, args...))
 }
 
 func (d *baseModuleContext) Failed() bool {
@@ -585,7 +575,7 @@ func (m *baseModuleContext) OtherModuleDependencyVariantExists(variations []Vari
 	if possibleDeps == nil {
 		return false
 	}
-	found, _ := findVariant(m.module, possibleDeps, variations, false, false)
+	found, _ := m.context.findVariant(m.module, m.config, possibleDeps, variations, false, false)
 	return found != nil
 }
 
@@ -594,7 +584,7 @@ func (m *baseModuleContext) OtherModuleFarDependencyVariantExists(variations []V
 	if possibleDeps == nil {
 		return false
 	}
-	found, _ := findVariant(m.module, possibleDeps, variations, true, false)
+	found, _ := m.context.findVariant(m.module, m.config, possibleDeps, variations, true, false)
 	return found != nil
 }
 
@@ -603,7 +593,7 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 	if possibleDeps == nil {
 		return false
 	}
-	found, _ := findVariant(m.module, possibleDeps, nil, false, true)
+	found, _ := m.context.findVariant(m.module, m.config, possibleDeps, nil, false, true)
 	return found != nil
 }
 
@@ -763,6 +753,10 @@ func (m *baseModuleContext) ModuleFactories() map[string]ModuleFactory {
 	return ret
 }
 
+func (m *baseModuleContext) base() *baseModuleContext {
+	return m
+}
+
 func (m *moduleContext) ModuleSubDir() string {
 	return m.module.variant.name
 }
@@ -819,7 +813,7 @@ func (m *baseModuleContext) EarlyGetMissingDependencies() []string {
 
 type mutatorContext struct {
 	baseModuleContext
-	name             string
+	mutator          *mutatorInfo
 	reverseDeps      []reverseDep
 	rename           []rename
 	replace          []replace
@@ -930,15 +924,14 @@ type BottomUpMutatorContext interface {
 	// WalkDeps, etc.
 	AddInterVariantDependency(tag DependencyTag, from, to Module)
 
-	// ReplaceDependencies replaces all dependencies on the identical variant of the module with the
-	// specified name with the current variant of this module.  Replacements don't take effect until
-	// after the mutator pass is finished.
+	// ReplaceDependencies finds all the variants of the module with the specified name, then
+	// replaces all dependencies onto those variants with the current variant of this module.
+	// Replacements don't take effect until after the mutator pass is finished.
 	ReplaceDependencies(string)
 
-	// ReplaceDependenciesIf replaces all dependencies on the identical variant of the module with the
-	// specified name with the current variant of this module as long as the supplied predicate returns
-	// true.
-	//
+	// ReplaceDependenciesIf finds all the variants of the module with the specified name, then
+	// replaces all dependencies onto those variants with the current variant of this module
+	// as long as the supplied predicate returns true.
 	// Replacements don't take effect until after the mutator pass is finished.
 	ReplaceDependenciesIf(string, ReplaceDependencyPredicate)
 
@@ -996,20 +989,20 @@ func (BaseDependencyTag) dependencyTag(DependencyTag) {
 var _ DependencyTag = BaseDependencyTag{}
 
 func (mctx *mutatorContext) MutatorName() string {
-	return mctx.name
+	return mctx.mutator.name
 }
 
 func (mctx *mutatorContext) CreateVariations(variationNames ...string) []Module {
-	depChooser := chooseDepInherit(mctx.name, mctx.defaultVariation)
+	depChooser := chooseDepInherit(mctx.mutator.name, mctx.defaultVariation)
 	return mctx.createVariations(variationNames, depChooser, false)
 }
 
-func (mctx *mutatorContext) createVariationsWithTransition(transition Transition, variationNames ...string) []Module {
-	return mctx.createVariations(variationNames, chooseDepByTransition(mctx.name, transition), false)
+func (mctx *mutatorContext) createVariationsWithTransition(variationNames []string, outgoingTransitions [][]string) []Module {
+	return mctx.createVariations(variationNames, chooseDepByIndexes(mctx.mutator.name, outgoingTransitions), false)
 }
 
 func (mctx *mutatorContext) CreateLocalVariations(variationNames ...string) []Module {
-	depChooser := chooseDepInherit(mctx.name, mctx.defaultVariation)
+	depChooser := chooseDepInherit(mctx.mutator.name, mctx.defaultVariation)
 	return mctx.createVariations(variationNames, depChooser, true)
 }
 
@@ -1025,7 +1018,7 @@ func (mctx *mutatorContext) SetVariationProvider(module Module, provider AnyProv
 
 func (mctx *mutatorContext) createVariations(variationNames []string, depChooser depChooser, local bool) []Module {
 	var ret []Module
-	modules, errs := mctx.context.createVariations(mctx.module, mctx.name, depChooser, variationNames, local)
+	modules, errs := mctx.context.createVariations(mctx.module, mctx.mutator, depChooser, variationNames, local)
 	if len(errs) > 0 {
 		mctx.errs = append(mctx.errs, errs...)
 	}
@@ -1056,7 +1049,7 @@ func (mctx *mutatorContext) AliasVariation(variationName string) {
 	}
 
 	for _, variant := range mctx.newVariations {
-		if variant.moduleOrAliasVariant().variations[mctx.name] == variationName {
+		if variant.moduleOrAliasVariant().variations[mctx.mutator.name] == variationName {
 			alias := &moduleAlias{
 				variant: mctx.module.variant,
 				target:  variant.moduleOrAliasTarget(),
@@ -1070,13 +1063,13 @@ func (mctx *mutatorContext) AliasVariation(variationName string) {
 
 	var foundVariations []string
 	for _, variant := range mctx.newVariations {
-		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations[mctx.name])
+		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations[mctx.mutator.name])
 	}
 	panic(fmt.Errorf("no %q variation in module variations %q", variationName, foundVariations))
 }
 
 func (mctx *mutatorContext) CreateAliasVariation(aliasVariationName, targetVariationName string) {
-	newVariant := newVariant(mctx.module, mctx.name, aliasVariationName, false)
+	newVariant := newVariant(mctx.module, mctx.mutator.name, aliasVariationName, false)
 
 	for _, moduleOrAlias := range mctx.module.splitModules {
 		if moduleOrAlias.moduleOrAliasVariant().variations.equal(newVariant.variations) {
@@ -1089,7 +1082,7 @@ func (mctx *mutatorContext) CreateAliasVariation(aliasVariationName, targetVaria
 	}
 
 	for _, variant := range mctx.newVariations {
-		if variant.moduleOrAliasVariant().variations[mctx.name] == targetVariationName {
+		if variant.moduleOrAliasVariant().variations[mctx.mutator.name] == targetVariationName {
 			// Append the alias here so that it comes after any aliases created by AliasVariation.
 			mctx.module.splitModules = append(mctx.module.splitModules, &moduleAlias{
 				variant: newVariant,
@@ -1101,18 +1094,14 @@ func (mctx *mutatorContext) CreateAliasVariation(aliasVariationName, targetVaria
 
 	var foundVariations []string
 	for _, variant := range mctx.newVariations {
-		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations[mctx.name])
+		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations[mctx.mutator.name])
 	}
 	panic(fmt.Errorf("no %q variation in module variations %q", targetVariationName, foundVariations))
 }
 
-func (mctx *mutatorContext) applyTransition(transition Transition) {
-	mctx.context.convertDepsToVariation(mctx.module, chooseDepByTransition(mctx.name, transition))
-}
-
 func (mctx *mutatorContext) SetDependencyVariation(variationName string) {
-	mctx.context.convertDepsToVariation(mctx.module, chooseDepExplicit(
-		mctx.name, variationName, nil))
+	mctx.context.convertDepsToVariation(mctx.module, 0, chooseDepExplicit(
+		mctx.mutator.name, variationName, nil))
 }
 
 func (mctx *mutatorContext) SetDefaultDependencyVariation(variationName *string) {
@@ -1127,7 +1116,7 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
 		modInfo := mctx.context.moduleInfo[module]
-		depInfo, errs := mctx.context.addDependency(modInfo, tag, dep)
+		depInfo, errs := mctx.context.addDependency(modInfo, mctx.config, tag, dep)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1145,7 +1134,7 @@ func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTa
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
 
-	destModule, errs := mctx.context.findReverseDependency(mctx.context.moduleInfo[module], destName)
+	destModule, errs := mctx.context.findReverseDependency(mctx.context.moduleInfo[module], mctx.config, destName)
 	if len(errs) > 0 {
 		mctx.errs = append(mctx.errs, errs...)
 		return
@@ -1162,7 +1151,7 @@ func (mctx *mutatorContext) AddVariationDependencies(variations []Variation, tag
 
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
-		depInfo, errs := mctx.context.addVariationDependency(mctx.module, variations, tag, dep, false)
+		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.config, variations, tag, dep, false)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1180,7 +1169,7 @@ func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, 
 
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
-		depInfo, errs := mctx.context.addVariationDependency(mctx.module, variations, tag, dep, true)
+		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.config, variations, tag, dep, true)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1204,9 +1193,9 @@ func (mctx *mutatorContext) ReplaceDependencies(name string) {
 type ReplaceDependencyPredicate func(from Module, tag DependencyTag, to Module) bool
 
 func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate ReplaceDependencyPredicate) {
-	target := mctx.context.moduleMatchingVariant(mctx.module, name)
+	targets := mctx.context.moduleVariantsThatDependOn(name, mctx.module)
 
-	if target == nil {
+	if len(targets) == 0 {
 		panic(fmt.Errorf("ReplaceDependencies could not find identical variant {%s} for module %s\n"+
 			"available variants:\n  %s",
 			mctx.context.prettyPrintVariant(mctx.module.variant.variations),
@@ -1214,7 +1203,9 @@ func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate Replace
 			mctx.context.prettyPrintGroupVariants(mctx.context.moduleGroupFromName(name, mctx.module.namespace()))))
 	}
 
-	mctx.replace = append(mctx.replace, replace{target, mctx.module, predicate})
+	for _, target := range targets {
+		mctx.replace = append(mctx.replace, replace{target, mctx.module, predicate})
+	}
 }
 
 func (mctx *mutatorContext) Rename(name string) {

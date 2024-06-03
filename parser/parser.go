@@ -28,6 +28,8 @@ var errTooManyErrors = errors.New("too many errors")
 
 const maxErrors = 1
 
+const default_select_branch_name = "__soong_conditions_default__"
+
 type ParseError struct {
 	Err error
 	Pos scanner.Position
@@ -177,7 +179,6 @@ func (p *parser) next() {
 			p.comments = append(p.comments, &CommentGroup{Comments: comments})
 		}
 	}
-	return
 }
 
 func (p *parser) parseDefinitions() (defs []Definition) {
@@ -213,6 +214,14 @@ func (p *parser) parseDefinitions() (defs []Definition) {
 
 func (p *parser) parseAssignment(name string, namePos scanner.Position,
 	assigner string) (assignment *Assignment) {
+
+	// These are used as keywords in select statements, prevent making variables
+	// with the same name to avoid any confusion.
+	switch name {
+	case "default", "unset":
+		p.errorf("'default' and 'unset' are reserved keywords, and cannot be used as variable names")
+		return nil
+	}
 
 	assignment = new(Assignment)
 
@@ -289,7 +298,12 @@ func (p *parser) parseModule(typ string, typPos scanner.Position) *Module {
 func (p *parser) parsePropertyList(isModule, compat bool) (properties []*Property) {
 	for p.tok == scanner.Ident {
 		property := p.parseProperty(isModule, compat)
-		properties = append(properties, property)
+
+		// If a property is set to an empty select or a select where all branches are "unset",
+		// skip emitting the property entirely.
+		if property.Value.Type() != UnsetType {
+			properties = append(properties, property)
+		}
 
 		if p.tok != ',' {
 			// There was no comma, so the list is done.
@@ -350,7 +364,14 @@ func (p *parser) parseExpression() (value Expression) {
 }
 
 func (p *parser) evaluateOperator(value1, value2 Expression, operator rune,
-	pos scanner.Position) (*Operator, error) {
+	pos scanner.Position) (Expression, error) {
+
+	if value1.Type() == UnsetType {
+		return value2, nil
+	}
+	if value2.Type() == UnsetType {
+		return value1, nil
+	}
 
 	value := value1
 
@@ -366,13 +387,10 @@ func (p *parser) evaluateOperator(value1, value2 Expression, operator rune,
 			if _, ok := e2.(*Select); ok {
 				// Promote e1 to a select so we can add e2 to it
 				e1 = &Select{
-					Typ: SelectTypeUnconfigured,
 					Cases: []*SelectCase{{
-						Pattern: String{
-							Value: "__soong_conditions_default__",
-						},
 						Value: e1,
 					}},
+					ExpressionType: e1.Type(),
 				}
 			}
 		}
@@ -454,7 +472,7 @@ func (p *parser) addMaps(map1, map2 []*Property, pos scanner.Position) ([]*Prope
 	return ret, nil
 }
 
-func (p *parser) parseOperator(value1 Expression) *Operator {
+func (p *parser) parseOperator(value1 Expression) Expression {
 	operator := p.tok
 	pos := p.scanner.Position
 	p.accept(operator)
@@ -543,48 +561,80 @@ func (p *parser) parseSelect() Expression {
 	result := &Select{
 		KeywordPos: p.scanner.Position,
 	}
-	p.accept(scanner.Ident)
-	if !p.accept('(') {
-		return nil
-	}
-	switch p.scanner.TokenText() {
-	case "release_variable":
-		result.Typ = SelectTypeReleaseVariable
-	case "soong_config_variable":
-		result.Typ = SelectTypeSoongConfigVariable
-	case "product_variable":
-		result.Typ = SelectTypeProductVariable
-	case "variant":
-		result.Typ = SelectTypeVariant
-	default:
-		p.errorf("unknown select type %q, expected release_variable, soong_config_variable, product_variable, or variant", p.scanner.TokenText())
-		return nil
-	}
+	// Read the "select("
 	p.accept(scanner.Ident)
 	if !p.accept('(') {
 		return nil
 	}
 
-	if s := p.parseStringValue(); s != nil {
-		result.Condition = *s
-	} else {
+	// If we see another '(', there's probably multiple conditions and there must
+	// be a ')' after. Set the multipleConditions variable to remind us to check for
+	// the ')' after.
+	multipleConditions := false
+	if p.tok == '(' {
+		multipleConditions = true
+		p.accept('(')
+	}
+
+	// Read all individual conditions
+	conditions := []ConfigurableCondition{}
+	for first := true; first || multipleConditions; first = false {
+		condition := ConfigurableCondition{
+			position:     p.scanner.Position,
+			FunctionName: p.scanner.TokenText(),
+		}
+		if !p.accept(scanner.Ident) {
+			return nil
+		}
+		if !p.accept('(') {
+			return nil
+		}
+
+		for p.tok != ')' {
+			if s := p.parseStringValue(); s != nil {
+				condition.Args = append(condition.Args, *s)
+			} else {
+				return nil
+			}
+			if p.tok == ')' {
+				break
+			}
+			if !p.accept(',') {
+				return nil
+			}
+		}
+		p.accept(')')
+
+		for _, c := range conditions {
+			if c.Equals(condition) {
+				p.errorf("Duplicate select condition found: %s", c.String())
+			}
+		}
+
+		conditions = append(conditions, condition)
+
+		if multipleConditions {
+			if p.tok == ')' {
+				p.next()
+				break
+			}
+			if !p.accept(',') {
+				return nil
+			}
+			// Retry the closing parent to allow for a trailing comma
+			if p.tok == ')' {
+				p.next()
+				break
+			}
+		}
+	}
+
+	if multipleConditions && len(conditions) < 2 {
+		p.errorf("Expected multiple select conditions due to the extra parenthesis, but only found 1. Please remove the extra parenthesis.")
 		return nil
 	}
 
-	if result.Typ == SelectTypeSoongConfigVariable {
-		if !p.accept(',') {
-			return nil
-		}
-		if s := p.parseStringValue(); s != nil {
-			result.Condition.Value += ":" + s.Value
-		} else {
-			return nil
-		}
-	}
-
-	if !p.accept(')') {
-		return nil
-	}
+	result.Conditions = conditions
 
 	if !p.accept(',') {
 		return nil
@@ -595,50 +645,173 @@ func (p *parser) parseSelect() Expression {
 		return nil
 	}
 
-	for p.tok == scanner.String {
+	parseOnePattern := func() Expression {
+		switch p.tok {
+		case scanner.Ident:
+			switch p.scanner.TokenText() {
+			case "default":
+				p.next()
+				return &String{
+					LiteralPos: p.scanner.Position,
+					Value:      default_select_branch_name,
+				}
+			case "true":
+				p.next()
+				return &Bool{
+					LiteralPos: p.scanner.Position,
+					Value:      true,
+				}
+			case "false":
+				p.next()
+				return &Bool{
+					LiteralPos: p.scanner.Position,
+					Value:      false,
+				}
+			default:
+				p.errorf("Expted a string, true, false, or default, got %s", p.scanner.TokenText())
+			}
+		case scanner.String:
+			if s := p.parseStringValue(); s != nil {
+				if strings.HasPrefix(s.Value, "__soong") {
+					p.errorf("select branch conditions starting with __soong are reserved for internal use")
+					return nil
+				}
+				return s
+			}
+			fallthrough
+		default:
+			p.errorf("Expted a string, true, false, or default, got %s", p.scanner.TokenText())
+		}
+		return nil
+	}
+
+	hasNonUnsetValue := false
+	for p.tok != '}' {
 		c := &SelectCase{}
-		if s := p.parseStringValue(); s != nil {
-			if strings.HasPrefix(s.Value, "__soong") {
-				p.errorf("select branch conditions starting with __soong are reserved for internal use")
+
+		if multipleConditions {
+			if !p.accept('(') {
 				return nil
 			}
-			c.Pattern = *s
+			for i := 0; i < len(conditions); i++ {
+				if p := parseOnePattern(); p != nil {
+					c.Patterns = append(c.Patterns, p)
+				} else {
+					return nil
+				}
+				if i < len(conditions)-1 {
+					if !p.accept(',') {
+						return nil
+					}
+				} else if p.tok == ',' {
+					// allow optional trailing comma
+					p.next()
+				}
+			}
+			if !p.accept(')') {
+				return nil
+			}
 		} else {
-			return nil
+			if p := parseOnePattern(); p != nil {
+				c.Patterns = append(c.Patterns, p)
+			} else {
+				return nil
+			}
 		}
 		c.ColonPos = p.scanner.Position
 		if !p.accept(':') {
 			return nil
 		}
-		c.Value = p.parseExpression()
-		if !p.accept(',') {
-			return nil
+		if p.tok == scanner.Ident && p.scanner.TokenText() == "unset" {
+			c.Value = UnsetProperty{Position: p.scanner.Position}
+			p.accept(scanner.Ident)
+		} else {
+			hasNonUnsetValue = true
+			c.Value = p.parseExpression()
 		}
-
-		result.Cases = append(result.Cases, c)
-	}
-
-	// Default must be last
-	if p.tok == scanner.Ident {
-		if p.scanner.TokenText() != "_" {
-			p.errorf("select cases can either be quoted strings or '_' to match any value")
-			return nil
-		}
-		c := &SelectCase{Pattern: String{
-			LiteralPos: p.scanner.Position,
-			Value:      "__soong_conditions_default__",
-		}}
-		p.accept(scanner.Ident)
-		c.ColonPos = p.scanner.Position
-		if !p.accept(':') {
-			return nil
-		}
-		c.Value = p.parseExpression()
 		if !p.accept(',') {
 			return nil
 		}
 		result.Cases = append(result.Cases, c)
 	}
+
+	// If all branches have the value "unset", then this is equivalent
+	// to an empty select.
+	if !hasNonUnsetValue {
+		p.errorf("This select statement is empty, remove it")
+		return nil
+	}
+
+	patternsEqual := func(a, b Expression) bool {
+		switch a2 := a.(type) {
+		case *String:
+			if b2, ok := b.(*String); ok {
+				return a2.Value == b2.Value
+			} else {
+				return false
+			}
+		case *Bool:
+			if b2, ok := b.(*Bool); ok {
+				return a2.Value == b2.Value
+			} else {
+				return false
+			}
+		default:
+			// true so that we produce an error in this unexpected scenario
+			return true
+		}
+	}
+
+	patternListsEqual := func(a, b []Expression) bool {
+		if len(a) != len(b) {
+			return false
+		}
+		for i := range a {
+			if !patternsEqual(a[i], b[i]) {
+				return false
+			}
+		}
+		return true
+	}
+
+	for i, c := range result.Cases {
+		// Check for duplicates
+		for _, d := range result.Cases[i+1:] {
+			if patternListsEqual(c.Patterns, d.Patterns) {
+				p.errorf("Found duplicate select patterns: %v", c.Patterns)
+				return nil
+			}
+		}
+		// Check that the only all-default cases is the last one
+		if i < len(result.Cases)-1 {
+			isAllDefault := true
+			for _, x := range c.Patterns {
+				if x2, ok := x.(*String); !ok || x2.Value != default_select_branch_name {
+					isAllDefault = false
+					break
+				}
+			}
+			if isAllDefault {
+				p.errorf("Found a default select branch at index %d, expected it to be last (index %d)", i, len(result.Cases)-1)
+				return nil
+			}
+		}
+	}
+
+	ty := UnsetType
+	for _, c := range result.Cases {
+		otherTy := c.Value.Type()
+		// Any other type can override UnsetType
+		if ty == UnsetType {
+			ty = otherTy
+		}
+		if otherTy != UnsetType && otherTy != ty {
+			p.errorf("Found select statement with differing types %q and %q in its cases", ty.String(), otherTy.String())
+			return nil
+		}
+	}
+
+	result.ExpressionType = ty
 
 	result.RBracePos = p.scanner.Position
 	if !p.accept('}') {
