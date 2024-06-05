@@ -4159,7 +4159,7 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 			for m := range toProcess {
 				for i, provider := range m.providers {
 					if provider != nil {
-						hash, err := proptools.HashProvider(provider)
+						hash, err := proptools.CalculateHash(provider)
 						if err != nil {
 							errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set, and no longer hashable afterwards: %s", providerRegistry[i].typ, m.Name(), err.Error()))
 							continue
@@ -4544,9 +4544,9 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			wg.Add(1)
 			go func(file string, batchModules []*moduleInfo) {
 				defer wg.Done()
-				f, err := os.OpenFile(filepath.Join(c.SrcDir(), file), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+				f, err := os.OpenFile(JoinPath(c.SrcDir(), file), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 				if err != nil {
-					errorCh <- fmt.Errorf("error opening Ninja file: %s", err)
+					errorCh <- fmt.Errorf("error opening Ninja file shard: %s", err)
 					return
 				}
 				defer func() {
@@ -5258,4 +5258,11 @@ func (pi *PackageIncludes) matchesIncludeTags(ctx *Context) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+func JoinPath(base, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(base, path)
 }
