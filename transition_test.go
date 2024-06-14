@@ -297,6 +297,37 @@ available variants:
 	}
 }
 
+func TestIsAddingDependency(t *testing.T) {
+	ctx, errs := testTransition(`
+		transition_module {
+			name: "A",
+			split: ["a1"],
+			deps: ["C"],
+		}
+
+		transition_module {
+			name: "B",
+			split: ["b1"],
+			post_transition_deps: ["C"],
+		}
+
+		transition_module {
+			name: "C",
+			split: ["c1", "c2"],
+			incoming: "c1",
+			post_transition_incoming: "c2",
+		}
+	`)
+	assertNoErrors(t, errs)
+
+	checkTransitionVariants(t, ctx, "A", []string{"a1"})
+	checkTransitionVariants(t, ctx, "B", []string{"b1"})
+	checkTransitionVariants(t, ctx, "C", []string{"c1", "c2"})
+
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "A", "a1"), "C(c1)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "B", "b1"), "C(c2)")
+}
+
 type transitionTestMutator struct{}
 
 func (transitionTestMutator) Split(ctx BaseModuleContext) []string {
@@ -314,6 +345,12 @@ func (transitionTestMutator) OutgoingTransition(ctx OutgoingTransitionContext, s
 }
 
 func (transitionTestMutator) IncomingTransition(ctx IncomingTransitionContext, incomingVariation string) string {
+
+	if ctx.IsAddingDependency() {
+		if incoming := ctx.Module().(*transitionModule).properties.Post_transition_incoming; incoming != nil {
+			return *incoming
+		}
+	}
 	if incoming := ctx.Module().(*transitionModule).properties.Incoming; incoming != nil {
 		return *incoming
 	}
