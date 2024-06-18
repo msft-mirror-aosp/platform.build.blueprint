@@ -812,43 +812,10 @@ type shouldVisitFileInfo struct {
 // This should be processed before adding any modules to the build graph
 func shouldVisitFile(c *Context, file *parser.File) shouldVisitFileInfo {
 	skippedModules := []string{}
-	var blueprintPackageIncludes *PackageIncludes
 	for _, def := range file.Defs {
 		switch def := def.(type) {
 		case *parser.Module:
 			skippedModules = append(skippedModules, def.Name())
-			if def.Type != "blueprint_package_includes" {
-				continue
-			}
-			module, errs := processModuleDef(def, file.Name, c.moduleFactories, nil, c.ignoreUnknownModuleTypes)
-			if len(errs) > 0 {
-				// This file contains errors in blueprint_package_includes
-				// Visit anyways so that we can report errors on other modules in the file
-				return shouldVisitFileInfo{
-					shouldVisitFile: true,
-					errs:            errs,
-				}
-			}
-			logicModule, _ := c.cloneLogicModule(module)
-			blueprintPackageIncludes = logicModule.(*PackageIncludes)
-		}
-	}
-
-	if blueprintPackageIncludes != nil {
-		packageMatches, err := blueprintPackageIncludes.matchesIncludeTags(c)
-		if err != nil {
-			return shouldVisitFileInfo{
-				errs: []error{err},
-			}
-		} else if !packageMatches {
-			return shouldVisitFileInfo{
-				shouldVisitFile: false,
-				skippedModules:  skippedModules,
-				reasonForSkip: fmt.Sprintf(
-					"module is defined in %q which contains a blueprint_package_includes module with unsatisfied tags",
-					file.Name,
-				),
-			}
 		}
 	}
 
@@ -4159,7 +4126,7 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 			for m := range toProcess {
 				for i, provider := range m.providers {
 					if provider != nil {
-						hash, err := proptools.HashProvider(provider)
+						hash, err := proptools.CalculateHash(provider)
 						if err != nil {
 							errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set, and no longer hashable afterwards: %s", providerRegistry[i].typ, m.Name(), err.Error()))
 							continue
@@ -4544,9 +4511,9 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			wg.Add(1)
 			go func(file string, batchModules []*moduleInfo) {
 				defer wg.Done()
-				f, err := os.OpenFile(filepath.Join(c.SrcDir(), file), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+				f, err := os.OpenFile(JoinPath(c.SrcDir(), file), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 				if err != nil {
-					errorCh <- fmt.Errorf("error opening Ninja file: %s", err)
+					errorCh <- fmt.Errorf("error opening Ninja file shard: %s", err)
 					return
 				}
 				defer func() {
@@ -5214,48 +5181,9 @@ Singleton: {{.name}}
 Factory:   {{.goFactory}}
 `
 
-// Blueprint module type that can be used to gate blueprint files beneath this directory
-type PackageIncludes struct {
-	properties struct {
-		// Package will be included if all include tags in this list are set
-		Match_all []string
+func JoinPath(base, path string) string {
+	if filepath.IsAbs(path) {
+		return path
 	}
-	name *string `blueprint:"mutated"`
-}
-
-func (pi *PackageIncludes) Name() string {
-	return proptools.String(pi.name)
-}
-
-// This module type does not have any build actions
-func (pi *PackageIncludes) GenerateBuildActions(ctx ModuleContext) {
-}
-
-func newPackageIncludesFactory() (Module, []interface{}) {
-	module := &PackageIncludes{}
-	AddLoadHook(module, func(ctx LoadHookContext) {
-		module.name = proptools.StringPtr(ctx.ModuleDir() + "_includes") // Generate a synthetic name
-	})
-	return module, []interface{}{&module.properties}
-}
-
-func RegisterPackageIncludesModuleType(ctx *Context) {
-	ctx.RegisterModuleType("blueprint_package_includes", newPackageIncludesFactory)
-}
-
-func (pi *PackageIncludes) MatchAll() []string {
-	return pi.properties.Match_all
-}
-
-// Returns true if all requested include tags are set in the Context object
-func (pi *PackageIncludes) matchesIncludeTags(ctx *Context) (bool, error) {
-	if len(pi.MatchAll()) == 0 {
-		return false, ctx.ModuleErrorf(pi, "Match_all must be a non-empty list")
-	}
-	for _, includeTag := range pi.MatchAll() {
-		if !ctx.ContainsIncludeTag(includeTag) {
-			return false, nil
-		}
-	}
-	return true, nil
+	return filepath.Join(base, path)
 }
