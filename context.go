@@ -53,6 +53,8 @@ const MockModuleListFile = "bplist"
 
 const OutFilePermissions = 0666
 
+const BuildActionsCacheFile = "build_actions.gob"
+
 // A Context contains all the state needed to parse a set of Blueprints files
 // and generate a Ninja file.  The process of generating a Ninja file proceeds
 // through a series of four phases.  Each phase corresponds with a some methods
@@ -157,6 +159,15 @@ type Context struct {
 	includeTags *IncludeTags
 
 	sourceRootDirs *SourceRootDirs
+
+	incrementalAnalysis bool
+
+	incrementalEnabled bool
+
+	BuildActionToCache     BuildActionCache
+	BuildActionToCacheLock sync.Mutex
+
+	BuildActionFromCache BuildActionCache
 }
 
 // A container for String keys. The keys can be used to gate build graph traversal
@@ -485,6 +496,7 @@ func newContext() *Context {
 		requiredNinjaMinor:          7,
 		requiredNinjaMicro:          0,
 		verifyProvidersAreUnchanged: true,
+		BuildActionToCache:          make(BuildActionCache),
 	}
 }
 
@@ -605,6 +617,37 @@ func (c *Context) RegisterSingletonType(name string, factory SingletonFactory, p
 
 func (c *Context) SetNameInterface(i NameInterface) {
 	c.nameInterface = i
+}
+
+func (c *Context) SetIncrementalAnalysis(incremental bool) {
+	c.incrementalAnalysis = incremental
+}
+
+func (c *Context) GetIncrementalAnalysis() bool {
+	return c.incrementalAnalysis
+}
+
+func (c *Context) SetIncrementalEnabled(incremental bool) {
+	c.incrementalEnabled = incremental
+}
+
+func (c *Context) GetIncrementalEnabled() bool {
+	return c.incrementalEnabled
+}
+
+func (c *Context) CacheBuildActions(key *BuildActionCacheKey, data *BuildActionCachedData) {
+	if key != nil {
+		c.BuildActionToCacheLock.Lock()
+		defer c.BuildActionToCacheLock.Unlock()
+		c.BuildActionToCache[*key] = data
+	}
+}
+
+func (c *Context) GetBuildActionCache(key *BuildActionCacheKey) *BuildActionCachedData {
+	if c.BuildActionFromCache != nil && key != nil {
+		return c.BuildActionFromCache[*key]
+	}
+	return nil
 }
 
 func (c *Context) SetSrcDir(path string) {
