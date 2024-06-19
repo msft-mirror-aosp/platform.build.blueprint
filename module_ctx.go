@@ -361,6 +361,12 @@ type BaseModuleContext interface {
 
 	EarlyGetMissingDependencies() []string
 
+	GetIncrementalEnabled() bool
+
+	GetIncrementalAnalysis() bool
+
+	OtherModuleProviderInitialValueHashes(module Module) []uint64
+
 	base() *baseModuleContext
 }
 
@@ -372,6 +378,8 @@ type ModuleContext interface {
 	// ModuleSubDir returns a unique name for the current variant of a module that can be used as part of the path
 	// to ensure that each variant of a module gets its own intermediates directory to write to.
 	ModuleSubDir() string
+
+	ModuleId() string
 
 	// Variable creates a new ninja variable scoped to the module.  It can be referenced by calls to Rule and Build
 	// in the same module.
@@ -387,6 +395,10 @@ type ModuleContext interface {
 	// but do not exist.  It can be used with Context.SetAllowMissingDependencies to allow the primary builder to
 	// handle missing dependencies on its own instead of having Blueprint treat them as an error.
 	GetMissingDependencies() []string
+
+	CacheBuildActions(key *BuildActionCacheKey, im *Incremental)
+
+	RestoreBuildActions(key *BuildActionCacheKey, im *Incremental) bool
 }
 
 var _ BaseModuleContext = (*baseModuleContext)(nil)
@@ -498,6 +510,7 @@ type moduleContext struct {
 	scope              *localScope
 	actionDefs         localBuildActions
 	handledMissingDeps bool
+	buildParams        []BuildParams
 }
 
 func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
@@ -608,6 +621,104 @@ func (m *baseModuleContext) Provider(provider AnyProviderKey) (any, bool) {
 
 func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface{}) {
 	m.context.setProvider(m.module, provider.provider(), value)
+}
+
+func (m *baseModuleContext) GetIncrementalEnabled() bool {
+	return m.context.GetIncrementalEnabled()
+}
+
+func (m *baseModuleContext) GetIncrementalAnalysis() bool {
+	return m.context.GetIncrementalAnalysis()
+}
+
+func (m *baseModuleContext) OtherModuleProviderInitialValueHashes(module Module) []uint64 {
+	return m.context.moduleInfo[module].providerInitialValueHashes
+}
+
+func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey, im *Incremental) {
+	var providers []CachedProvider
+	for _, pKey := range (*im).BuildActionProviderKeys() {
+		if pKey.provider().mutator == "" {
+			providers = append(providers,
+				CachedProvider{
+					Id: &providerKey{
+						id:      pKey.provider().id,
+						typ:     pKey.provider().typ,
+						mutator: pKey.provider().mutator,
+					},
+					Value: &m.module.providers[pKey.provider().id],
+				})
+		}
+	}
+
+	var buildParams []CachedBuildParams
+	for _, params := range m.buildParams {
+		buildParams = append(buildParams, CachedBuildParams{
+			Comment:         params.Comment,
+			Depfile:         params.Depfile,
+			Deps:            params.Deps,
+			Description:     params.Description,
+			Rule:            params.Rule.name(),
+			Outputs:         params.Outputs,
+			ImplicitOutputs: params.ImplicitOutputs,
+			Inputs:          params.Inputs,
+			Implicits:       params.Implicits,
+			OrderOnly:       params.OrderOnly,
+			Validations:     params.Validations,
+			Args:            params.Args,
+			Optional:        params.Optional,
+		})
+	}
+
+	if len(providers) > 0 || len(buildParams) > 0 {
+		data := BuildActionCachedData{
+			Providers: providers,
+			BuildActions: CachedBuildActions{
+				BuildParams: buildParams,
+			},
+		}
+		m.context.CacheBuildActions(key, &data)
+	}
+}
+
+func (m *moduleContext) RestoreBuildActions(key *BuildActionCacheKey, im *Incremental) bool {
+	data := m.context.GetBuildActionCache(key)
+	if data != nil {
+		for _, provider := range data.Providers {
+			m.context.setProvider(m.module, provider.Id, *provider.Value)
+		}
+
+		for _, params := range data.BuildActions.BuildParams {
+			var rule Rule
+			for _, r := range (*im).CachedRules() {
+				if params.Rule == r.name() {
+					rule = r
+					break
+				}
+			}
+			if rule == nil {
+				return false
+			}
+			buildParams := BuildParams{
+				Comment:         params.Comment,
+				Depfile:         params.Depfile,
+				Deps:            params.Deps,
+				Description:     params.Description,
+				Outputs:         params.Outputs,
+				ImplicitOutputs: params.ImplicitOutputs,
+				Inputs:          params.Inputs,
+				Implicits:       params.Implicits,
+				OrderOnly:       params.OrderOnly,
+				Validations:     params.Validations,
+				Args:            params.Args,
+				Optional:        params.Optional,
+			}
+			buildParams.Rule = rule
+			m.Build(packageContexts[(*im).PackageContextPath()], buildParams)
+		}
+		return true
+	}
+	return false
 }
 
 func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
@@ -761,6 +872,10 @@ func (m *moduleContext) ModuleSubDir() string {
 	return m.module.variant.name
 }
 
+func (m *moduleContext) ModuleId() string {
+	return strings.Join([]string{m.ModuleDir(), m.ModuleName(), m.module.variant.name, m.ModuleType()}, "$")
+}
+
 func (m *moduleContext) Variable(pctx PackageContext, name, value string) {
 	m.scope.ReparentTo(pctx)
 
@@ -795,6 +910,11 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 		panic(err)
 	}
 
+	if m.GetIncrementalEnabled() {
+		if im, ok := m.module.logicModule.(Incremental); ok && im.IncrementalSupported() {
+			m.buildParams = append(m.buildParams, params)
+		}
+	}
 	m.actionDefs.buildDefs = append(m.actionDefs.buildDefs, def)
 }
 
