@@ -53,6 +53,8 @@ const MockModuleListFile = "bplist"
 
 const OutFilePermissions = 0666
 
+const BuildActionsCacheFile = "build_actions.gob"
+
 // A Context contains all the state needed to parse a set of Blueprints files
 // and generate a Ninja file.  The process of generating a Ninja file proceeds
 // through a series of four phases.  Each phase corresponds with a some methods
@@ -157,6 +159,15 @@ type Context struct {
 	includeTags *IncludeTags
 
 	sourceRootDirs *SourceRootDirs
+
+	incrementalAnalysis bool
+
+	incrementalEnabled bool
+
+	BuildActionToCache     BuildActionCache
+	BuildActionToCacheLock sync.Mutex
+
+	BuildActionFromCache BuildActionCache
 }
 
 // A container for String keys. The keys can be used to gate build graph traversal
@@ -485,6 +496,7 @@ func newContext() *Context {
 		requiredNinjaMinor:          7,
 		requiredNinjaMicro:          0,
 		verifyProvidersAreUnchanged: true,
+		BuildActionToCache:          make(BuildActionCache),
 	}
 }
 
@@ -605,6 +617,37 @@ func (c *Context) RegisterSingletonType(name string, factory SingletonFactory, p
 
 func (c *Context) SetNameInterface(i NameInterface) {
 	c.nameInterface = i
+}
+
+func (c *Context) SetIncrementalAnalysis(incremental bool) {
+	c.incrementalAnalysis = incremental
+}
+
+func (c *Context) GetIncrementalAnalysis() bool {
+	return c.incrementalAnalysis
+}
+
+func (c *Context) SetIncrementalEnabled(incremental bool) {
+	c.incrementalEnabled = incremental
+}
+
+func (c *Context) GetIncrementalEnabled() bool {
+	return c.incrementalEnabled
+}
+
+func (c *Context) CacheBuildActions(key *BuildActionCacheKey, data *BuildActionCachedData) {
+	if key != nil {
+		c.BuildActionToCacheLock.Lock()
+		defer c.BuildActionToCacheLock.Unlock()
+		c.BuildActionToCache[*key] = data
+	}
+}
+
+func (c *Context) GetBuildActionCache(key *BuildActionCacheKey) *BuildActionCachedData {
+	if c.BuildActionFromCache != nil && key != nil {
+		return c.BuildActionFromCache[*key]
+	}
+	return nil
 }
 
 func (c *Context) SetSrcDir(path string) {
@@ -812,43 +855,10 @@ type shouldVisitFileInfo struct {
 // This should be processed before adding any modules to the build graph
 func shouldVisitFile(c *Context, file *parser.File) shouldVisitFileInfo {
 	skippedModules := []string{}
-	var blueprintPackageIncludes *PackageIncludes
 	for _, def := range file.Defs {
 		switch def := def.(type) {
 		case *parser.Module:
 			skippedModules = append(skippedModules, def.Name())
-			if def.Type != "blueprint_package_includes" {
-				continue
-			}
-			module, errs := processModuleDef(def, file.Name, c.moduleFactories, nil, c.ignoreUnknownModuleTypes)
-			if len(errs) > 0 {
-				// This file contains errors in blueprint_package_includes
-				// Visit anyways so that we can report errors on other modules in the file
-				return shouldVisitFileInfo{
-					shouldVisitFile: true,
-					errs:            errs,
-				}
-			}
-			logicModule, _ := c.cloneLogicModule(module)
-			blueprintPackageIncludes = logicModule.(*PackageIncludes)
-		}
-	}
-
-	if blueprintPackageIncludes != nil {
-		packageMatches, err := blueprintPackageIncludes.matchesIncludeTags(c)
-		if err != nil {
-			return shouldVisitFileInfo{
-				errs: []error{err},
-			}
-		} else if !packageMatches {
-			return shouldVisitFileInfo{
-				shouldVisitFile: false,
-				skippedModules:  skippedModules,
-				reasonForSkip: fmt.Sprintf(
-					"module is defined in %q which contains a blueprint_package_includes module with unsatisfied tags",
-					file.Name,
-				),
-			}
 		}
 	}
 
@@ -5213,52 +5223,6 @@ var singletonHeaderTemplate = `# # # # # # # # # # # # # # # # # # # # # # # # #
 Singleton: {{.name}}
 Factory:   {{.goFactory}}
 `
-
-// Blueprint module type that can be used to gate blueprint files beneath this directory
-type PackageIncludes struct {
-	properties struct {
-		// Package will be included if all include tags in this list are set
-		Match_all []string
-	}
-	name *string `blueprint:"mutated"`
-}
-
-func (pi *PackageIncludes) Name() string {
-	return proptools.String(pi.name)
-}
-
-// This module type does not have any build actions
-func (pi *PackageIncludes) GenerateBuildActions(ctx ModuleContext) {
-}
-
-func newPackageIncludesFactory() (Module, []interface{}) {
-	module := &PackageIncludes{}
-	AddLoadHook(module, func(ctx LoadHookContext) {
-		module.name = proptools.StringPtr(ctx.ModuleDir() + "_includes") // Generate a synthetic name
-	})
-	return module, []interface{}{&module.properties}
-}
-
-func RegisterPackageIncludesModuleType(ctx *Context) {
-	ctx.RegisterModuleType("blueprint_package_includes", newPackageIncludesFactory)
-}
-
-func (pi *PackageIncludes) MatchAll() []string {
-	return pi.properties.Match_all
-}
-
-// Returns true if all requested include tags are set in the Context object
-func (pi *PackageIncludes) matchesIncludeTags(ctx *Context) (bool, error) {
-	if len(pi.MatchAll()) == 0 {
-		return false, ctx.ModuleErrorf(pi, "Match_all must be a non-empty list")
-	}
-	for _, includeTag := range pi.MatchAll() {
-		if !ctx.ContainsIncludeTag(includeTag) {
-			return false, nil
-		}
-	}
-	return true, nil
-}
 
 func JoinPath(base, path string) string {
 	if filepath.IsAbs(path) {
