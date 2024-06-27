@@ -698,6 +698,43 @@ foo {
 }
 `,
 	},
+	{
+		name: "Select with multiline inner expression",
+		input: `
+foo {
+    cflags: [
+        "-DPRODUCT_COMPATIBLE_PROPERTY",
+        "-DRIL_SHLIB",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ] + select(soong_config_variable("sim", "sim_count"), {
+        "2": [
+            "-DANDROID_MULTI_SIM",
+            "-DANDROID_SIM_COUNT_2",
+        ],
+        default: [],
+    }),
+}
+`,
+		output: `
+foo {
+    cflags: [
+        "-DPRODUCT_COMPATIBLE_PROPERTY",
+        "-DRIL_SHLIB",
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ] + select(soong_config_variable("sim", "sim_count"), {
+        "2": [
+            "-DANDROID_MULTI_SIM",
+            "-DANDROID_SIM_COUNT_2",
+        ],
+        default: [],
+    }),
+}
+`,
+	},
 }
 
 func TestPrinter(t *testing.T) {
@@ -707,7 +744,7 @@ func TestPrinter(t *testing.T) {
 			expected := testCase.output[1:]
 
 			r := bytes.NewBufferString(in)
-			file, errs := Parse("", r, NewScope(nil))
+			file, errs := Parse("", r)
 			if len(errs) != 0 {
 				t.Errorf("test case: %s", in)
 				t.Errorf("unexpected errors:")
