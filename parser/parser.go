@@ -29,6 +29,7 @@ var errTooManyErrors = errors.New("too many errors")
 const maxErrors = 1
 
 const default_select_branch_name = "__soong_conditions_default__"
+const any_select_branch_name = "__soong_conditions_any__"
 
 type ParseError struct {
 	Err error
@@ -43,22 +44,6 @@ type File struct {
 	Name     string
 	Defs     []Definition
 	Comments []*CommentGroup
-}
-
-func (f *File) Pos() scanner.Position {
-	return scanner.Position{
-		Filename: f.Name,
-		Line:     1,
-		Column:   1,
-		Offset:   0,
-	}
-}
-
-func (f *File) End() scanner.Position {
-	if len(f.Defs) > 0 {
-		return f.Defs[len(f.Defs)-1].End()
-	}
-	return noPos
 }
 
 func parse(p *parser) (file *File, errs []error) {
@@ -87,22 +72,54 @@ func parse(p *parser) (file *File, errs []error) {
 }
 
 func ParseAndEval(filename string, r io.Reader, scope *Scope) (file *File, errs []error) {
-	p := newParser(r, scope)
-	p.eval = true
-	p.scanner.Filename = filename
+	file, errs = Parse(filename, r)
+	if len(errs) > 0 {
+		return nil, errs
+	}
 
-	return parse(p)
+	// evaluate all module properties
+	var newDefs []Definition
+	for _, def := range file.Defs {
+		switch d := def.(type) {
+		case *Module:
+			for _, prop := range d.Map.Properties {
+				newval, err := prop.Value.Eval(scope)
+				if err != nil {
+					return nil, []error{err}
+				}
+				switch newval.(type) {
+				case *String, *Bool, *Int64, *Select, *Map, *List:
+					// ok
+				default:
+					panic(fmt.Sprintf("Evaled but got %#v\n", newval))
+				}
+				prop.Value = newval
+			}
+			newDefs = append(newDefs, d)
+		case *Assignment:
+			if err := scope.HandleAssignment(d); err != nil {
+				return nil, []error{err}
+			}
+		}
+	}
+
+	// This is not strictly necessary, but removing the assignments from
+	// the result makes it clearer that this is an evaluated file.
+	// We could also consider adding a "EvaluatedFile" type to return.
+	file.Defs = newDefs
+
+	return file, nil
 }
 
-func Parse(filename string, r io.Reader, scope *Scope) (file *File, errs []error) {
-	p := newParser(r, scope)
+func Parse(filename string, r io.Reader) (file *File, errs []error) {
+	p := newParser(r)
 	p.scanner.Filename = filename
 
 	return parse(p)
 }
 
 func ParseExpression(r io.Reader) (value Expression, errs []error) {
-	p := newParser(r, NewScope(nil))
+	p := newParser(r)
 	p.next()
 	value = p.parseExpression()
 	p.accept(scanner.EOF)
@@ -114,14 +131,11 @@ type parser struct {
 	scanner  scanner.Scanner
 	tok      rune
 	errors   []error
-	scope    *Scope
 	comments []*CommentGroup
-	eval     bool
 }
 
-func newParser(r io.Reader, scope *Scope) *parser {
+func newParser(r io.Reader) *parser {
 	p := &parser{}
-	p.scope = scope
 	p.scanner.Init(r)
 	p.scanner.Error = func(sc *scanner.Scanner, msg string) {
 		p.errorf(msg)
@@ -234,33 +248,8 @@ func (p *parser) parseAssignment(name string, namePos scanner.Position,
 	assignment.Name = name
 	assignment.NamePos = namePos
 	assignment.Value = value
-	assignment.OrigValue = value
 	assignment.EqualsPos = pos
 	assignment.Assigner = assigner
-
-	if p.scope != nil {
-		if assigner == "+=" {
-			if old, local := p.scope.Get(assignment.Name); old == nil {
-				p.errorf("modified non-existent variable %q with +=", assignment.Name)
-			} else if !local {
-				p.errorf("modified non-local variable %q with +=", assignment.Name)
-			} else if old.Referenced {
-				p.errorf("modified variable %q with += after referencing", assignment.Name)
-			} else {
-				val, err := p.evaluateOperator(old.Value, assignment.Value, '+', assignment.EqualsPos)
-				if err != nil {
-					p.error(err)
-				} else {
-					old.Value = val
-				}
-			}
-		} else {
-			err := p.scope.Add(assignment)
-			if err != nil {
-				p.error(err)
-			}
-		}
-	}
 
 	return
 }
@@ -297,13 +286,7 @@ func (p *parser) parseModule(typ string, typPos scanner.Position) *Module {
 
 func (p *parser) parsePropertyList(isModule, compat bool) (properties []*Property) {
 	for p.tok == scanner.Ident {
-		property := p.parseProperty(isModule, compat)
-
-		// If a property is set to an empty select or a select where all branches are "unset",
-		// skip emitting the property entirely.
-		if property.Value.Type() != UnsetType {
-			properties = append(properties, property)
-		}
+		properties = append(properties, p.parseProperty(isModule, compat))
 
 		if p.tok != ',' {
 			// There was no comma, so the list is done.
@@ -363,115 +346,6 @@ func (p *parser) parseExpression() (value Expression) {
 	}
 }
 
-func (p *parser) evaluateOperator(value1, value2 Expression, operator rune,
-	pos scanner.Position) (Expression, error) {
-
-	if value1.Type() == UnsetType {
-		return value2, nil
-	}
-	if value2.Type() == UnsetType {
-		return value1, nil
-	}
-
-	value := value1
-
-	if p.eval {
-		e1 := value1.Eval()
-		e2 := value2.Eval()
-		if e1.Type() != e2.Type() {
-			return nil, fmt.Errorf("mismatched type in operator %c: %s != %s", operator,
-				e1.Type(), e2.Type())
-		}
-
-		if _, ok := e1.(*Select); !ok {
-			if _, ok := e2.(*Select); ok {
-				// Promote e1 to a select so we can add e2 to it
-				e1 = &Select{
-					Cases: []*SelectCase{{
-						Value: e1,
-					}},
-					ExpressionType: e1.Type(),
-				}
-			}
-		}
-
-		value = e1.Copy()
-
-		switch operator {
-		case '+':
-			switch v := value.(type) {
-			case *String:
-				v.Value += e2.(*String).Value
-			case *Int64:
-				v.Value += e2.(*Int64).Value
-				v.Token = ""
-			case *List:
-				v.Values = append(v.Values, e2.(*List).Values...)
-			case *Map:
-				var err error
-				v.Properties, err = p.addMaps(v.Properties, e2.(*Map).Properties, pos)
-				if err != nil {
-					return nil, err
-				}
-			case *Select:
-				v.Append = e2
-			default:
-				return nil, fmt.Errorf("operator %c not supported on type %s", operator, v.Type())
-			}
-		default:
-			panic("unknown operator " + string(operator))
-		}
-	}
-
-	return &Operator{
-		Args:        [2]Expression{value1, value2},
-		Operator:    operator,
-		OperatorPos: pos,
-		Value:       value,
-	}, nil
-}
-
-func (p *parser) addMaps(map1, map2 []*Property, pos scanner.Position) ([]*Property, error) {
-	ret := make([]*Property, 0, len(map1))
-
-	inMap1 := make(map[string]*Property)
-	inMap2 := make(map[string]*Property)
-	inBoth := make(map[string]*Property)
-
-	for _, prop1 := range map1 {
-		inMap1[prop1.Name] = prop1
-	}
-
-	for _, prop2 := range map2 {
-		inMap2[prop2.Name] = prop2
-		if _, ok := inMap1[prop2.Name]; ok {
-			inBoth[prop2.Name] = prop2
-		}
-	}
-
-	for _, prop1 := range map1 {
-		if prop2, ok := inBoth[prop1.Name]; ok {
-			var err error
-			newProp := *prop1
-			newProp.Value, err = p.evaluateOperator(prop1.Value, prop2.Value, '+', pos)
-			if err != nil {
-				return nil, err
-			}
-			ret = append(ret, &newProp)
-		} else {
-			ret = append(ret, prop1)
-		}
-	}
-
-	for _, prop2 := range map2 {
-		if _, ok := inBoth[prop2.Name]; !ok {
-			ret = append(ret, prop2)
-		}
-	}
-
-	return ret, nil
-}
-
 func (p *parser) parseOperator(value1 Expression) Expression {
 	operator := p.tok
 	pos := p.scanner.Position
@@ -479,14 +353,11 @@ func (p *parser) parseOperator(value1 Expression) Expression {
 
 	value2 := p.parseExpression()
 
-	value, err := p.evaluateOperator(value1, value2, operator, pos)
-	if err != nil {
-		p.error(err)
-		return nil
+	return &Operator{
+		Args:        [2]Expression{value1, value2},
+		Operator:    operator,
+		OperatorPos: pos,
 	}
-
-	return value
-
 }
 
 func (p *parser) parseValue() (value Expression) {
@@ -535,22 +406,9 @@ func (p *parser) parseVariable() Expression {
 	var value Expression
 
 	text := p.scanner.TokenText()
-	if p.eval {
-		if assignment, local := p.scope.Get(text); assignment == nil {
-			p.errorf("variable %q is not set", text)
-		} else {
-			if local {
-				assignment.Referenced = true
-			}
-			value = assignment.Value
-		}
-	} else {
-		value = &NotEvaluated{}
-	}
 	value = &Variable{
 		Name:    text,
 		NamePos: p.scanner.Position,
-		Value:   value,
 	}
 
 	p.accept(scanner.Ident)
@@ -645,44 +503,72 @@ func (p *parser) parseSelect() Expression {
 		return nil
 	}
 
-	parseOnePattern := func() Expression {
+	maybeParseBinding := func() (Variable, bool) {
+		if p.scanner.TokenText() != "@" {
+			return Variable{}, false
+		}
+		p.next()
+		value := Variable{
+			Name:    p.scanner.TokenText(),
+			NamePos: p.scanner.Position,
+		}
+		p.accept(scanner.Ident)
+		return value, true
+	}
+
+	parseOnePattern := func() SelectPattern {
+		var result SelectPattern
 		switch p.tok {
 		case scanner.Ident:
 			switch p.scanner.TokenText() {
-			case "default":
+			case "any":
+				result.Value = &String{
+					LiteralPos: p.scanner.Position,
+					Value:      any_select_branch_name,
+				}
 				p.next()
-				return &String{
+				if binding, exists := maybeParseBinding(); exists {
+					result.Binding = binding
+				}
+				return result
+			case "default":
+				result.Value = &String{
 					LiteralPos: p.scanner.Position,
 					Value:      default_select_branch_name,
 				}
-			case "true":
 				p.next()
-				return &Bool{
+				return result
+			case "true":
+				result.Value = &Bool{
 					LiteralPos: p.scanner.Position,
 					Value:      true,
 				}
-			case "false":
 				p.next()
-				return &Bool{
+				return result
+			case "false":
+				result.Value = &Bool{
 					LiteralPos: p.scanner.Position,
 					Value:      false,
 				}
+				p.next()
+				return result
 			default:
-				p.errorf("Expted a string, true, false, or default, got %s", p.scanner.TokenText())
+				p.errorf("Expected a string, true, false, or default, got %s", p.scanner.TokenText())
 			}
 		case scanner.String:
 			if s := p.parseStringValue(); s != nil {
 				if strings.HasPrefix(s.Value, "__soong") {
-					p.errorf("select branch conditions starting with __soong are reserved for internal use")
-					return nil
+					p.errorf("select branch patterns starting with __soong are reserved for internal use")
+					return result
 				}
-				return s
+				result.Value = s
+				return result
 			}
 			fallthrough
 		default:
-			p.errorf("Expted a string, true, false, or default, got %s", p.scanner.TokenText())
+			p.errorf("Expected a string, true, false, or default, got %s", p.scanner.TokenText())
 		}
-		return nil
+		return result
 	}
 
 	hasNonUnsetValue := false
@@ -694,11 +580,7 @@ func (p *parser) parseSelect() Expression {
 				return nil
 			}
 			for i := 0; i < len(conditions); i++ {
-				if p := parseOnePattern(); p != nil {
-					c.Patterns = append(c.Patterns, p)
-				} else {
-					return nil
-				}
+				c.Patterns = append(c.Patterns, parseOnePattern())
 				if i < len(conditions)-1 {
 					if !p.accept(',') {
 						return nil
@@ -712,18 +594,14 @@ func (p *parser) parseSelect() Expression {
 				return nil
 			}
 		} else {
-			if p := parseOnePattern(); p != nil {
-				c.Patterns = append(c.Patterns, p)
-			} else {
-				return nil
-			}
+			c.Patterns = append(c.Patterns, parseOnePattern())
 		}
 		c.ColonPos = p.scanner.Position
 		if !p.accept(':') {
 			return nil
 		}
 		if p.tok == scanner.Ident && p.scanner.TokenText() == "unset" {
-			c.Value = UnsetProperty{Position: p.scanner.Position}
+			c.Value = &UnsetProperty{Position: p.scanner.Position}
 			p.accept(scanner.Ident)
 		} else {
 			hasNonUnsetValue = true
@@ -742,16 +620,17 @@ func (p *parser) parseSelect() Expression {
 		return nil
 	}
 
-	patternsEqual := func(a, b Expression) bool {
-		switch a2 := a.(type) {
+	patternsEqual := func(a, b SelectPattern) bool {
+		// We can ignore the bindings, they don't affect which pattern is matched
+		switch a2 := a.Value.(type) {
 		case *String:
-			if b2, ok := b.(*String); ok {
+			if b2, ok := b.Value.(*String); ok {
 				return a2.Value == b2.Value
 			} else {
 				return false
 			}
 		case *Bool:
-			if b2, ok := b.(*Bool); ok {
+			if b2, ok := b.Value.(*Bool); ok {
 				return a2.Value == b2.Value
 			} else {
 				return false
@@ -762,7 +641,7 @@ func (p *parser) parseSelect() Expression {
 		}
 	}
 
-	patternListsEqual := func(a, b []Expression) bool {
+	patternListsEqual := func(a, b []SelectPattern) bool {
 		if len(a) != len(b) {
 			return false
 		}
@@ -775,18 +654,29 @@ func (p *parser) parseSelect() Expression {
 	}
 
 	for i, c := range result.Cases {
-		// Check for duplicates
+		// Check for duplicate patterns across different branches
 		for _, d := range result.Cases[i+1:] {
 			if patternListsEqual(c.Patterns, d.Patterns) {
 				p.errorf("Found duplicate select patterns: %v", c.Patterns)
 				return nil
 			}
 		}
+		// check for duplicate bindings within this branch
+		for i := range c.Patterns {
+			if c.Patterns[i].Binding.Name != "" {
+				for j := i + 1; j < len(c.Patterns); j++ {
+					if c.Patterns[i].Binding.Name == c.Patterns[j].Binding.Name {
+						p.errorf("Found duplicate select pattern binding: %s", c.Patterns[i].Binding.Name)
+						return nil
+					}
+				}
+			}
+		}
 		// Check that the only all-default cases is the last one
 		if i < len(result.Cases)-1 {
 			isAllDefault := true
 			for _, x := range c.Patterns {
-				if x2, ok := x.(*String); !ok || x2.Value != default_select_branch_name {
+				if x2, ok := x.Value.(*String); !ok || x2.Value != default_select_branch_name {
 					isAllDefault = false
 					break
 				}
@@ -797,21 +687,6 @@ func (p *parser) parseSelect() Expression {
 			}
 		}
 	}
-
-	ty := UnsetType
-	for _, c := range result.Cases {
-		otherTy := c.Value.Type()
-		// Any other type can override UnsetType
-		if ty == UnsetType {
-			ty = otherTy
-		}
-		if otherTy != UnsetType && otherTy != ty {
-			p.errorf("Found select statement with differing types %q and %q in its cases", ty.String(), otherTy.String())
-			return nil
-		}
-	}
-
-	result.ExpressionType = ty
 
 	result.RBracePos = p.scanner.Position
 	if !p.accept('}') {
@@ -913,79 +788,107 @@ func (p *parser) parseMapValue() *Map {
 }
 
 type Scope struct {
-	vars          map[string]*Assignment
-	inheritedVars map[string]*Assignment
+	vars              map[string]*Assignment
+	preventInheriting map[string]bool
+	parentScope       *Scope
 }
 
 func NewScope(s *Scope) *Scope {
-	newScope := &Scope{
-		vars:          make(map[string]*Assignment),
-		inheritedVars: make(map[string]*Assignment),
+	return &Scope{
+		vars:              make(map[string]*Assignment),
+		preventInheriting: make(map[string]bool),
+		parentScope:       s,
 	}
-
-	if s != nil {
-		for k, v := range s.vars {
-			newScope.inheritedVars[k] = v
-		}
-		for k, v := range s.inheritedVars {
-			newScope.inheritedVars[k] = v
-		}
-	}
-
-	return newScope
 }
 
-func (s *Scope) Add(assignment *Assignment) error {
-	if old, ok := s.vars[assignment.Name]; ok {
-		return fmt.Errorf("variable already set, previous assignment: %s", old)
+func (s *Scope) HandleAssignment(assignment *Assignment) error {
+	switch assignment.Assigner {
+	case "+=":
+		if !s.preventInheriting[assignment.Name] && s.parentScope.Get(assignment.Name) != nil {
+			return fmt.Errorf("modified non-local variable %q with +=", assignment.Name)
+		}
+		if old, ok := s.vars[assignment.Name]; !ok {
+			return fmt.Errorf("modified non-existent variable %q with +=", assignment.Name)
+		} else if old.Referenced {
+			return fmt.Errorf("modified variable %q with += after referencing", assignment.Name)
+		} else {
+			newValue, err := evaluateOperator(s, '+', old.Value, assignment.Value)
+			if err != nil {
+				return err
+			}
+			old.Value = newValue
+		}
+	case "=":
+		if old, ok := s.vars[assignment.Name]; ok {
+			return fmt.Errorf("variable already set, previous assignment: %s", old)
+		}
+
+		if old := s.parentScope.Get(assignment.Name); old != nil && !s.preventInheriting[assignment.Name] {
+			return fmt.Errorf("variable already set in inherited scope, previous assignment: %s", old)
+		}
+
+		if newValue, err := assignment.Value.Eval(s); err != nil {
+			return err
+		} else {
+			assignment.Value = newValue
+		}
+		s.vars[assignment.Name] = assignment
+	default:
+		return fmt.Errorf("Unknown assigner '%s'", assignment.Assigner)
 	}
-
-	if old, ok := s.inheritedVars[assignment.Name]; ok {
-		return fmt.Errorf("variable already set in inherited scope, previous assignment: %s", old)
-	}
-
-	s.vars[assignment.Name] = assignment
-
 	return nil
 }
 
-func (s *Scope) Remove(name string) {
-	delete(s.vars, name)
-	delete(s.inheritedVars, name)
+func (s *Scope) Get(name string) *Assignment {
+	if s == nil {
+		return nil
+	}
+	if a, ok := s.vars[name]; ok {
+		return a
+	}
+	if s.preventInheriting[name] {
+		return nil
+	}
+	return s.parentScope.Get(name)
 }
 
-func (s *Scope) Get(name string) (*Assignment, bool) {
+func (s *Scope) GetLocal(name string) *Assignment {
+	if s == nil {
+		return nil
+	}
 	if a, ok := s.vars[name]; ok {
-		return a, true
+		return a
 	}
+	return nil
+}
 
-	if a, ok := s.inheritedVars[name]; ok {
-		return a, false
-	}
-
-	return nil, false
+// DontInherit prevents this scope from inheriting the given variable from its
+// parent scope.
+func (s *Scope) DontInherit(name string) {
+	s.preventInheriting[name] = true
 }
 
 func (s *Scope) String() string {
-	vars := []string{}
+	var sb strings.Builder
+	s.stringInner(&sb)
+	return sb.String()
+}
 
-	for k := range s.vars {
-		vars = append(vars, k)
+func (s *Scope) stringInner(sb *strings.Builder) {
+	if s == nil {
+		return
 	}
-	for k := range s.inheritedVars {
+	vars := make([]string, 0, len(s.vars))
+	for k := range s.vars {
 		vars = append(vars, k)
 	}
 
 	sort.Strings(vars)
 
-	ret := []string{}
 	for _, v := range vars {
-		if assignment, ok := s.vars[v]; ok {
-			ret = append(ret, assignment.String())
-		} else {
-			ret = append(ret, s.inheritedVars[v].String())
-		}
+		sb.WriteString(s.vars[v].String())
+		sb.WriteRune('\n')
 	}
 
-	return strings.Join(ret, "\n")
+	s.parentScope.stringInner(sb)
 }
