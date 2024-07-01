@@ -16,6 +16,7 @@ package bootstrap
 
 import (
 	"bufio"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"io"
@@ -43,7 +44,8 @@ type Args struct {
 	TraceFile  string
 
 	// Debug data json file
-	ModuleDebugFile string
+	ModuleDebugFile         string
+	IncrementalBuildActions bool
 }
 
 // RegisterGoModuleTypes adds module types to build tools written in golang
@@ -64,7 +66,7 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}
 
 	if args.Cpuprofile != "" {
-		f, err := os.Create(joinPath(ctx.SrcDir(), args.Cpuprofile))
+		f, err := os.Create(blueprint.JoinPath(ctx.SrcDir(), args.Cpuprofile))
 		if err != nil {
 			return nil, fmt.Errorf("error opening cpuprofile: %s", err)
 		}
@@ -74,7 +76,7 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}
 
 	if args.TraceFile != "" {
-		f, err := os.Create(joinPath(ctx.SrcDir(), args.TraceFile))
+		f, err := os.Create(blueprint.JoinPath(ctx.SrcDir(), args.TraceFile))
 		if err != nil {
 			return nil, fmt.Errorf("error opening trace: %s", err)
 		}
@@ -103,7 +105,6 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	ctx.RegisterBottomUpMutator("bootstrap_plugin_deps", pluginDeps)
 	ctx.RegisterSingletonType("bootstrap", newSingletonFactory(), false)
 	RegisterGoModuleTypes(ctx)
-	blueprint.RegisterPackageIncludesModuleType(ctx)
 
 	ctx.BeginEvent("parse_bp")
 	if blueprintFiles, errs := ctx.ParseFileList(".", filesToParse, config); len(errs) > 0 {
@@ -129,10 +130,27 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 		}
 	}
 
+	if ctx.GetIncrementalAnalysis() {
+		var err error = nil
+		err, ctx.BuildActionFromCache = restoreBuildActions(ctx, config)
+		if err != nil {
+			return nil, fatalErrors([]error{err})
+		}
+	}
+
 	if buildActionsDeps, errs := ctx.PrepareBuildActions(config); len(errs) > 0 {
 		return nil, fatalErrors(errs)
 	} else {
 		ninjaDeps = append(ninjaDeps, buildActionsDeps...)
+	}
+
+	buildActionCachingChan := make(chan error, 1)
+	if ctx.GetIncrementalEnabled() {
+		go func() {
+			buildActionCachingChan <- cacheBuildActions(ctx, config)
+		}()
+	} else {
+		buildActionCachingChan <- nil
 	}
 
 	if args.ModuleDebugFile != "" {
@@ -159,12 +177,12 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	ctx.BeginEvent("write_files")
 	defer ctx.EndEvent("write_files")
 	if args.EmptyNinjaFile {
-		if err := os.WriteFile(joinPath(ctx.SrcDir(), args.OutFile), []byte(nil), blueprint.OutFilePermissions); err != nil {
+		if err := os.WriteFile(blueprint.JoinPath(ctx.SrcDir(), args.OutFile), []byte(nil), blueprint.OutFilePermissions); err != nil {
 			return nil, fmt.Errorf("error writing empty Ninja file: %s", err)
 		}
 		out = io.Discard.(blueprint.StringWriterWriter)
 	} else {
-		f, err := os.OpenFile(joinPath(ctx.SrcDir(), args.OutFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, blueprint.OutFilePermissions)
+		f, err := os.OpenFile(blueprint.JoinPath(ctx.SrcDir(), args.OutFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, blueprint.OutFilePermissions)
 		if err != nil {
 			return nil, fmt.Errorf("error opening Ninja file: %s", err)
 		}
@@ -194,8 +212,13 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 		return nil, proptools.MergeErrors(providerValidationErrors)
 	}
 
+	buildActionCachingError := <-buildActionCachingChan
+	if buildActionCachingError != nil {
+		return nil, buildActionCachingError
+	}
+
 	if args.Memprofile != "" {
-		f, err := os.Create(joinPath(ctx.SrcDir(), args.Memprofile))
+		f, err := os.Create(blueprint.JoinPath(ctx.SrcDir(), args.Memprofile))
 		if err != nil {
 			return nil, fmt.Errorf("error opening memprofile: %s", err)
 		}
@@ -204,6 +227,33 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}
 
 	return ninjaDeps, nil
+}
+
+func cacheBuildActions(ctx *blueprint.Context, config interface{}) error {
+	file, err := os.Create(filepath.Join(ctx.SrcDir(), config.(BootstrapConfig).SoongOutDir(), blueprint.BuildActionsCacheFile))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := gob.NewEncoder(file)
+	return encoder.Encode(&ctx.BuildActionToCache)
+}
+
+func restoreBuildActions(ctx *blueprint.Context, config interface{}) (error, blueprint.BuildActionCache) {
+	var cache = make(blueprint.BuildActionCache)
+	file, err := os.Open(filepath.Join(ctx.SrcDir(), config.(BootstrapConfig).SoongOutDir(), blueprint.BuildActionsCacheFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			err = nil
+		}
+		return err, nil
+	}
+	defer file.Close()
+
+	decoder := gob.NewDecoder(file)
+	err = decoder.Decode(&cache)
+	return err, cache
 }
 
 func fatalErrors(errs []error) error {
@@ -222,11 +272,4 @@ func fatalErrors(errs []error) error {
 	}
 
 	return errors.New("fatal errors encountered")
-}
-
-func joinPath(base, path string) string {
-	if filepath.IsAbs(path) {
-		return path
-	}
-	return filepath.Join(base, path)
 }
