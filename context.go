@@ -26,6 +26,7 @@ import (
 	"io"
 	"io/ioutil"
 	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -477,10 +478,16 @@ func (vm variationMap) equal(other variationMap) bool {
 }
 
 func (vm *variationMap) set(mutator, variation string) {
-	if vm.variations == nil {
-		vm.variations = make(map[string]string)
+	if variation == "" {
+		if vm.variations != nil {
+			delete(vm.variations, mutator)
+		}
+	} else {
+		if vm.variations == nil {
+			vm.variations = make(map[string]string)
+		}
+		vm.variations[mutator] = variation
 	}
-	vm.variations[mutator] = variation
 }
 
 func (vm variationMap) get(mutator string) string {
@@ -493,6 +500,18 @@ func (vm variationMap) delete(mutator string) {
 
 func (vm variationMap) empty() bool {
 	return len(vm.variations) == 0
+}
+
+// differenceKeysCount returns the count of keys that exist in this variationMap that don't exist in the argument.  It
+// ignores the values.
+func (vm variationMap) differenceKeysCount(other variationMap) int {
+	divergence := 0
+	for mutator, _ := range vm.variations {
+		if _, exists := other.variations[mutator]; !exists {
+			divergence += 1
+		}
+	}
+	return divergence
 }
 
 type singletonInfo struct {
@@ -2003,19 +2022,33 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 		newVariant = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
 	}
 
-	check := func(variant variationMap) bool {
+	// check returns a bool for whether the requested newVariant matches the given variant from possibleDeps, and a
+	// divergence score.  A score of 0 is best match, and a positive integer is a worse match.
+	// For a non-far search, the score is always 0 as the match must always be exact.  For a far search,
+	// the score is the number of variants that are present in the given variant but not newVariant.
+	check := func(variant variationMap) (bool, int) {
 		if far {
-			return newVariant.subsetOf(variant)
+			if newVariant.subsetOf(variant) {
+				return true, variant.differenceKeysCount(newVariant)
+			}
 		} else {
-			return variant.equal(newVariant)
+			if variant.equal(newVariant) {
+				return true, 0
+			}
 		}
+		return false, math.MaxInt
 	}
 
 	var foundDep *moduleInfo
+	bestDivergence := math.MaxInt
 	for _, m := range possibleDeps.modules {
-		if check(m.moduleOrAliasVariant().variations) {
+		if match, divergence := check(m.moduleOrAliasVariant().variations); match && divergence < bestDivergence {
 			foundDep = m.moduleOrAliasTarget()
-			break
+			bestDivergence = divergence
+			if !far {
+				// non-far dependencies use equality, so only the first match needs to be checked.
+				break
+			}
 		}
 	}
 
@@ -3073,12 +3106,20 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 			module.newDirectDeps = nil
 		}
 
-		findAliasTarget := func(variant variant) *moduleInfo {
+		findAliasTarget := func(oldVariant variant) *moduleInfo {
 			for _, moduleOrAlias := range group.modules {
+				module := moduleOrAlias.moduleOrAliasTarget()
+				if module.splitModules != nil {
+					// Ignore any old aliases that are pointing to modules that were obsoleted.
+					continue
+				}
 				if alias := moduleOrAlias.alias(); alias != nil {
-					if alias.variant.variations.equal(variant.variations) {
+					if alias.variant.variations.equal(oldVariant.variations) {
 						return alias.target
 					}
+				}
+				if module.variant.variations.equal(oldVariant.variations) {
+					return module
 				}
 			}
 			return nil
