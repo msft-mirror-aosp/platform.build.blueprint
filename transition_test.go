@@ -290,7 +290,7 @@ func TestPostTransitionDepsMissingVariant(t *testing.T) {
 	expectedError := `Android.bp:8:4: dependency "E" of "B" missing variant:
   transition:missing
 available variants:
-  transition:
+  <empty variant>
   transition:d`
 	if len(errs) != 1 || errs[0].Error() != expectedError {
 		t.Errorf("expected error %q, got %q", expectedError, errs)

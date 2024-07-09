@@ -1617,6 +1617,9 @@ func (c *Context) prettyPrintVariant(variations variationMap) string {
 			names = append(names, m+":"+v)
 		}
 	}
+	if len(names) == 0 {
+		return "<empty variant>"
+	}
 
 	return strings.Join(names, ",")
 }
