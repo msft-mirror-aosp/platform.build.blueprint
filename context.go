@@ -1940,7 +1940,9 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 		newVariant[v.Mutator] = v.Variation
 	}
 
-	newVariant = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
+	if !reverse {
+		newVariant = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
+	}
 
 	check := func(variant variationMap) bool {
 		if far {
