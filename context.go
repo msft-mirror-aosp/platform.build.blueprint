@@ -1882,7 +1882,8 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 		outgoingVariation := sourceVariation
 		if !explicitlyRequested {
 			ctx := &outgoingTransitionContextImpl{
-				transitionContextImpl{context: c, source: module, dep: nil, depTag: nil, config: config},
+				transitionContextImpl{context: c, source: module, dep: nil,
+					depTag: nil, postMutator: true, config: config},
 			}
 			outgoingVariation = transitionMutator.mutator.OutgoingTransition(ctx, sourceVariation)
 		}
@@ -1894,7 +1895,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 				// Apply the incoming transition.
 				ctx := &incomingTransitionContextImpl{
 					transitionContextImpl{context: c, source: nil, dep: inputVariant,
-						depTag: nil, config: config},
+						depTag: nil, postMutator: true, config: config},
 				}
 
 				finalVariation := transitionMutator.mutator.IncomingTransition(ctx, outgoingVariation)
