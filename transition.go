@@ -119,6 +119,12 @@ type IncomingTransitionContext interface {
 	//
 	// This method shouldn't be used directly, prefer the type-safe android.ModuleProvider instead.
 	Provider(provider AnyProviderKey) (any, bool)
+
+	// IsAddingDependency returns true if the transition is being called while adding a dependency
+	// after the transition mutator has already run, or false if it is being called when the transition
+	// mutator is running.  This should be used sparingly, all uses will have to be removed in order
+	// to support creating variants on demand.
+	IsAddingDependency() bool
 }
 
 type OutgoingTransitionContext interface {
@@ -206,11 +212,12 @@ func (t *transitionMutatorImpl) topDownMutator(mctx TopDownMutatorContext) {
 }
 
 type transitionContextImpl struct {
-	context *Context
-	source  *moduleInfo
-	dep     *moduleInfo
-	depTag  DependencyTag
-	config  interface{}
+	context     *Context
+	source      *moduleInfo
+	dep         *moduleInfo
+	depTag      DependencyTag
+	postMutator bool
+	config      interface{}
 }
 
 func (c *transitionContextImpl) DepTag() DependencyTag {
@@ -219,6 +226,10 @@ func (c *transitionContextImpl) DepTag() DependencyTag {
 
 func (c *transitionContextImpl) Config() interface{} {
 	return c.config
+}
+
+func (c *transitionContextImpl) IsAddingDependency() bool {
+	return c.postMutator
 }
 
 type outgoingTransitionContextImpl struct {
