@@ -2509,10 +2509,8 @@ func (c *Context) updateDependencies() (errs []error) {
 type jsonVariations []Variation
 
 type jsonModuleName struct {
-	Name                 string
-	Variant              string
-	Variations           jsonVariations
-	DependencyVariations jsonVariations
+	Name    string
+	Variant string
 }
 
 type jsonDep struct {
@@ -2529,26 +2527,10 @@ type JsonModule struct {
 	Module    map[string]interface{}
 }
 
-func toJsonVariationMap(vm variationMap) jsonVariations {
-	m := make(jsonVariations, 0, len(vm.variations))
-	for k, v := range vm.variations {
-		m = append(m, Variation{k, v})
-	}
-	sort.Slice(m, func(i, j int) bool {
-		if m[i].Mutator != m[j].Mutator {
-			return m[i].Mutator < m[j].Mutator
-		}
-		return m[i].Variation < m[j].Variation
-	})
-	return m
-}
-
 func jsonModuleNameFromModuleInfo(m *moduleInfo) *jsonModuleName {
 	return &jsonModuleName{
-		Name:                 m.Name(),
-		Variant:              m.variant.name,
-		Variations:           toJsonVariationMap(m.variant.variations),
-		DependencyVariations: toJsonVariationMap(m.variant.dependencyVariations),
+		Name:    m.Name(),
+		Variant: m.variant.name,
 	}
 }
 
@@ -2664,15 +2646,6 @@ func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*JsonModule) (b
 		}
 	}
 	return outputToWeight
-}
-
-func inList(s string, l []string) bool {
-	for _, element := range l {
-		if s == element {
-			return true
-		}
-	}
-	return false
 }
 
 // PrintJSONGraph prints info of modules in a JSON file.
