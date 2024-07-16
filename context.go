@@ -3858,57 +3858,6 @@ func (c *Context) checkForVariableReferenceCycles(
 	}
 }
 
-// AllTargets returns a map all the build target names to the rule used to build
-// them.  This is the same information that is output by running 'ninja -t
-// targets all'.  If this is called before PrepareBuildActions successfully
-// completes then ErrbuildActionsNotReady is returned.
-func (c *Context) AllTargets() (map[string]string, error) {
-	if !c.buildActionsReady {
-		return nil, ErrBuildActionsNotReady
-	}
-
-	targets := map[string]string{}
-	var collectTargets = func(actionDefs localBuildActions) error {
-		for _, buildDef := range actionDefs.buildDefs {
-			ruleName := c.nameTracker.Rule(buildDef.Rule)
-			for _, output := range append(buildDef.Outputs, buildDef.ImplicitOutputs...) {
-				outputValue, err := output.Eval(c.globalVariables)
-				if err != nil {
-					return err
-				}
-				targets[outputValue] = ruleName
-			}
-			for _, output := range append(buildDef.OutputStrings, buildDef.ImplicitOutputStrings...) {
-				targets[output] = ruleName
-			}
-		}
-		return nil
-	}
-	// Collect all the module build targets.
-	for _, module := range c.moduleInfo {
-		if err := collectTargets(module.actionDefs); err != nil {
-			return nil, err
-		}
-	}
-
-	// Collect all the singleton build targets.
-	for _, info := range c.singletonInfo {
-		if err := collectTargets(info.actionDefs); err != nil {
-			return nil, err
-		}
-	}
-
-	return targets, nil
-}
-
-func (c *Context) OutDir() (string, error) {
-	if c.outDir != nil {
-		return c.outDir.Eval(c.globalVariables)
-	} else {
-		return "", nil
-	}
-}
-
 // ModuleTypePropertyStructs returns a mapping from module type name to a list of pointers to
 // property structs returned by the factory for that module type.
 func (c *Context) ModuleTypePropertyStructs() map[string][]interface{} {
