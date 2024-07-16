@@ -112,7 +112,7 @@ func checkTransitionVariants(t *testing.T, ctx *Context, name string, expectedVa
 	group := ctx.moduleGroupFromName(name, nil)
 	var gotVariants []string
 	for _, variant := range group.modules {
-		gotVariants = append(gotVariants, variant.moduleOrAliasVariant().variations["transition"])
+		gotVariants = append(gotVariants, variant.moduleOrAliasVariant().variations.get("transition"))
 	}
 	if !slices.Equal(expectedVariants, gotVariants) {
 		t.Errorf("expected variants of %q to be %q, got %q", name, expectedVariants, gotVariants)
