@@ -53,6 +53,8 @@ const MockModuleListFile = "bplist"
 
 const OutFilePermissions = 0666
 
+const BuildActionsCacheFile = "build_actions.gob"
+
 // A Context contains all the state needed to parse a set of Blueprints files
 // and generate a Ninja file.  The process of generating a Ninja file proceeds
 // through a series of four phases.  Each phase corresponds with a some methods
@@ -157,6 +159,15 @@ type Context struct {
 	includeTags *IncludeTags
 
 	sourceRootDirs *SourceRootDirs
+
+	incrementalAnalysis bool
+
+	incrementalEnabled bool
+
+	BuildActionToCache     BuildActionCache
+	BuildActionToCacheLock sync.Mutex
+
+	BuildActionFromCache BuildActionCache
 }
 
 // A container for String keys. The keys can be used to gate build graph traversal
@@ -485,6 +496,7 @@ func newContext() *Context {
 		requiredNinjaMinor:          7,
 		requiredNinjaMicro:          0,
 		verifyProvidersAreUnchanged: true,
+		BuildActionToCache:          make(BuildActionCache),
 	}
 }
 
@@ -605,6 +617,37 @@ func (c *Context) RegisterSingletonType(name string, factory SingletonFactory, p
 
 func (c *Context) SetNameInterface(i NameInterface) {
 	c.nameInterface = i
+}
+
+func (c *Context) SetIncrementalAnalysis(incremental bool) {
+	c.incrementalAnalysis = incremental
+}
+
+func (c *Context) GetIncrementalAnalysis() bool {
+	return c.incrementalAnalysis
+}
+
+func (c *Context) SetIncrementalEnabled(incremental bool) {
+	c.incrementalEnabled = incremental
+}
+
+func (c *Context) GetIncrementalEnabled() bool {
+	return c.incrementalEnabled
+}
+
+func (c *Context) CacheBuildActions(key *BuildActionCacheKey, data *BuildActionCachedData) {
+	if key != nil {
+		c.BuildActionToCacheLock.Lock()
+		defer c.BuildActionToCacheLock.Unlock()
+		c.BuildActionToCache[*key] = data
+	}
+}
+
+func (c *Context) GetBuildActionCache(key *BuildActionCacheKey) *BuildActionCachedData {
+	if c.BuildActionFromCache != nil && key != nil {
+		return c.BuildActionFromCache[*key]
+	}
+	return nil
 }
 
 func (c *Context) SetSrcDir(path string) {
@@ -1221,9 +1264,9 @@ func (c *Context) parseOne(rootDir, filename string, reader io.Reader,
 		return nil, nil, []error{err}
 	}
 
-	scope.Remove("subdirs")
-	scope.Remove("optional_subdirs")
-	scope.Remove("build")
+	scope.DontInherit("subdirs")
+	scope.DontInherit("optional_subdirs")
+	scope.DontInherit("build")
 	file, errs = parser.ParseAndEval(filename, reader, scope)
 	if len(errs) > 0 {
 		for i, err := range errs {
@@ -1357,10 +1400,10 @@ func (c *Context) findSubdirBlueprints(dir string, subdirs []string, subdirsPos 
 }
 
 func getLocalStringListFromScope(scope *parser.Scope, v string) ([]string, scanner.Position, error) {
-	if assignment, local := scope.Get(v); assignment == nil || !local {
+	if assignment := scope.GetLocal(v); assignment == nil {
 		return nil, scanner.Position{}, nil
 	} else {
-		switch value := assignment.Value.Eval().(type) {
+		switch value := assignment.Value.(type) {
 		case *parser.List:
 			ret := make([]string, 0, len(value.Values))
 
@@ -1378,24 +1421,6 @@ func getLocalStringListFromScope(scope *parser.Scope, v string) ([]string, scann
 		case *parser.Bool, *parser.String:
 			return nil, scanner.Position{}, &BlueprintError{
 				Err: fmt.Errorf("%q must be a list of strings", v),
-				Pos: assignment.EqualsPos,
-			}
-		default:
-			panic(fmt.Errorf("unknown value type: %d", assignment.Value.Type()))
-		}
-	}
-}
-
-func getStringFromScope(scope *parser.Scope, v string) (string, scanner.Position, error) {
-	if assignment, _ := scope.Get(v); assignment == nil {
-		return "", scanner.Position{}, nil
-	} else {
-		switch value := assignment.Value.Eval().(type) {
-		case *parser.String:
-			return value.Value, assignment.EqualsPos, nil
-		case *parser.Bool, *parser.List:
-			return "", scanner.Position{}, &BlueprintError{
-				Err: fmt.Errorf("%q must be a string", v),
 				Pos: assignment.EqualsPos,
 			}
 		default:
@@ -1857,7 +1882,8 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 		outgoingVariation := sourceVariation
 		if !explicitlyRequested {
 			ctx := &outgoingTransitionContextImpl{
-				transitionContextImpl{context: c, source: module, dep: nil, depTag: nil, config: config},
+				transitionContextImpl{context: c, source: module, dep: nil,
+					depTag: nil, postMutator: true, config: config},
 			}
 			outgoingVariation = transitionMutator.mutator.OutgoingTransition(ctx, sourceVariation)
 		}
@@ -1869,7 +1895,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 				// Apply the incoming transition.
 				ctx := &incomingTransitionContextImpl{
 					transitionContextImpl{context: c, source: nil, dep: inputVariant,
-						depTag: nil, config: config},
+						depTag: nil, postMutator: true, config: config},
 				}
 
 				finalVariation := transitionMutator.mutator.IncomingTransition(ctx, outgoingVariation)
@@ -1915,7 +1941,9 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 		newVariant[v.Mutator] = v.Variation
 	}
 
-	newVariant = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
+	if !reverse {
+		newVariant = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
+	}
 
 	check := func(variant variationMap) bool {
 		if far {
