@@ -614,11 +614,15 @@ func Test_findVariant(t *testing.T) {
 		variant: variant{
 			name: "normal_local",
 			variations: variationMap{
-				"normal": "normal",
-				"local":  "local",
+				map[string]string{
+					"normal": "normal",
+					"local":  "local",
+				},
 			},
 			dependencyVariations: variationMap{
-				"normal": "normal",
+				map[string]string{
+					"normal": "normal",
+				},
 			},
 		},
 	}
@@ -679,7 +683,9 @@ func Test_findVariant(t *testing.T) {
 					variant: variant{
 						name: "normal",
 						variations: variationMap{
-							"normal": "normal",
+							map[string]string{
+								"normal": "normal",
+							},
 						},
 					},
 				},
@@ -697,7 +703,9 @@ func Test_findVariant(t *testing.T) {
 					variant: variant{
 						name: "normal",
 						variations: variationMap{
-							"normal": "normal",
+							map[string]string{
+								"normal": "normal",
+							},
 						},
 					},
 					target: 1,
@@ -706,8 +714,10 @@ func Test_findVariant(t *testing.T) {
 					variant: variant{
 						name: "normal_a",
 						variations: variationMap{
-							"normal": "normal",
-							"a":      "a",
+							map[string]string{
+								"normal": "normal",
+								"a":      "a",
+							},
 						},
 					},
 				},
@@ -725,8 +735,10 @@ func Test_findVariant(t *testing.T) {
 					variant: variant{
 						name: "normal_a",
 						variations: variationMap{
-							"normal": "normal",
-							"a":      "a",
+							map[string]string{
+								"normal": "normal",
+								"a":      "a",
+							},
 						},
 					},
 				},
@@ -743,14 +755,16 @@ func Test_findVariant(t *testing.T) {
 				&moduleInfo{
 					variant: variant{
 						name:       "",
-						variations: nil,
+						variations: variationMap{},
 					},
 				},
 				&moduleInfo{
 					variant: variant{
 						name: "far",
 						variations: variationMap{
-							"far": "far",
+							map[string]string{
+								"far": "far",
+							},
 						},
 					},
 				},
@@ -768,7 +782,9 @@ func Test_findVariant(t *testing.T) {
 					variant: variant{
 						name: "far",
 						variations: variationMap{
-							"far": "far",
+							map[string]string{
+								"far": "far",
+							},
 						},
 					},
 					target: 2,
@@ -777,8 +793,10 @@ func Test_findVariant(t *testing.T) {
 					variant: variant{
 						name: "far_a",
 						variations: variationMap{
-							"far": "far",
-							"a":   "a",
+							map[string]string{
+								"far": "far",
+								"a":   "a",
+							},
 						},
 					},
 				},
@@ -786,8 +804,10 @@ func Test_findVariant(t *testing.T) {
 					variant: variant{
 						name: "far_b",
 						variations: variationMap{
-							"far": "far",
-							"b":   "b",
+							map[string]string{
+								"far": "far",
+								"b":   "b",
+							},
 						},
 					},
 				},
@@ -805,7 +825,9 @@ func Test_findVariant(t *testing.T) {
 					variant: variant{
 						name: "far",
 						variations: variationMap{
-							"far": "far",
+							map[string]string{
+								"far": "far",
+							},
 						},
 					},
 					target: 1,
@@ -814,8 +836,10 @@ func Test_findVariant(t *testing.T) {
 					variant: variant{
 						name: "far_a",
 						variations: variationMap{
-							"far": "far",
-							"a":   "a",
+							map[string]string{
+								"far": "far",
+								"a":   "a",
+							},
 						},
 					},
 				},

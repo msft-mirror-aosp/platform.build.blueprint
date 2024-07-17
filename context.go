@@ -437,17 +437,21 @@ type Variation struct {
 }
 
 // A variationMap stores a map of Mutator to Variation to specify a variant of a module.
-type variationMap map[string]string
+type variationMap struct {
+	variations map[string]string
+}
 
 func (vm variationMap) clone() variationMap {
-	return maps.Clone(vm)
+	return variationMap{
+		variations: maps.Clone(vm.variations),
+	}
 }
 
 // Compare this variationMap to another one.  Returns true if the every entry in this map
 // exists and has the same value in the other map.
 func (vm variationMap) subsetOf(other variationMap) bool {
-	for k, v1 := range vm {
-		if v2, ok := other[k]; !ok || v1 != v2 {
+	for k, v1 := range vm.variations {
+		if v2, ok := other.variations[k]; !ok || v1 != v2 {
 			return false
 		}
 	}
@@ -455,7 +459,26 @@ func (vm variationMap) subsetOf(other variationMap) bool {
 }
 
 func (vm variationMap) equal(other variationMap) bool {
-	return maps.Equal(vm, other)
+	return maps.Equal(vm.variations, other.variations)
+}
+
+func (vm *variationMap) set(mutator, variation string) {
+	if vm.variations == nil {
+		vm.variations = make(map[string]string)
+	}
+	vm.variations[mutator] = variation
+}
+
+func (vm variationMap) get(mutator string) string {
+	return vm.variations[mutator]
+}
+
+func (vm variationMap) delete(mutator string) {
+	delete(vm.variations, mutator)
+}
+
+func (vm variationMap) empty() bool {
+	return len(vm.variations) == 0
 }
 
 type singletonInfo struct {
@@ -1462,17 +1485,11 @@ func newVariant(module *moduleInfo, mutatorName string, variationName string,
 	}
 
 	newVariations := module.variant.variations.clone()
-	if newVariations == nil {
-		newVariations = make(variationMap)
-	}
-	newVariations[mutatorName] = variationName
+	newVariations.set(mutatorName, variationName)
 
 	newDependencyVariations := module.variant.dependencyVariations.clone()
 	if !local {
-		if newDependencyVariations == nil {
-			newDependencyVariations = make(variationMap)
-		}
-		newDependencyVariations[mutatorName] = variationName
+		newDependencyVariations.set(mutatorName, variationName)
 	}
 
 	return variant{newVariantName, newVariations, newDependencyVariations}
@@ -1536,7 +1553,7 @@ type depChooser func(source *moduleInfo, variationIndex, depIndex int, dep depIn
 
 func chooseDep(candidates modulesOrAliases, mutatorName, variationName string, defaultVariationName *string) (*moduleInfo, string) {
 	for _, m := range candidates {
-		if m.moduleOrAliasVariant().variations[mutatorName] == variationName {
+		if m.moduleOrAliasVariant().variations.get(mutatorName) == variationName {
 			return m.moduleOrAliasTarget(), ""
 		}
 	}
@@ -1544,7 +1561,7 @@ func chooseDep(candidates modulesOrAliases, mutatorName, variationName string, d
 	if defaultVariationName != nil {
 		// give it a second chance; match with defaultVariationName
 		for _, m := range candidates {
-			if m.moduleOrAliasVariant().variations[mutatorName] == *defaultVariationName {
+			if m.moduleOrAliasVariant().variations.get(mutatorName) == *defaultVariationName {
 				return m.moduleOrAliasTarget(), ""
 			}
 		}
@@ -1569,7 +1586,7 @@ func chooseDepExplicit(mutatorName string,
 
 func chooseDepInherit(mutatorName string, defaultVariationName *string) depChooser {
 	return func(source *moduleInfo, variationIndex, depIndex int, dep depInfo) (*moduleInfo, string) {
-		sourceVariation := source.variant.variations[mutatorName]
+		sourceVariation := source.variant.variations.get(mutatorName)
 		return chooseDep(dep.module.splitModules, mutatorName, sourceVariation, defaultVariationName)
 	}
 }
@@ -1594,11 +1611,14 @@ func (c *Context) convertDepsToVariation(module *moduleInfo, variationIndex int,
 }
 
 func (c *Context) prettyPrintVariant(variations variationMap) string {
-	names := make([]string, 0, len(variations))
+	var names []string
 	for _, m := range c.variantMutatorNames {
-		if v, ok := variations[m]; ok {
+		if v := variations.get(m); v != "" {
 			names = append(names, m+":"+v)
 		}
+	}
+	if len(names) == 0 {
+		return "<empty variant>"
 	}
 
 	return strings.Join(names, ",")
@@ -1809,7 +1829,7 @@ func (c *Context) addDependency(module *moduleInfo, config any, tag DependencyTa
 
 	possibleDeps := c.moduleGroupFromName(depName, module.namespace())
 	if possibleDeps == nil {
-		return nil, c.discoveredMissingDependencies(module, depName, nil)
+		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
 	if m := c.findExactVariantOrSingle(module, config, possibleDeps, false); m != nil {
@@ -1878,7 +1898,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 		explicitlyRequested := slices.ContainsFunc(requestedVariations, func(variation Variation) bool {
 			return variation.Mutator == transitionMutator.name
 		})
-		sourceVariation := variant[transitionMutator.name]
+		sourceVariation := variant.get(transitionMutator.name)
 		outgoingVariation := sourceVariation
 		if !explicitlyRequested {
 			ctx := &outgoingTransitionContextImpl{
@@ -1899,10 +1919,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 				}
 
 				finalVariation := transitionMutator.mutator.IncomingTransition(ctx, outgoingVariation)
-				if variant == nil {
-					variant = make(variationMap)
-				}
-				variant[transitionMutator.name] = finalVariation
+				variant.set(transitionMutator.name, finalVariation)
 				appliedIncomingTransition = true
 				break
 			}
@@ -1910,7 +1927,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 		if !appliedIncomingTransition && !explicitlyRequested {
 			// The transition mutator didn't apply anything to the target variant, remove the variation unless it
 			// was explicitly requested when adding the dependency.
-			delete(variant, transitionMutator.name)
+			variant.delete(transitionMutator.name)
 		}
 	}
 
@@ -1935,10 +1952,7 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 		}
 	}
 	for _, v := range requestedVariations {
-		if newVariant == nil {
-			newVariant = make(variationMap)
-		}
-		newVariant[v.Mutator] = v.Variation
+		newVariant.set(v.Mutator, v.Variation)
 	}
 
 	if !reverse {
@@ -1972,7 +1986,7 @@ func (c *Context) addVariationDependency(module *moduleInfo, config any, variati
 
 	possibleDeps := c.moduleGroupFromName(depName, module.namespace())
 	if possibleDeps == nil {
-		return nil, c.discoveredMissingDependencies(module, depName, nil)
+		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
 	foundDep, newVariant := c.findVariant(module, config, possibleDeps, variations, far, false)
@@ -2495,10 +2509,8 @@ func (c *Context) updateDependencies() (errs []error) {
 type jsonVariations []Variation
 
 type jsonModuleName struct {
-	Name                 string
-	Variant              string
-	Variations           jsonVariations
-	DependencyVariations jsonVariations
+	Name    string
+	Variant string
 }
 
 type jsonDep struct {
@@ -2515,26 +2527,10 @@ type JsonModule struct {
 	Module    map[string]interface{}
 }
 
-func toJsonVariationMap(vm variationMap) jsonVariations {
-	m := make(jsonVariations, 0, len(vm))
-	for k, v := range vm {
-		m = append(m, Variation{k, v})
-	}
-	sort.Slice(m, func(i, j int) bool {
-		if m[i].Mutator != m[j].Mutator {
-			return m[i].Mutator < m[j].Mutator
-		}
-		return m[i].Variation < m[j].Variation
-	})
-	return m
-}
-
 func jsonModuleNameFromModuleInfo(m *moduleInfo) *jsonModuleName {
 	return &jsonModuleName{
-		Name:                 m.Name(),
-		Variant:              m.variant.name,
-		Variations:           toJsonVariationMap(m.variant.variations),
-		DependencyVariations: toJsonVariationMap(m.variant.dependencyVariations),
+		Name:    m.Name(),
+		Variant: m.variant.name,
 	}
 }
 
@@ -2650,15 +2646,6 @@ func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*JsonModule) (b
 		}
 	}
 	return outputToWeight
-}
-
-func inList(s string, l []string) bool {
-	for _, element := range l {
-		if s == element {
-			return true
-		}
-	}
-	return false
 }
 
 // PrintJSONGraph prints info of modules in a JSON file.
@@ -3565,7 +3552,7 @@ func (c *Context) handleReplacements(replacements []replace) []error {
 }
 
 func (c *Context) discoveredMissingDependencies(module *moduleInfo, depName string, depVariations variationMap) (errs []error) {
-	if depVariations != nil {
+	if !depVariations.empty() {
 		depName = depName + "{" + c.prettyPrintVariant(depVariations) + "}"
 	}
 	if c.allowMissingDependencies {
@@ -3858,57 +3845,6 @@ func (c *Context) checkForVariableReferenceCycles(
 				panic("inconceivable!")
 			}
 		}
-	}
-}
-
-// AllTargets returns a map all the build target names to the rule used to build
-// them.  This is the same information that is output by running 'ninja -t
-// targets all'.  If this is called before PrepareBuildActions successfully
-// completes then ErrbuildActionsNotReady is returned.
-func (c *Context) AllTargets() (map[string]string, error) {
-	if !c.buildActionsReady {
-		return nil, ErrBuildActionsNotReady
-	}
-
-	targets := map[string]string{}
-	var collectTargets = func(actionDefs localBuildActions) error {
-		for _, buildDef := range actionDefs.buildDefs {
-			ruleName := c.nameTracker.Rule(buildDef.Rule)
-			for _, output := range append(buildDef.Outputs, buildDef.ImplicitOutputs...) {
-				outputValue, err := output.Eval(c.globalVariables)
-				if err != nil {
-					return err
-				}
-				targets[outputValue] = ruleName
-			}
-			for _, output := range append(buildDef.OutputStrings, buildDef.ImplicitOutputStrings...) {
-				targets[output] = ruleName
-			}
-		}
-		return nil
-	}
-	// Collect all the module build targets.
-	for _, module := range c.moduleInfo {
-		if err := collectTargets(module.actionDefs); err != nil {
-			return nil, err
-		}
-	}
-
-	// Collect all the singleton build targets.
-	for _, info := range c.singletonInfo {
-		if err := collectTargets(info.actionDefs); err != nil {
-			return nil, err
-		}
-	}
-
-	return targets, nil
-}
-
-func (c *Context) OutDir() (string, error) {
-	if c.outDir != nil {
-		return c.outDir.Eval(c.globalVariables)
-	} else {
-		return "", nil
 	}
 }
 
