@@ -1776,8 +1776,6 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 	pprof.Do(ctx, pprof.Labels("blueprint", "ResolveDependencies"), func(ctx context.Context) {
 		c.initProviders()
 
-		c.liveGlobals = newLiveTracker(c, config)
-
 		errs = c.updateDependencies()
 		if len(errs) > 0 {
 			return
@@ -2781,6 +2779,37 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 	defer c.EndEvent("prepare_build_actions")
 	pprof.Do(c.Context, pprof.Labels("blueprint", "PrepareBuildActions"), func(ctx context.Context) {
 		c.buildActionsReady = false
+
+		c.liveGlobals = newLiveTracker(c, config)
+		// Add all the global rules/variable/pools here because when we restore from
+		// cache we don't have the build defs available to build the globals.
+		// TODO(b/356414070): Revisit this logic once we have a clearer picture about
+		// how the incremental build pieces fit together.
+		if c.GetIncrementalEnabled() {
+			for _, p := range packageContexts {
+				for _, v := range p.scope.variables {
+					err := c.liveGlobals.addVariable(v)
+					if err != nil {
+						errs = []error{err}
+						return
+					}
+				}
+				for _, v := range p.scope.rules {
+					_, err := c.liveGlobals.addRule(v)
+					if err != nil {
+						errs = []error{err}
+						return
+					}
+				}
+				for _, v := range p.scope.pools {
+					err := c.liveGlobals.addPool(v)
+					if err != nil {
+						errs = []error{err}
+						return
+					}
+				}
+			}
+		}
 
 		if !c.dependenciesReady {
 			var extraDeps []string
