@@ -150,9 +150,10 @@ type OutgoingTransitionContext interface {
 }
 
 type transitionMutatorImpl struct {
-	name          string
-	mutator       TransitionMutator
-	inputVariants map[*moduleGroup][]*moduleInfo
+	name                        string
+	mutator                     TransitionMutator
+	variantCreatingMutatorIndex int
+	inputVariants               map[*moduleGroup][]*moduleInfo
 }
 
 // Adds each argument in items to l if it's not already there.
