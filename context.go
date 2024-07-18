@@ -96,6 +96,8 @@ type Context struct {
 	mutatorInfo         []*mutatorInfo
 	variantMutatorNames []string
 
+	variantCreatingMutatorOrder []string
+
 	transitionMutators []*transitionMutatorImpl
 
 	depsModified uint32 // positive if a mutator modified the dependencies
@@ -444,6 +446,18 @@ type variationMap struct {
 func (vm variationMap) clone() variationMap {
 	return variationMap{
 		variations: maps.Clone(vm.variations),
+	}
+}
+
+func (vm variationMap) cloneMatching(mutators []string) variationMap {
+	newVariations := make(map[string]string)
+	for _, mutator := range mutators {
+		if variation, ok := vm.variations[mutator]; ok {
+			newVariations[mutator] = variation
+		}
+	}
+	return variationMap{
+		variations: newVariations,
 	}
 }
 
@@ -1894,12 +1908,14 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, destName
 func (c *Context) applyTransitions(config any, module *moduleInfo, group *moduleGroup, variant variationMap,
 	requestedVariations []Variation) variationMap {
 	for _, transitionMutator := range c.transitionMutators {
-		// Apply the outgoing transition if it was not explicitly requested.
 		explicitlyRequested := slices.ContainsFunc(requestedVariations, func(variation Variation) bool {
 			return variation.Mutator == transitionMutator.name
 		})
+
 		sourceVariation := variant.get(transitionMutator.name)
 		outgoingVariation := sourceVariation
+
+		// Apply the outgoing transition if it was not explicitly requested.
 		if !explicitlyRequested {
 			ctx := &outgoingTransitionContextImpl{
 				transitionContextImpl{context: c, source: module, dep: nil,
@@ -1908,23 +1924,51 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 			outgoingVariation = transitionMutator.mutator.OutgoingTransition(ctx, sourceVariation)
 		}
 
-		// Find an appropriate module to use as the context for the IncomingTransition.
-		appliedIncomingTransition := false
-		for _, inputVariant := range transitionMutator.inputVariants[group] {
-			if inputVariant.variant.variations.subsetOf(variant) {
-				// Apply the incoming transition.
-				ctx := &incomingTransitionContextImpl{
-					transitionContextImpl{context: c, source: nil, dep: inputVariant,
-						depTag: nil, postMutator: true, config: config},
-				}
+		earlierVariantCreatingMutators := c.variantCreatingMutatorOrder[:transitionMutator.variantCreatingMutatorIndex]
+		filteredVariant := variant.cloneMatching(earlierVariantCreatingMutators)
 
-				finalVariation := transitionMutator.mutator.IncomingTransition(ctx, outgoingVariation)
-				variant.set(transitionMutator.name, finalVariation)
-				appliedIncomingTransition = true
+		check := func(inputVariant variationMap) bool {
+			filteredInputVariant := inputVariant.cloneMatching(earlierVariantCreatingMutators)
+			return filteredInputVariant.equal(filteredVariant)
+		}
+
+		// Find an appropriate module to use as the context for the IncomingTransition.  First check if any of the
+		// saved inputVariants for the transition mutator match the filtered variant.
+		var matchingInputVariant *moduleInfo
+		for _, inputVariant := range transitionMutator.inputVariants[group] {
+			if check(inputVariant.variant.variations) {
+				matchingInputVariant = inputVariant
 				break
 			}
 		}
-		if !appliedIncomingTransition && !explicitlyRequested {
+
+		if matchingInputVariant == nil {
+			// If no inputVariants match, check all the variants of the module for a match.  This can happen if
+			// the mutator only created a single "" variant when it ran on this module.  Matching against all variants
+			// is slightly worse  than checking the input variants, as the selected variant could have been modified
+			// by a later mutator in a way that affects the results of IncomingTransition.
+			for _, moduleOrAlias := range group.modules {
+				if module := moduleOrAlias.module(); module != nil {
+					if check(module.variant.variations) {
+						matchingInputVariant = module
+						break
+					}
+				}
+			}
+		}
+
+		if matchingInputVariant != nil {
+			// Apply the incoming transition.
+			ctx := &incomingTransitionContextImpl{
+				transitionContextImpl{context: c, source: nil, dep: matchingInputVariant,
+					depTag: nil, postMutator: true, config: config},
+			}
+
+			finalVariation := transitionMutator.mutator.IncomingTransition(ctx, outgoingVariation)
+			variant.set(transitionMutator.name, finalVariation)
+		}
+
+		if (matchingInputVariant == nil && !explicitlyRequested) || variant.get(transitionMutator.name) == "" {
 			// The transition mutator didn't apply anything to the target variant, remove the variation unless it
 			// was explicitly requested when adding the dependency.
 			variant.delete(transitionMutator.name)
@@ -2928,6 +2972,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		return false
 	}
 
+	createdVariations := false
 	var obsoleteLogicModules []Module
 
 	// Process errs and reverseDeps in a single goroutine
@@ -2953,6 +2998,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 						newModuleInfo[m.logicModule] = m
 					}
 				}
+				createdVariations = true
 			case <-done:
 				return
 			}
@@ -3059,7 +3105,12 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 
 	if isTransitionMutator {
 		mutator.transitionMutator.inputVariants = transitionMutatorInputVariants
+		mutator.transitionMutator.variantCreatingMutatorIndex = len(c.variantCreatingMutatorOrder)
 		c.transitionMutators = append(c.transitionMutators, mutator.transitionMutator)
+	}
+
+	if createdVariations {
+		c.variantCreatingMutatorOrder = append(c.variantCreatingMutatorOrder, mutator.name)
 	}
 
 	// Add in any new reverse dependencies that were added by the mutator
