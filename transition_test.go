@@ -87,6 +87,7 @@ const testTransitionBp = `
 
 			transition_module {
 				name: "F",
+				incoming: "",
 			}
 
 			transition_module {
@@ -112,7 +113,7 @@ func checkTransitionVariants(t *testing.T, ctx *Context, name string, expectedVa
 	group := ctx.moduleGroupFromName(name, nil)
 	var gotVariants []string
 	for _, variant := range group.modules {
-		gotVariants = append(gotVariants, variant.moduleOrAliasVariant().variations["transition"])
+		gotVariants = append(gotVariants, variant.moduleOrAliasVariant().variations.get("transition"))
 	}
 	if !slices.Equal(expectedVariants, gotVariants) {
 		t.Errorf("expected variants of %q to be %q, got %q", name, expectedVariants, gotVariants)
@@ -233,7 +234,7 @@ func TestPostTransitionDeps(t *testing.T) {
 	//  C(c) was added by C and rewritten by OutgoingTransition on B
 	//  D(d) was added by D:late and rewritten by IncomingTransition on D
 	//  E(d) was added by E:d
-	//  F() was added by F, and ignored the existing variation on B
+	//  F() was added by F and rewritten OutgoingTransition on B and then IncomingTransition on F
 	checkTransitionDeps(t, ctx, B_a, "C(c)", "C(c)", "D(d)", "E(d)", "F()")
 	checkTransitionDeps(t, ctx, B_b, "C(c)", "C(c)", "D(d)", "E(d)", "F()")
 	checkTransitionDeps(t, ctx, C_a, "D(d)")
@@ -290,7 +291,7 @@ func TestPostTransitionDepsMissingVariant(t *testing.T) {
 	expectedError := `Android.bp:8:4: dependency "E" of "B" missing variant:
   transition:missing
 available variants:
-  transition:
+  <empty variant>
   transition:d`
 	if len(errs) != 1 || errs[0].Error() != expectedError {
 		t.Errorf("expected error %q, got %q", expectedError, errs)

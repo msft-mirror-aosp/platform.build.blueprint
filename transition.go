@@ -150,9 +150,10 @@ type OutgoingTransitionContext interface {
 }
 
 type transitionMutatorImpl struct {
-	name          string
-	mutator       TransitionMutator
-	inputVariants map[*moduleGroup][]*moduleInfo
+	name                        string
+	mutator                     TransitionMutator
+	variantCreatingMutatorIndex int
+	inputVariants               map[*moduleGroup][]*moduleInfo
 }
 
 // Adds each argument in items to l if it's not already there.
@@ -301,7 +302,7 @@ func (t *transitionMutatorImpl) bottomUpMutator(mctx BottomUpMutatorContext) {
 
 func (t *transitionMutatorImpl) mutateMutator(mctx BottomUpMutatorContext) {
 	module := mctx.(*mutatorContext).module
-	currentVariation := module.variant.variations[t.name]
+	currentVariation := module.variant.variations.get(t.name)
 	t.mutator.Mutate(mctx, currentVariation)
 }
 
