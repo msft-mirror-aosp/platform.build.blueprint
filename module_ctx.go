@@ -166,6 +166,9 @@ type EarlyModuleContext interface {
 	// PropertyErrorf reports an error at the line number of a property in the module definition.
 	PropertyErrorf(property, fmt string, args ...interface{})
 
+	// OtherModulePropertyErrorf reports an error at the line number of a property in the given module definition.
+	OtherModulePropertyErrorf(logicModule Module, property string, format string, args ...interface{})
+
 	// Failed returns true if any errors have been reported.  In most cases the module can continue with generating
 	// build rules after an error, allowing it to report additional errors in a single run, but in cases where the error
 	// has prevented the module from creating necessary data it can return early when Failed returns true.
@@ -357,6 +360,14 @@ type BaseModuleContext interface {
 	SetProvider(provider AnyProviderKey, value any)
 
 	EarlyGetMissingDependencies() []string
+
+	GetIncrementalEnabled() bool
+
+	GetIncrementalAnalysis() bool
+
+	OtherModuleProviderInitialValueHashes(module Module) []uint64
+
+	base() *baseModuleContext
 }
 
 type DynamicDependerModuleContext BottomUpMutatorContext
@@ -367,6 +378,8 @@ type ModuleContext interface {
 	// ModuleSubDir returns a unique name for the current variant of a module that can be used as part of the path
 	// to ensure that each variant of a module gets its own intermediates directory to write to.
 	ModuleSubDir() string
+
+	ModuleId() string
 
 	// Variable creates a new ninja variable scoped to the module.  It can be referenced by calls to Rule and Build
 	// in the same module.
@@ -382,6 +395,10 @@ type ModuleContext interface {
 	// but do not exist.  It can be used with Context.SetAllowMissingDependencies to allow the primary builder to
 	// handle missing dependencies on its own instead of having Blueprint treat them as an error.
 	GetMissingDependencies() []string
+
+	CacheBuildActions(key *BuildActionCacheKey, im *Incremental)
+
+	RestoreBuildActions(key *BuildActionCacheKey, im *Incremental) bool
 }
 
 var _ BaseModuleContext = (*baseModuleContext)(nil)
@@ -454,34 +471,19 @@ func (d *baseModuleContext) Errorf(pos scanner.Position,
 func (d *baseModuleContext) ModuleErrorf(format string,
 	args ...interface{}) {
 
-	d.error(&ModuleError{
-		BlueprintError: BlueprintError{
-			Err: fmt.Errorf(format, args...),
-			Pos: d.module.pos,
-		},
-		module: d.module,
-	})
+	d.error(d.context.ModuleErrorf(d.module.logicModule, format, args...))
 }
 
 func (d *baseModuleContext) PropertyErrorf(property, format string,
 	args ...interface{}) {
 
-	pos := d.module.propertyPos[property]
+	d.error(d.context.PropertyErrorf(d.module.logicModule, property, format, args...))
+}
 
-	if !pos.IsValid() {
-		pos = d.module.pos
-	}
+func (d *baseModuleContext) OtherModulePropertyErrorf(logicModule Module, property string, format string,
+	args ...interface{}) {
 
-	d.error(&PropertyError{
-		ModuleError: ModuleError{
-			BlueprintError: BlueprintError{
-				Err: fmt.Errorf(format, args...),
-				Pos: pos,
-			},
-			module: d.module,
-		},
-		property: property,
-	})
+	d.error(d.context.PropertyErrorf(logicModule, property, format, args...))
 }
 
 func (d *baseModuleContext) Failed() bool {
@@ -508,6 +510,7 @@ type moduleContext struct {
 	scope              *localScope
 	actionDefs         localBuildActions
 	handledMissingDeps bool
+	buildParams        []BuildParams
 }
 
 func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
@@ -585,7 +588,7 @@ func (m *baseModuleContext) OtherModuleDependencyVariantExists(variations []Vari
 	if possibleDeps == nil {
 		return false
 	}
-	found, _ := findVariant(m.module, possibleDeps, variations, false, false)
+	found, _ := m.context.findVariant(m.module, m.config, possibleDeps, variations, false, false)
 	return found != nil
 }
 
@@ -594,7 +597,7 @@ func (m *baseModuleContext) OtherModuleFarDependencyVariantExists(variations []V
 	if possibleDeps == nil {
 		return false
 	}
-	found, _ := findVariant(m.module, possibleDeps, variations, true, false)
+	found, _ := m.context.findVariant(m.module, m.config, possibleDeps, variations, true, false)
 	return found != nil
 }
 
@@ -603,7 +606,7 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 	if possibleDeps == nil {
 		return false
 	}
-	found, _ := findVariant(m.module, possibleDeps, nil, false, true)
+	found, _ := m.context.findVariant(m.module, m.config, possibleDeps, nil, false, true)
 	return found != nil
 }
 
@@ -618,6 +621,104 @@ func (m *baseModuleContext) Provider(provider AnyProviderKey) (any, bool) {
 
 func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface{}) {
 	m.context.setProvider(m.module, provider.provider(), value)
+}
+
+func (m *baseModuleContext) GetIncrementalEnabled() bool {
+	return m.context.GetIncrementalEnabled()
+}
+
+func (m *baseModuleContext) GetIncrementalAnalysis() bool {
+	return m.context.GetIncrementalAnalysis()
+}
+
+func (m *baseModuleContext) OtherModuleProviderInitialValueHashes(module Module) []uint64 {
+	return m.context.moduleInfo[module].providerInitialValueHashes
+}
+
+func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey, im *Incremental) {
+	var providers []CachedProvider
+	for _, pKey := range (*im).BuildActionProviderKeys() {
+		if pKey.provider().mutator == "" {
+			providers = append(providers,
+				CachedProvider{
+					Id: &providerKey{
+						id:      pKey.provider().id,
+						typ:     pKey.provider().typ,
+						mutator: pKey.provider().mutator,
+					},
+					Value: &m.module.providers[pKey.provider().id],
+				})
+		}
+	}
+
+	var buildParams []CachedBuildParams
+	for _, params := range m.buildParams {
+		buildParams = append(buildParams, CachedBuildParams{
+			Comment:         params.Comment,
+			Depfile:         params.Depfile,
+			Deps:            params.Deps,
+			Description:     params.Description,
+			Rule:            params.Rule.name(),
+			Outputs:         params.Outputs,
+			ImplicitOutputs: params.ImplicitOutputs,
+			Inputs:          params.Inputs,
+			Implicits:       params.Implicits,
+			OrderOnly:       params.OrderOnly,
+			Validations:     params.Validations,
+			Args:            params.Args,
+			Optional:        params.Optional,
+		})
+	}
+
+	if len(providers) > 0 || len(buildParams) > 0 {
+		data := BuildActionCachedData{
+			Providers: providers,
+			BuildActions: CachedBuildActions{
+				BuildParams: buildParams,
+			},
+		}
+		m.context.CacheBuildActions(key, &data)
+	}
+}
+
+func (m *moduleContext) RestoreBuildActions(key *BuildActionCacheKey, im *Incremental) bool {
+	data := m.context.GetBuildActionCache(key)
+	if data != nil {
+		for _, provider := range data.Providers {
+			m.context.setProvider(m.module, provider.Id, *provider.Value)
+		}
+
+		for _, params := range data.BuildActions.BuildParams {
+			var rule Rule
+			for _, r := range (*im).CachedRules() {
+				if params.Rule == r.name() {
+					rule = r
+					break
+				}
+			}
+			if rule == nil {
+				return false
+			}
+			buildParams := BuildParams{
+				Comment:         params.Comment,
+				Depfile:         params.Depfile,
+				Deps:            params.Deps,
+				Description:     params.Description,
+				Outputs:         params.Outputs,
+				ImplicitOutputs: params.ImplicitOutputs,
+				Inputs:          params.Inputs,
+				Implicits:       params.Implicits,
+				OrderOnly:       params.OrderOnly,
+				Validations:     params.Validations,
+				Args:            params.Args,
+				Optional:        params.Optional,
+			}
+			buildParams.Rule = rule
+			m.Build(packageContexts[(*im).PackageContextPath()], buildParams)
+		}
+		return true
+	}
+	return false
 }
 
 func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
@@ -763,8 +864,16 @@ func (m *baseModuleContext) ModuleFactories() map[string]ModuleFactory {
 	return ret
 }
 
+func (m *baseModuleContext) base() *baseModuleContext {
+	return m
+}
+
 func (m *moduleContext) ModuleSubDir() string {
 	return m.module.variant.name
+}
+
+func (m *moduleContext) ModuleId() string {
+	return strings.Join([]string{m.ModuleDir(), m.ModuleName(), m.module.variant.name, m.ModuleType()}, "$")
 }
 
 func (m *moduleContext) Variable(pctx PackageContext, name, value string) {
@@ -801,6 +910,11 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 		panic(err)
 	}
 
+	if m.GetIncrementalEnabled() {
+		if im, ok := m.module.logicModule.(Incremental); ok && im.IncrementalSupported() {
+			m.buildParams = append(m.buildParams, params)
+		}
+	}
 	m.actionDefs.buildDefs = append(m.actionDefs.buildDefs, def)
 }
 
@@ -819,7 +933,7 @@ func (m *baseModuleContext) EarlyGetMissingDependencies() []string {
 
 type mutatorContext struct {
 	baseModuleContext
-	name             string
+	mutator          *mutatorInfo
 	reverseDeps      []reverseDep
 	rename           []rename
 	replace          []replace
@@ -930,15 +1044,14 @@ type BottomUpMutatorContext interface {
 	// WalkDeps, etc.
 	AddInterVariantDependency(tag DependencyTag, from, to Module)
 
-	// ReplaceDependencies replaces all dependencies on the identical variant of the module with the
-	// specified name with the current variant of this module.  Replacements don't take effect until
-	// after the mutator pass is finished.
+	// ReplaceDependencies finds all the variants of the module with the specified name, then
+	// replaces all dependencies onto those variants with the current variant of this module.
+	// Replacements don't take effect until after the mutator pass is finished.
 	ReplaceDependencies(string)
 
-	// ReplaceDependenciesIf replaces all dependencies on the identical variant of the module with the
-	// specified name with the current variant of this module as long as the supplied predicate returns
-	// true.
-	//
+	// ReplaceDependenciesIf finds all the variants of the module with the specified name, then
+	// replaces all dependencies onto those variants with the current variant of this module
+	// as long as the supplied predicate returns true.
 	// Replacements don't take effect until after the mutator pass is finished.
 	ReplaceDependenciesIf(string, ReplaceDependencyPredicate)
 
@@ -996,20 +1109,20 @@ func (BaseDependencyTag) dependencyTag(DependencyTag) {
 var _ DependencyTag = BaseDependencyTag{}
 
 func (mctx *mutatorContext) MutatorName() string {
-	return mctx.name
+	return mctx.mutator.name
 }
 
 func (mctx *mutatorContext) CreateVariations(variationNames ...string) []Module {
-	depChooser := chooseDepInherit(mctx.name, mctx.defaultVariation)
+	depChooser := chooseDepInherit(mctx.mutator.name, mctx.defaultVariation)
 	return mctx.createVariations(variationNames, depChooser, false)
 }
 
-func (mctx *mutatorContext) createVariationsWithTransition(transition Transition, variationNames ...string) []Module {
-	return mctx.createVariations(variationNames, chooseDepByTransition(mctx.name, transition), false)
+func (mctx *mutatorContext) createVariationsWithTransition(variationNames []string, outgoingTransitions [][]string) []Module {
+	return mctx.createVariations(variationNames, chooseDepByIndexes(mctx.mutator.name, outgoingTransitions), false)
 }
 
 func (mctx *mutatorContext) CreateLocalVariations(variationNames ...string) []Module {
-	depChooser := chooseDepInherit(mctx.name, mctx.defaultVariation)
+	depChooser := chooseDepInherit(mctx.mutator.name, mctx.defaultVariation)
 	return mctx.createVariations(variationNames, depChooser, true)
 }
 
@@ -1025,7 +1138,7 @@ func (mctx *mutatorContext) SetVariationProvider(module Module, provider AnyProv
 
 func (mctx *mutatorContext) createVariations(variationNames []string, depChooser depChooser, local bool) []Module {
 	var ret []Module
-	modules, errs := mctx.context.createVariations(mctx.module, mctx.name, depChooser, variationNames, local)
+	modules, errs := mctx.context.createVariations(mctx.module, mctx.mutator, depChooser, variationNames, local)
 	if len(errs) > 0 {
 		mctx.errs = append(mctx.errs, errs...)
 	}
@@ -1056,7 +1169,7 @@ func (mctx *mutatorContext) AliasVariation(variationName string) {
 	}
 
 	for _, variant := range mctx.newVariations {
-		if variant.moduleOrAliasVariant().variations[mctx.name] == variationName {
+		if variant.moduleOrAliasVariant().variations.get(mctx.mutator.name) == variationName {
 			alias := &moduleAlias{
 				variant: mctx.module.variant,
 				target:  variant.moduleOrAliasTarget(),
@@ -1070,13 +1183,13 @@ func (mctx *mutatorContext) AliasVariation(variationName string) {
 
 	var foundVariations []string
 	for _, variant := range mctx.newVariations {
-		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations[mctx.name])
+		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations.get(mctx.mutator.name))
 	}
 	panic(fmt.Errorf("no %q variation in module variations %q", variationName, foundVariations))
 }
 
 func (mctx *mutatorContext) CreateAliasVariation(aliasVariationName, targetVariationName string) {
-	newVariant := newVariant(mctx.module, mctx.name, aliasVariationName, false)
+	newVariant := newVariant(mctx.module, mctx.mutator.name, aliasVariationName, false)
 
 	for _, moduleOrAlias := range mctx.module.splitModules {
 		if moduleOrAlias.moduleOrAliasVariant().variations.equal(newVariant.variations) {
@@ -1089,7 +1202,7 @@ func (mctx *mutatorContext) CreateAliasVariation(aliasVariationName, targetVaria
 	}
 
 	for _, variant := range mctx.newVariations {
-		if variant.moduleOrAliasVariant().variations[mctx.name] == targetVariationName {
+		if variant.moduleOrAliasVariant().variations.get(mctx.mutator.name) == targetVariationName {
 			// Append the alias here so that it comes after any aliases created by AliasVariation.
 			mctx.module.splitModules = append(mctx.module.splitModules, &moduleAlias{
 				variant: newVariant,
@@ -1101,18 +1214,14 @@ func (mctx *mutatorContext) CreateAliasVariation(aliasVariationName, targetVaria
 
 	var foundVariations []string
 	for _, variant := range mctx.newVariations {
-		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations[mctx.name])
+		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations.get(mctx.mutator.name))
 	}
 	panic(fmt.Errorf("no %q variation in module variations %q", targetVariationName, foundVariations))
 }
 
-func (mctx *mutatorContext) applyTransition(transition Transition) {
-	mctx.context.convertDepsToVariation(mctx.module, chooseDepByTransition(mctx.name, transition))
-}
-
 func (mctx *mutatorContext) SetDependencyVariation(variationName string) {
-	mctx.context.convertDepsToVariation(mctx.module, chooseDepExplicit(
-		mctx.name, variationName, nil))
+	mctx.context.convertDepsToVariation(mctx.module, 0, chooseDepExplicit(
+		mctx.mutator.name, variationName, nil))
 }
 
 func (mctx *mutatorContext) SetDefaultDependencyVariation(variationName *string) {
@@ -1127,7 +1236,7 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
 		modInfo := mctx.context.moduleInfo[module]
-		depInfo, errs := mctx.context.addDependency(modInfo, tag, dep)
+		depInfo, errs := mctx.context.addDependency(modInfo, mctx.config, tag, dep)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1145,7 +1254,7 @@ func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTa
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
 
-	destModule, errs := mctx.context.findReverseDependency(mctx.context.moduleInfo[module], destName)
+	destModule, errs := mctx.context.findReverseDependency(mctx.context.moduleInfo[module], mctx.config, destName)
 	if len(errs) > 0 {
 		mctx.errs = append(mctx.errs, errs...)
 		return
@@ -1162,7 +1271,7 @@ func (mctx *mutatorContext) AddVariationDependencies(variations []Variation, tag
 
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
-		depInfo, errs := mctx.context.addVariationDependency(mctx.module, variations, tag, dep, false)
+		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.config, variations, tag, dep, false)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1180,7 +1289,7 @@ func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, 
 
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
-		depInfo, errs := mctx.context.addVariationDependency(mctx.module, variations, tag, dep, true)
+		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.config, variations, tag, dep, true)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1204,9 +1313,9 @@ func (mctx *mutatorContext) ReplaceDependencies(name string) {
 type ReplaceDependencyPredicate func(from Module, tag DependencyTag, to Module) bool
 
 func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate ReplaceDependencyPredicate) {
-	target := mctx.context.moduleMatchingVariant(mctx.module, name)
+	targets := mctx.context.moduleVariantsThatDependOn(name, mctx.module)
 
-	if target == nil {
+	if len(targets) == 0 {
 		panic(fmt.Errorf("ReplaceDependencies could not find identical variant {%s} for module %s\n"+
 			"available variants:\n  %s",
 			mctx.context.prettyPrintVariant(mctx.module.variant.variations),
@@ -1214,7 +1323,9 @@ func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate Replace
 			mctx.context.prettyPrintGroupVariants(mctx.context.moduleGroupFromName(name, mctx.module.namespace()))))
 	}
 
-	mctx.replace = append(mctx.replace, replace{target, mctx.module, predicate})
+	for _, target := range targets {
+		mctx.replace = append(mctx.replace, replace{target, mctx.module, predicate})
+	}
 }
 
 func (mctx *mutatorContext) Rename(name string) {
@@ -1401,8 +1512,7 @@ func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
 //
 // The filename is only used for reporting errors.
 func CheckBlueprintSyntax(moduleFactories map[string]ModuleFactory, filename string, contents string) []error {
-	scope := parser.NewScope(nil)
-	file, errs := parser.Parse(filename, strings.NewReader(contents), scope)
+	file, errs := parser.Parse(filename, strings.NewReader(contents))
 	if len(errs) != 0 {
 		return errs
 	}

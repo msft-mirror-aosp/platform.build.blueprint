@@ -20,6 +20,7 @@ import (
 )
 
 var validPrinterTestCases = []struct {
+	name   string
 	input  string
 	output string
 }{
@@ -280,7 +281,6 @@ module // test
 		output: `
 // test
 module { // test
-
     srcs: [
         "src1.c",
         "src2.c",
@@ -355,9 +355,7 @@ test // test
 `,
 		output: `
 test { // test
-
 // test
-
 }
 `,
 	},
@@ -559,37 +557,237 @@ foo {
 }
 `,
 	},
+	{
+		name: "Basic selects",
+		input: `
+// test
+foo {
+    stuff: select(soong_config_variable("my_namespace", "my_variable"), {
+        "a": "a2",
+        // test2
+        "b": "b2",
+        // test3
+        default: "c2",
+    }),
+}
+`,
+		output: `
+// test
+foo {
+    stuff: select(soong_config_variable("my_namespace", "my_variable"), {
+        "a": "a2",
+        // test2
+        "b": "b2",
+        // test3
+        default: "c2",
+    }),
+}
+`,
+	},
+	{
+		name: "Remove select with only default",
+		input: `
+// test
+foo {
+    stuff: select(soong_config_variable("my_namespace", "my_variable"), {
+        // test2
+        default: "c2",
+    }),
+}
+`,
+		output: `
+// test
+foo {
+    stuff: "c2", // test2
+}
+`,
+	},
+	{
+		name: "Appended selects",
+		input: `
+// test
+foo {
+    stuff: select(soong_config_variable("my_namespace", "my_variable"), {
+        "a": "a2",
+        // test2
+        "b": "b2",
+        // test3
+        default: "c2",
+    }) + select(release_variable("RELEASE_TEST"), {
+        "d": "d2",
+        "e": "e2",
+        default: "f2",
+    }),
+}
+`,
+		output: `
+// test
+foo {
+    stuff: select(soong_config_variable("my_namespace", "my_variable"), {
+        "a": "a2",
+        // test2
+        "b": "b2",
+        // test3
+        default: "c2",
+    }) + select(release_variable("RELEASE_TEST"), {
+        "d": "d2",
+        "e": "e2",
+        default: "f2",
+    }),
+}
+`,
+	},
+	{
+		name: "Select with unset property",
+		input: `
+foo {
+    stuff: select(soong_config_variable("my_namespace", "my_variable"), {
+        "foo": unset,
+        default: "c2",
+    }),
+}
+`,
+		output: `
+foo {
+    stuff: select(soong_config_variable("my_namespace", "my_variable"), {
+        "foo": unset,
+        default: "c2",
+    }),
+}
+`,
+	},
+	{
+		name: "Multi-condition select",
+		input: `
+foo {
+    stuff: select((arch(), os()), {
+        ("x86", "linux"): "a",
+        (default, default): "b",
+    }),
+}
+`,
+		output: `
+foo {
+    stuff: select((arch(), os()), {
+        ("x86", "linux"): "a",
+        (default, default): "b",
+    }),
+}
+`,
+	},
+	{
+		name: "Multi-condition select with conditions on new lines",
+		input: `
+foo {
+    stuff: select((arch(), 
+    os()), {
+        ("x86", "linux"): "a",
+        (default, default): "b",
+    }),
+}
+`,
+		output: `
+foo {
+    stuff: select((
+        arch(),
+        os(),
+    ), {
+        ("x86", "linux"): "a",
+        (default, default): "b",
+    }),
+}
+`,
+	},
+	{
+		name: "Select with multiline inner expression",
+		input: `
+foo {
+    cflags: [
+        "-DPRODUCT_COMPATIBLE_PROPERTY",
+        "-DRIL_SHLIB",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ] + select(soong_config_variable("sim", "sim_count"), {
+        "2": [
+            "-DANDROID_MULTI_SIM",
+            "-DANDROID_SIM_COUNT_2",
+        ],
+        default: [],
+    }),
+}
+`,
+		output: `
+foo {
+    cflags: [
+        "-DPRODUCT_COMPATIBLE_PROPERTY",
+        "-DRIL_SHLIB",
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ] + select(soong_config_variable("sim", "sim_count"), {
+        "2": [
+            "-DANDROID_MULTI_SIM",
+            "-DANDROID_SIM_COUNT_2",
+        ],
+        default: [],
+    }),
+}
+`,
+	},
+	{
+		name: "Select with bindings",
+		input: `
+foo {
+    stuff: select(arch(), {
+        "x86": "a",
+        any
+          @ baz: "b" + baz,
+    }),
+}
+`,
+		output: `
+foo {
+    stuff: select(arch(), {
+        "x86": "a",
+        any @ baz: "b" + baz,
+    }),
+}
+`,
+	},
 }
 
 func TestPrinter(t *testing.T) {
 	for _, testCase := range validPrinterTestCases {
-		in := testCase.input[1:]
-		expected := testCase.output[1:]
+		t.Run(testCase.name, func(t *testing.T) {
+			in := testCase.input[1:]
+			expected := testCase.output[1:]
 
-		r := bytes.NewBufferString(in)
-		file, errs := Parse("", r, NewScope(nil))
-		if len(errs) != 0 {
-			t.Errorf("test case: %s", in)
-			t.Errorf("unexpected errors:")
-			for _, err := range errs {
-				t.Errorf("  %s", err)
+			r := bytes.NewBufferString(in)
+			file, errs := Parse("", r)
+			if len(errs) != 0 {
+				t.Errorf("test case: %s", in)
+				t.Errorf("unexpected errors:")
+				for _, err := range errs {
+					t.Errorf("  %s", err)
+				}
+				t.FailNow()
 			}
-			t.FailNow()
-		}
 
-		SortLists(file)
+			SortLists(file)
 
-		got, err := Print(file)
-		if err != nil {
-			t.Errorf("test case: %s", in)
-			t.Errorf("unexpected error: %s", err)
-			t.FailNow()
-		}
+			got, err := Print(file)
+			if err != nil {
+				t.Errorf("test case: %s", in)
+				t.Errorf("unexpected error: %s", err)
+				t.FailNow()
+			}
 
-		if string(got) != expected {
-			t.Errorf("test case: %s", in)
-			t.Errorf("  expected: %s", expected)
-			t.Errorf("       got: %s", string(got))
-		}
+			if string(got) != expected {
+				t.Errorf("test case: %s", in)
+				t.Errorf("  expected: %s", expected)
+				t.Errorf("       got: %s", string(got))
+			}
+		})
 	}
 }

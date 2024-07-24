@@ -20,6 +20,7 @@ import (
 	"go/doc"
 	"html/template"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -34,7 +35,7 @@ import (
 
 func (ps *PropertyStruct) Clone() *PropertyStruct {
 	ret := *ps
-	ret.Properties = append([]Property(nil), ret.Properties...)
+	ret.Properties = slices.Clone(ret.Properties)
 	for i, prop := range ret.Properties {
 		ret.Properties[i] = prop.Clone()
 	}
@@ -44,7 +45,7 @@ func (ps *PropertyStruct) Clone() *PropertyStruct {
 
 func (p *Property) Clone() Property {
 	ret := *p
-	ret.Properties = append([]Property(nil), ret.Properties...)
+	ret.Properties = slices.Clone(ret.Properties)
 	for i, prop := range ret.Properties {
 		ret.Properties[i] = prop.Clone()
 	}
@@ -271,11 +272,40 @@ func getType(expr ast.Expr) (typ string, innerProps []Property, err error) {
 		if err != nil {
 			return "", nil, err
 		}
+	case *ast.IndexExpr:
+		// IndexExpr is used to represent generic type arguments
+		if !isConfigurableAst(a.X) {
+			var writer strings.Builder
+			if err := ast.Fprint(&writer, nil, expr, nil); err != nil {
+				return "", nil, err
+			}
+			return "", nil, fmt.Errorf("unknown type %s", writer.String())
+		}
+		var innerType string
+		innerType, innerProps, err = getType(a.Index)
+		if err != nil {
+			return "", nil, err
+		}
+		typ = "configurable " + innerType
 	default:
 		typ = fmt.Sprintf("%T", expr)
 	}
 
 	return typ, innerProps, nil
+}
+
+func isConfigurableAst(expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name == "Configurable"
+	case *ast.SelectorExpr:
+		if l, ok := e.X.(*ast.Ident); ok && l.Name == "proptools" {
+			if e.Sel.Name == "Configurable" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (ps *PropertyStruct) ExcludeByTag(key, value string) {

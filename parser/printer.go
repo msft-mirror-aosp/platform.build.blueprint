@@ -99,7 +99,7 @@ func (p *printer) printAssignment(assignment *Assignment) {
 	p.requestSpace()
 	p.printToken(assignment.Assigner, assignment.EqualsPos)
 	p.requestSpace()
-	p.printExpression(assignment.OrigValue)
+	p.printExpression(assignment.Value)
 	p.requestNewline()
 }
 
@@ -131,8 +131,124 @@ func (p *printer) printExpression(value Expression) {
 		p.printList(v.Values, v.LBracePos, v.RBracePos)
 	case *Map:
 		p.printMap(v)
+	case *Select:
+		p.printSelect(v)
 	default:
-		panic(fmt.Errorf("bad property type: %s", value.Type()))
+		panic(fmt.Errorf("bad property type: %v", value))
+	}
+}
+
+func (p *printer) printSelect(s *Select) {
+	if len(s.Cases) == 0 {
+		return
+	}
+	if len(s.Cases) == 1 && len(s.Cases[0].Patterns) == 1 {
+		if str, ok := s.Cases[0].Patterns[0].Value.(*String); ok && str.Value == default_select_branch_name {
+			p.printExpression(s.Cases[0].Value)
+			p.pos = s.RBracePos
+			return
+		}
+	}
+	p.requestSpace()
+	p.printToken("select(", s.KeywordPos)
+	multilineConditions := false
+	if len(s.Conditions) > 1 {
+		p.printToken("(", s.KeywordPos)
+		if s.Conditions[len(s.Conditions)-1].position.Line > s.KeywordPos.Line {
+			multilineConditions = true
+			p.requestNewline()
+			p.indent(p.curIndent() + 4)
+		}
+	}
+	for i, c := range s.Conditions {
+		p.printToken(c.FunctionName, c.position)
+		p.printToken("(", c.position)
+		for i, arg := range c.Args {
+			p.printToken(strconv.Quote(arg.Value), arg.LiteralPos)
+			if i < len(c.Args)-1 {
+				p.printToken(",", arg.LiteralPos)
+				p.requestSpace()
+			}
+		}
+		p.printToken(")", p.pos)
+		if len(s.Conditions) > 1 {
+			if multilineConditions {
+				p.printToken(",", p.pos)
+				p.requestNewline()
+			} else if i < len(s.Conditions)-1 {
+				p.printToken(",", p.pos)
+				p.requestSpace()
+			}
+		}
+	}
+	if len(s.Conditions) > 1 {
+		if multilineConditions {
+			p.unindent(p.pos)
+		}
+		p.printToken(")", p.pos)
+	}
+	p.printToken(", {", s.LBracePos)
+	p.requestNewline()
+	p.indent(p.curIndent() + 4)
+	for _, c := range s.Cases {
+		p.requestNewline()
+		if len(c.Patterns) > 1 {
+			p.printToken("(", p.pos)
+		}
+		for i, pat := range c.Patterns {
+			p.printSelectPattern(pat)
+			if i < len(c.Patterns)-1 {
+				p.printToken(",", p.pos)
+				p.requestSpace()
+			}
+		}
+		if len(c.Patterns) > 1 {
+			p.printToken(")", p.pos)
+		}
+		p.printToken(":", c.ColonPos)
+		p.requestSpace()
+		if unset, ok := c.Value.(*UnsetProperty); ok {
+			p.printToken(unset.String(), unset.Pos())
+		} else {
+			p.printExpression(c.Value)
+		}
+		p.printToken(",", c.Value.End())
+	}
+	p.requestNewline()
+	p.unindent(s.RBracePos)
+	p.printToken("})", s.RBracePos)
+	if s.Append != nil {
+		p.requestSpace()
+		p.printToken("+", s.RBracePos)
+		p.requestSpace()
+		p.printExpression(s.Append)
+	}
+}
+
+func (p *printer) printSelectPattern(pat SelectPattern) {
+	switch pat := pat.Value.(type) {
+	case *String:
+		if pat.Value == default_select_branch_name {
+			p.printToken("default", pat.LiteralPos)
+		} else if pat.Value == any_select_branch_name {
+			p.printToken("any", pat.LiteralPos)
+		} else {
+			p.printToken(strconv.Quote(pat.Value), pat.LiteralPos)
+		}
+	case *Bool:
+		s := "false"
+		if pat.Value {
+			s = "true"
+		}
+		p.printToken(s, pat.LiteralPos)
+	default:
+		panic("Unhandled case")
+	}
+	if pat.Binding.Name != "" {
+		p.requestSpace()
+		p.printToken("@", pat.Binding.Pos())
+		p.requestSpace()
+		p.printExpression(&pat.Binding)
 	}
 }
 
@@ -253,8 +369,8 @@ func (p *printer) printEndOfLineCommentsBefore(pos scanner.Position) {
 	if len(p.skippedComments) > 0 {
 		for _, c := range p.skippedComments {
 			p.printComment(c)
+			p._requestNewline()
 		}
-		p._requestNewline()
 		p.skippedComments = nil
 	}
 	for p.curComment < len(p.comments) && p.comments[p.curComment].Pos().Line < pos.Line {
@@ -342,7 +458,9 @@ func (p *printer) printComment(cg *CommentGroup) {
 				p._requestNewline()
 			}
 		}
-		p.pos = comment.End()
+		if p.pos.Offset < comment.End().Offset {
+			p.pos = comment.End()
+		}
 	}
 }
 
