@@ -97,14 +97,6 @@ var (
 		},
 		"generator")
 
-	bootstrap = pctx.StaticRule("bootstrap",
-		blueprint.RuleParams{
-			Command:     "BUILDDIR=$soongOutDir $bootstrapCmd -i $in",
-			CommandDeps: []string{"$bootstrapCmd"},
-			Description: "bootstrap $in",
-			Generator:   true,
-		})
-
 	touch = pctx.StaticRule("touch",
 		blueprint.RuleParams{
 			Command:     "touch $out",
