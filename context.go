@@ -428,6 +428,16 @@ func (module *moduleInfo) namespace() Namespace {
 	return module.group.namespace
 }
 
+func (module *moduleInfo) ModuleCacheKey() string {
+	variant := module.variant.name
+	if variant == "" {
+		variant = "none"
+	}
+	return fmt.Sprintf("%s-%s-%s-%s",
+		strings.ReplaceAll(filepath.Dir(module.relBlueprintsFile), "/", "."),
+		module.Name(), variant, module.typeName)
+}
+
 // A Variation is a way that a variant of a module differs from other variants of the same module.
 // For example, two variants of the same module might have Variation{"arch","arm"} and
 // Variation{"arch","arm64"}
@@ -4570,12 +4580,24 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	defer c.EndEvent("modules")
 
 	modules := make([]*moduleInfo, 0, len(c.moduleInfo))
+	incrementalModules := make([]*moduleInfo, 0, 200)
+
 	for _, module := range c.moduleInfo {
+		if c.GetIncrementalEnabled() {
+			if im, ok := module.logicModule.(Incremental); ok && im.IncrementalSupported() {
+				incrementalModules = append(incrementalModules, module)
+				continue
+			}
+		}
 		modules = append(modules, module)
 	}
 	sort.Sort(moduleSorter{modules, c.nameInterface})
+	if len(incrementalModules) > 0 {
+		sort.Sort(moduleSorter{incrementalModules, c.nameInterface})
+	}
 
-	phonys := c.deduplicateOrderOnlyDeps(modules)
+	phonys := c.deduplicateOrderOnlyDeps(append(modules, incrementalModules...))
+
 	if err := c.writeLocalBuildActions(nw, phonys); err != nil {
 		return err
 	}
@@ -4622,6 +4644,20 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			}(file, batchModules)
 			nw.Subninja(file)
 		}
+
+		if c.GetIncrementalEnabled() {
+			file := fmt.Sprintf("%s.incremental", ninjaFileName)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := writeIncrementalModules(c, file, incrementalModules, headerTemplate)
+				if err != nil {
+					errorCh <- err
+				}
+			}()
+			nw.Subninja(file)
+		}
+
 		go func() {
 			wg.Wait()
 			close(errorCh)
@@ -4640,6 +4676,41 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	}
 }
 
+func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
+	bf, err := os.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+	if err != nil {
+		return err
+	}
+	defer bf.Close()
+	bBuf := bufio.NewWriterSize(bf, 16*1024*1024)
+	defer bBuf.Flush()
+	bWriter := newNinjaWriter(bBuf)
+	ninjaPath := filepath.Join(filepath.Dir(baseFile), strings.ReplaceAll(filepath.Base(baseFile), ".", "_"))
+	err = os.MkdirAll(JoinPath(c.SrcDir(), ninjaPath), 0755)
+	if err != nil {
+		return err
+	}
+	for _, module := range modules {
+		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
+		err := func() error {
+			mf, err := os.OpenFile(JoinPath(c.SrcDir(), moduleFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+			if err != nil {
+				return err
+			}
+			defer mf.Close()
+			mBuf := bufio.NewWriterSize(mf, 4*1024*1024)
+			defer mBuf.Flush()
+			mWriter := newNinjaWriter(mBuf)
+			return c.writeModuleAction([]*moduleInfo{module}, mWriter, headerTemplate)
+		}()
+		if err != nil {
+			return err
+		}
+		bWriter.Subninja(moduleFile)
+	}
+	return nil
+}
+
 func (c *Context) writeModuleAction(modules []*moduleInfo, nw *ninjaWriter, headerTemplate *template.Template) error {
 	buf := bytes.NewBuffer(nil)
 
@@ -4647,7 +4718,6 @@ func (c *Context) writeModuleAction(modules []*moduleInfo, nw *ninjaWriter, head
 		if len(module.actionDefs.variables)+len(module.actionDefs.rules)+len(module.actionDefs.buildDefs) == 0 {
 			continue
 		}
-
 		buf.Reset()
 
 		// In order to make the bootstrap build manifest independent of the
