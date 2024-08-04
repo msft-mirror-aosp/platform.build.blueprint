@@ -191,6 +191,7 @@ type EarlyModuleContext interface {
 	AddNinjaFileDeps(deps ...string)
 
 	moduleInfo() *moduleInfo
+
 	error(err error)
 
 	// Namespace returns the Namespace object provided by the NameInterface set by Context.SetNameInterface, or the
@@ -379,7 +380,7 @@ type ModuleContext interface {
 	// to ensure that each variant of a module gets its own intermediates directory to write to.
 	ModuleSubDir() string
 
-	ModuleId() string
+	ModuleCacheKey() string
 
 	// Variable creates a new ninja variable scoped to the module.  It can be referenced by calls to Rule and Build
 	// in the same module.
@@ -872,8 +873,8 @@ func (m *moduleContext) ModuleSubDir() string {
 	return m.module.variant.name
 }
 
-func (m *moduleContext) ModuleId() string {
-	return strings.Join([]string{m.ModuleDir(), m.ModuleName(), m.module.variant.name, m.ModuleType()}, "$")
+func (m *moduleContext) ModuleCacheKey() string {
+	return m.module.ModuleCacheKey()
 }
 
 func (m *moduleContext) Variable(pctx PackageContext, name, value string) {
