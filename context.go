@@ -428,6 +428,16 @@ func (module *moduleInfo) namespace() Namespace {
 	return module.group.namespace
 }
 
+func (module *moduleInfo) ModuleCacheKey() string {
+	variant := module.variant.name
+	if variant == "" {
+		variant = "none"
+	}
+	return fmt.Sprintf("%s-%s-%s-%s",
+		strings.ReplaceAll(filepath.Dir(module.relBlueprintsFile), "/", "."),
+		module.Name(), variant, module.typeName)
+}
+
 // A Variation is a way that a variant of a module differs from other variants of the same module.
 // For example, two variants of the same module might have Variation{"arch","arm"} and
 // Variation{"arch","arm64"}
@@ -1776,8 +1786,6 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 	pprof.Do(ctx, pprof.Labels("blueprint", "ResolveDependencies"), func(ctx context.Context) {
 		c.initProviders()
 
-		c.liveGlobals = newLiveTracker(c, config)
-
 		errs = c.updateDependencies()
 		if len(errs) > 0 {
 			return
@@ -2781,6 +2789,37 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 	defer c.EndEvent("prepare_build_actions")
 	pprof.Do(c.Context, pprof.Labels("blueprint", "PrepareBuildActions"), func(ctx context.Context) {
 		c.buildActionsReady = false
+
+		c.liveGlobals = newLiveTracker(c, config)
+		// Add all the global rules/variable/pools here because when we restore from
+		// cache we don't have the build defs available to build the globals.
+		// TODO(b/356414070): Revisit this logic once we have a clearer picture about
+		// how the incremental build pieces fit together.
+		if c.GetIncrementalEnabled() {
+			for _, p := range packageContexts {
+				for _, v := range p.scope.variables {
+					err := c.liveGlobals.addVariable(v)
+					if err != nil {
+						errs = []error{err}
+						return
+					}
+				}
+				for _, v := range p.scope.rules {
+					_, err := c.liveGlobals.addRule(v)
+					if err != nil {
+						errs = []error{err}
+						return
+					}
+				}
+				for _, v := range p.scope.pools {
+					err := c.liveGlobals.addPool(v)
+					if err != nil {
+						errs = []error{err}
+						return
+					}
+				}
+			}
+		}
 
 		if !c.dependenciesReady {
 			var extraDeps []string
@@ -4541,12 +4580,24 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	defer c.EndEvent("modules")
 
 	modules := make([]*moduleInfo, 0, len(c.moduleInfo))
+	incrementalModules := make([]*moduleInfo, 0, 200)
+
 	for _, module := range c.moduleInfo {
+		if c.GetIncrementalEnabled() {
+			if im, ok := module.logicModule.(Incremental); ok && im.IncrementalSupported() {
+				incrementalModules = append(incrementalModules, module)
+				continue
+			}
+		}
 		modules = append(modules, module)
 	}
 	sort.Sort(moduleSorter{modules, c.nameInterface})
+	if len(incrementalModules) > 0 {
+		sort.Sort(moduleSorter{incrementalModules, c.nameInterface})
+	}
 
-	phonys := c.deduplicateOrderOnlyDeps(modules)
+	phonys := c.deduplicateOrderOnlyDeps(append(modules, incrementalModules...))
+
 	if err := c.writeLocalBuildActions(nw, phonys); err != nil {
 		return err
 	}
@@ -4593,6 +4644,20 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			}(file, batchModules)
 			nw.Subninja(file)
 		}
+
+		if c.GetIncrementalEnabled() {
+			file := fmt.Sprintf("%s.incremental", ninjaFileName)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := writeIncrementalModules(c, file, incrementalModules, headerTemplate)
+				if err != nil {
+					errorCh <- err
+				}
+			}()
+			nw.Subninja(file)
+		}
+
 		go func() {
 			wg.Wait()
 			close(errorCh)
@@ -4611,6 +4676,41 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	}
 }
 
+func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
+	bf, err := os.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+	if err != nil {
+		return err
+	}
+	defer bf.Close()
+	bBuf := bufio.NewWriterSize(bf, 16*1024*1024)
+	defer bBuf.Flush()
+	bWriter := newNinjaWriter(bBuf)
+	ninjaPath := filepath.Join(filepath.Dir(baseFile), strings.ReplaceAll(filepath.Base(baseFile), ".", "_"))
+	err = os.MkdirAll(JoinPath(c.SrcDir(), ninjaPath), 0755)
+	if err != nil {
+		return err
+	}
+	for _, module := range modules {
+		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
+		err := func() error {
+			mf, err := os.OpenFile(JoinPath(c.SrcDir(), moduleFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+			if err != nil {
+				return err
+			}
+			defer mf.Close()
+			mBuf := bufio.NewWriterSize(mf, 4*1024*1024)
+			defer mBuf.Flush()
+			mWriter := newNinjaWriter(mBuf)
+			return c.writeModuleAction([]*moduleInfo{module}, mWriter, headerTemplate)
+		}()
+		if err != nil {
+			return err
+		}
+		bWriter.Subninja(moduleFile)
+	}
+	return nil
+}
+
 func (c *Context) writeModuleAction(modules []*moduleInfo, nw *ninjaWriter, headerTemplate *template.Template) error {
 	buf := bytes.NewBuffer(nil)
 
@@ -4618,7 +4718,6 @@ func (c *Context) writeModuleAction(modules []*moduleInfo, nw *ninjaWriter, head
 		if len(module.actionDefs.variables)+len(module.actionDefs.rules)+len(module.actionDefs.buildDefs) == 0 {
 			continue
 		}
-
 		buf.Reset()
 
 		// In order to make the bootstrap build manifest independent of the
@@ -4738,16 +4837,13 @@ func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
 // to be extracted as a phony output
 type phonyCandidate struct {
 	sync.Once
-	phony            *buildDef      // the phony buildDef that wraps the set
-	first            *buildDef      // the first buildDef that uses this set
-	orderOnlyStrings []string       // the original OrderOnlyStrings of the first buildDef that uses this set
-	orderOnly        []*ninjaString // the original OrderOnly of the first buildDef that uses this set
+	phony            *buildDef // the phony buildDef that wraps the set
+	first            *buildDef // the first buildDef that uses this set
+	orderOnlyStrings []string  // the original OrderOnlyStrings of the first buildDef that uses this set
 }
 
 // keyForPhonyCandidate gives a unique identifier for a set of deps.
-// If any of the deps use a variable, we return an empty string to signal
-// that this set of deps is ineligible for extraction.
-func keyForPhonyCandidate(deps []*ninjaString, stringDeps []string) uint64 {
+func keyForPhonyCandidate(stringDeps []string) uint64 {
 	hasher := fnv.New64a()
 	write := func(s string) {
 		// The hasher doesn't retain or modify the input slice, so pass the string data directly to avoid
@@ -4756,12 +4852,6 @@ func keyForPhonyCandidate(deps []*ninjaString, stringDeps []string) uint64 {
 		if err != nil {
 			panic(fmt.Errorf("write failed: %w", err))
 		}
-	}
-	for _, d := range deps {
-		if len(d.Variables()) != 0 {
-			return 0
-		}
-		write(d.Value(nil))
 	}
 	for _, d := range stringDeps {
 		write(d)
@@ -4774,36 +4864,28 @@ func keyForPhonyCandidate(deps []*ninjaString, stringDeps []string) uint64 {
 // But if `b.OrderOnly` already exists in `candidates`, then `b.OrderOnly`
 // (and phonyCandidate#first.OrderOnly) will be replaced with phonyCandidate#phony.Outputs
 func scanBuildDef(candidates *sync.Map, b *buildDef) {
-	key := keyForPhonyCandidate(b.OrderOnly, b.OrderOnlyStrings)
-	if key == 0 {
-		return
-	}
+	key := keyForPhonyCandidate(b.OrderOnlyStrings)
 	if v, loaded := candidates.LoadOrStore(key, &phonyCandidate{
 		first:            b,
-		orderOnly:        b.OrderOnly,
 		orderOnlyStrings: b.OrderOnlyStrings,
 	}); loaded {
 		m := v.(*phonyCandidate)
-		if slices.EqualFunc(m.orderOnly, b.OrderOnly, ninjaStringsEqual) &&
-			slices.Equal(m.orderOnlyStrings, b.OrderOnlyStrings) {
+		if slices.Equal(m.orderOnlyStrings, b.OrderOnlyStrings) {
 			m.Do(func() {
 				// this is the second occurrence and hence it makes sense to
 				// extract it as a phony output
 				m.phony = &buildDef{
 					Rule:          Phony,
 					OutputStrings: []string{fmt.Sprintf("dedup-%x", key)},
-					Inputs:        m.first.OrderOnly, //we could also use b.OrderOnly
 					InputStrings:  m.first.OrderOnlyStrings,
 					Optional:      true,
 				}
 				// the previously recorded build-def, which first had these deps as its
 				// order-only deps, should now use this phony output instead
 				m.first.OrderOnlyStrings = m.phony.OutputStrings
-				m.first.OrderOnly = nil
 				m.first = nil
 			})
 			b.OrderOnlyStrings = m.phony.OutputStrings
-			b.OrderOnly = nil
 		}
 	}
 }
@@ -4820,7 +4902,8 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 	parallelVisit(modules, unorderedVisitorImpl{}, parallelVisitLimit,
 		func(m *moduleInfo, pause chan<- pauseSpec) bool {
 			for _, b := range m.actionDefs.buildDefs {
-				if len(b.OrderOnly) > 0 || len(b.OrderOnlyStrings) > 0 {
+				// The dedup logic doesn't handle the case where OrderOnly is not empty
+				if len(b.OrderOnly) == 0 && len(b.OrderOnlyStrings) > 0 {
 					scanBuildDef(&candidates, b)
 				}
 			}
