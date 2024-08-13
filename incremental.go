@@ -14,29 +14,11 @@
 
 package blueprint
 
+import "text/scanner"
+
 type BuildActionCacheKey struct {
 	Id        string
 	InputHash uint64
-}
-
-type CachedBuildParams struct {
-	Comment         string
-	Depfile         string
-	Deps            Deps
-	Description     string
-	Rule            string
-	Outputs         []string
-	ImplicitOutputs []string
-	Inputs          []string
-	Implicits       []string
-	OrderOnly       []string
-	Validations     []string
-	Args            map[string]string
-	Optional        bool
-}
-
-type CachedBuildActions struct {
-	BuildParams []CachedBuildParams
 }
 
 type CachedProvider struct {
@@ -45,11 +27,14 @@ type CachedProvider struct {
 }
 
 type BuildActionCachedData struct {
-	BuildActions CachedBuildActions
-	Providers    []CachedProvider
+	Providers        []CachedProvider
+	Pos              *scanner.Position
+	OrderOnlyStrings *[]string
 }
 
 type BuildActionCache = map[BuildActionCacheKey]*BuildActionCachedData
+
+type OrderOnlyStringsCache map[string][]string
 
 type BuildActionCacheInput struct {
 	PropertiesHash uint64
@@ -58,9 +43,8 @@ type BuildActionCacheInput struct {
 
 type Incremental interface {
 	IncrementalSupported() bool
+	// TODO(b/357130153): Get rid of this method.
 	BuildActionProviderKeys() []AnyProviderKey
-	PackageContextPath() string
-	CachedRules() []Rule
 }
 
 type IncrementalModule struct{}
