@@ -132,7 +132,7 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 
 	if ctx.GetIncrementalAnalysis() {
 		var err error = nil
-		err, ctx.BuildActionFromCache = restoreBuildActions(ctx, config)
+		err = restoreBuildActions(ctx, config)
 		if err != nil {
 			return nil, fatalErrors([]error{err})
 		}
@@ -142,15 +142,6 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 		return nil, fatalErrors(errs)
 	} else {
 		ninjaDeps = append(ninjaDeps, buildActionsDeps...)
-	}
-
-	buildActionCachingChan := make(chan error, 1)
-	if ctx.GetIncrementalEnabled() {
-		go func() {
-			buildActionCachingChan <- cacheBuildActions(ctx, config)
-		}()
-	} else {
-		buildActionCachingChan <- nil
 	}
 
 	if args.ModuleDebugFile != "" {
@@ -207,14 +198,16 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 		}
 	}
 
+	// TODO(b/357140398): parallelize this with other ninja file writing work.
+	if ctx.GetIncrementalEnabled() {
+		if err := cacheBuildActions(ctx, config); err != nil {
+			return nil, fmt.Errorf("error cache build actions: %s", err)
+		}
+	}
+
 	providerValidationErrors := <-providersValidationChan
 	if providerValidationErrors != nil {
 		return nil, proptools.MergeErrors(providerValidationErrors)
-	}
-
-	buildActionCachingError := <-buildActionCachingChan
-	if buildActionCachingError != nil {
-		return nil, buildActionCachingError
 	}
 
 	if args.Memprofile != "" {
@@ -230,30 +223,40 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 }
 
 func cacheBuildActions(ctx *blueprint.Context, config interface{}) error {
-	file, err := os.Create(filepath.Join(ctx.SrcDir(), config.(BootstrapConfig).SoongOutDir(), blueprint.BuildActionsCacheFile))
+	return errors.Join(writeToCache(ctx, config, blueprint.BuildActionsCacheFile, &ctx.BuildActionToCache),
+		writeToCache(ctx, config, blueprint.OrderOnlyStringsCacheFile, &ctx.OrderOnlyStringsToCache))
+}
+
+func writeToCache[T any](ctx *blueprint.Context, config interface{}, fileName string, data *T) error {
+	file, err := os.Create(filepath.Join(ctx.SrcDir(), config.(BootstrapConfig).SoongOutDir(), fileName))
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
 	encoder := gob.NewEncoder(file)
-	return encoder.Encode(&ctx.BuildActionToCache)
+	return encoder.Encode(data)
 }
 
-func restoreBuildActions(ctx *blueprint.Context, config interface{}) (error, blueprint.BuildActionCache) {
-	var cache = make(blueprint.BuildActionCache)
-	file, err := os.Open(filepath.Join(ctx.SrcDir(), config.(BootstrapConfig).SoongOutDir(), blueprint.BuildActionsCacheFile))
+func restoreBuildActions(ctx *blueprint.Context, config interface{}) error {
+	ctx.BuildActionFromCache = make(blueprint.BuildActionCache)
+	ctx.OrderOnlyStringsFromCache = make(blueprint.OrderOnlyStringsCache)
+	return errors.Join(restoreFromCache(ctx, config, blueprint.BuildActionsCacheFile, &ctx.BuildActionFromCache),
+		restoreFromCache(ctx, config, blueprint.OrderOnlyStringsCacheFile, &ctx.OrderOnlyStringsFromCache))
+}
+
+func restoreFromCache[T any](ctx *blueprint.Context, config interface{}, fileName string, data *T) error {
+	file, err := os.Open(filepath.Join(ctx.SrcDir(), config.(BootstrapConfig).SoongOutDir(), fileName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			err = nil
 		}
-		return err, nil
+		return err
 	}
 	defer file.Close()
 
 	decoder := gob.NewDecoder(file)
-	err = decoder.Decode(&cache)
-	return err, cache
+	return decoder.Decode(data)
 }
 
 func fatalErrors(errs []error) error {
