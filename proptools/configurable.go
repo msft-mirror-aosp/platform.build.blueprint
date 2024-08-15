@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/google/blueprint/optional"
+	"github.com/google/blueprint/parser"
 )
 
 // ConfigurableOptional is the same as ShallowOptional, but we use this separate
@@ -150,6 +151,17 @@ type ConfigurableValue struct {
 	boolValue   bool
 }
 
+func (c *ConfigurableValue) toExpression() parser.Expression {
+	switch c.typ {
+	case configurableValueTypeBool:
+		return &parser.Bool{Value: c.boolValue}
+	case configurableValueTypeString:
+		return &parser.String{Value: c.stringValue}
+	default:
+		panic(fmt.Sprintf("Unhandled configurableValueType: %s", c.typ.String()))
+	}
+}
+
 func (c *ConfigurableValue) String() string {
 	switch c.typ {
 	case configurableValueTypeString:
@@ -193,6 +205,7 @@ const (
 	configurablePatternTypeString configurablePatternType = iota
 	configurablePatternTypeBool
 	configurablePatternTypeDefault
+	configurablePatternTypeAny
 )
 
 func (v *configurablePatternType) String() string {
@@ -203,6 +216,8 @@ func (v *configurablePatternType) String() string {
 		return "bool"
 	case configurablePatternTypeDefault:
 		return "default"
+	case configurablePatternTypeAny:
+		return "any"
 	default:
 		panic("unimplemented")
 	}
@@ -222,6 +237,7 @@ type ConfigurablePattern struct {
 	typ         configurablePatternType
 	stringValue string
 	boolValue   bool
+	binding     string
 }
 
 func NewStringConfigurablePattern(s string) ConfigurablePattern {
@@ -251,6 +267,9 @@ func (p *ConfigurablePattern) matchesValue(v ConfigurableValue) bool {
 	if v.typ == configurableValueTypeUndefined {
 		return false
 	}
+	if p.typ == configurablePatternTypeAny {
+		return true
+	}
 	if p.typ != v.typ.patternType() {
 		return false
 	}
@@ -271,6 +290,9 @@ func (p *ConfigurablePattern) matchesValueType(v ConfigurableValue) bool {
 	if v.typ == configurableValueTypeUndefined {
 		return true
 	}
+	if p.typ == configurablePatternTypeAny {
+		return true
+	}
 	return p.typ == v.typ.patternType()
 }
 
@@ -282,27 +304,46 @@ func (p *ConfigurablePattern) matchesValueType(v ConfigurableValue) bool {
 // different configurable properties.
 type ConfigurableCase[T ConfigurableElements] struct {
 	patterns []ConfigurablePattern
-	value    *T
+	value    parser.Expression
 }
 
 type configurableCaseReflection interface {
-	initialize(patterns []ConfigurablePattern, value interface{})
+	initialize(patterns []ConfigurablePattern, value parser.Expression)
 }
 
 var _ configurableCaseReflection = &ConfigurableCase[string]{}
 
 func NewConfigurableCase[T ConfigurableElements](patterns []ConfigurablePattern, value *T) ConfigurableCase[T] {
+	var valueExpr parser.Expression
+	if value == nil {
+		valueExpr = &parser.UnsetProperty{}
+	} else {
+		switch v := any(value).(type) {
+		case *string:
+			valueExpr = &parser.String{Value: *v}
+		case *bool:
+			valueExpr = &parser.Bool{Value: *v}
+		case *[]string:
+			innerValues := make([]parser.Expression, 0, len(*v))
+			for _, x := range *v {
+				innerValues = append(innerValues, &parser.String{Value: x})
+			}
+			valueExpr = &parser.List{Values: innerValues}
+		default:
+			panic(fmt.Sprintf("should be unreachable due to the ConfigurableElements restriction: %#v", value))
+		}
+	}
 	// Clone the values so they can't be modified from soong
 	patterns = slices.Clone(patterns)
 	return ConfigurableCase[T]{
 		patterns: patterns,
-		value:    copyConfiguredValue(value),
+		value:    valueExpr,
 	}
 }
 
-func (c *ConfigurableCase[T]) initialize(patterns []ConfigurablePattern, value interface{}) {
+func (c *ConfigurableCase[T]) initialize(patterns []ConfigurablePattern, value parser.Expression) {
 	c.patterns = patterns
-	c.value = value.(*T)
+	c.value = value
 }
 
 // for the given T, return the reflect.type of configurableCase[T]
@@ -384,6 +425,7 @@ type configurableInner[T ConfigurableElements] struct {
 type singleConfigurable[T ConfigurableElements] struct {
 	conditions []ConfigurableCondition
 	cases      []ConfigurableCase[T]
+	scope      *parser.Scope
 }
 
 // Ignore the warning about the unused marker variable, it's used via reflection
@@ -408,6 +450,22 @@ func NewConfigurable[T ConfigurableElements](conditions []ConfigurableCondition,
 	}
 }
 
+func (c *Configurable[T]) AppendSimpleValue(value T) {
+	value = copyConfiguredValue(value)
+	// This may be a property that was never initialized from a bp file
+	if c.inner == nil {
+		c.inner = &configurableInner[T]{
+			single: singleConfigurable[T]{
+				cases: []ConfigurableCase[T]{{
+					value: configuredValueToExpression(value),
+				}},
+			},
+		}
+		return
+	}
+	c.inner.appendSimpleValue(value)
+}
+
 // Get returns the final value for the configurable property.
 // A configurable property may be unset, in which case Get will return nil.
 func (c *Configurable[T]) Get(evaluator ConfigurableEvaluator) ConfigurableOptional[T] {
@@ -420,7 +478,7 @@ func (c *Configurable[T]) GetOrDefault(evaluator ConfigurableEvaluator, defaultV
 	result := c.inner.evaluate(c.propertyName, evaluator)
 	if result != nil {
 		// Copy the result so that it can't be changed from soong
-		return copyAndDereferenceConfiguredValue(result)
+		return copyConfiguredValue(*result)
 	}
 	return defaultValue
 }
@@ -456,7 +514,12 @@ func (c *singleConfigurable[T]) evaluateNonTransitive(propertyName string, evalu
 		if len(c.cases) == 0 {
 			return nil
 		} else if len(c.cases) == 1 {
-			return c.cases[0].value
+			if result, err := expressionToConfiguredValue[T](c.cases[0].value, c.scope); err != nil {
+				evaluator.PropertyErrorf(propertyName, "%s", err.Error())
+				return nil
+			} else {
+				return result
+			}
 		} else {
 			evaluator.PropertyErrorf(propertyName, "Expected 0 or 1 branches in an unconfigured select, found %d", len(c.cases))
 			return nil
@@ -483,7 +546,13 @@ func (c *singleConfigurable[T]) evaluateNonTransitive(propertyName string, evalu
 			}
 		}
 		if allMatch && !foundMatch {
-			result = case_.value
+			newScope := createScopeWithBindings(c.scope, case_.patterns, values)
+			if r, err := expressionToConfiguredValue[T](case_.value, newScope); err != nil {
+				evaluator.PropertyErrorf(propertyName, "%s", err.Error())
+				return nil
+			} else {
+				result = r
+			}
 			foundMatch = true
 		}
 	}
@@ -493,6 +562,27 @@ func (c *singleConfigurable[T]) evaluateNonTransitive(propertyName string, evalu
 
 	evaluator.PropertyErrorf(propertyName, "%s had value %s, which was not handled by the select statement", c.conditions[nonMatchingIndex].String(), values[nonMatchingIndex].String())
 	return nil
+}
+
+func createScopeWithBindings(parent *parser.Scope, patterns []ConfigurablePattern, values []ConfigurableValue) *parser.Scope {
+	result := parent
+	for i, pattern := range patterns {
+		if pattern.binding != "" {
+			if result == parent {
+				result = parser.NewScope(parent)
+			}
+			err := result.HandleAssignment(&parser.Assignment{
+				Name:     pattern.binding,
+				Value:    values[i].toExpression(),
+				Assigner: "=",
+			})
+			if err != nil {
+				// This shouldn't happen due to earlier validity checks
+				panic(err.Error())
+			}
+		}
+	}
+	return result
 }
 
 func appendConfiguredValues[T ConfigurableElements](a, b *T) *T {
@@ -563,18 +653,19 @@ type configurableReflection interface {
 // Same as configurableReflection, but since initialize needs to take a pointer
 // to a Configurable, it was broken out into a separate interface.
 type configurablePtrReflection interface {
-	initialize(propertyName string, conditions []ConfigurableCondition, cases any)
+	initialize(scope *parser.Scope, propertyName string, conditions []ConfigurableCondition, cases any)
 }
 
 var _ configurableReflection = Configurable[string]{}
 var _ configurablePtrReflection = &Configurable[string]{}
 
-func (c *Configurable[T]) initialize(propertyName string, conditions []ConfigurableCondition, cases any) {
+func (c *Configurable[T]) initialize(scope *parser.Scope, propertyName string, conditions []ConfigurableCondition, cases any) {
 	c.propertyName = propertyName
 	c.inner = &configurableInner[T]{
 		single: singleConfigurable[T]{
 			conditions: conditions,
 			cases:      cases.([]ConfigurableCase[T]),
+			scope:      scope,
 		},
 	}
 }
@@ -628,6 +719,21 @@ func (c *configurableInner[T]) setAppend(append *configurableInner[T], replace b
 	}
 }
 
+func (c *configurableInner[T]) appendSimpleValue(value T) {
+	if c.next == nil {
+		c.replace = false
+		c.next = &configurableInner[T]{
+			single: singleConfigurable[T]{
+				cases: []ConfigurableCase[T]{{
+					value: configuredValueToExpression(value),
+				}},
+			},
+		}
+	} else {
+		c.next.appendSimpleValue(value)
+	}
+}
+
 func (c Configurable[T]) printfInto(value string) error {
 	return c.inner.printfInto(value)
 }
@@ -647,38 +753,10 @@ func (c *singleConfigurable[T]) printfInto(value string) error {
 		if c.value == nil {
 			continue
 		}
-		switch v := any(c.value).(type) {
-		case *string:
-			if err := printfIntoString(v, value); err != nil {
-				return err
-			}
-		case *[]string:
-			for i := range *v {
-				if err := printfIntoString(&((*v)[i]), value); err != nil {
-					return err
-				}
-			}
+		if err := c.value.PrintfInto(value); err != nil {
+			return err
 		}
 	}
-	return nil
-}
-
-func printfIntoString(s *string, configValue string) error {
-	count := strings.Count(*s, "%")
-	if count == 0 {
-		return nil
-	}
-
-	if count > 1 {
-		return fmt.Errorf("list/value variable properties only support a single '%%'")
-	}
-
-	if !strings.Contains(*s, "%s") {
-		return fmt.Errorf("unsupported %% in value variable property")
-	}
-
-	*s = fmt.Sprintf(*s, configValue)
-
 	return nil
 }
 
@@ -724,6 +802,9 @@ func (c *singleConfigurable[T]) isEmpty() bool {
 		return false
 	}
 	if len(c.cases) == 1 && c.cases[0].value != nil {
+		if _, ok := c.cases[0].value.(*parser.UnsetProperty); ok {
+			return true
+		}
 		return false
 	}
 	return true
@@ -743,7 +824,7 @@ func (c *singleConfigurable[T]) alwaysHasValue() bool {
 		return false
 	}
 	for _, c := range c.cases {
-		if c.value == nil {
+		if _, isUnset := c.value.(*parser.UnsetProperty); isUnset || c.value == nil {
 			return false
 		}
 	}
@@ -754,17 +835,84 @@ func (c Configurable[T]) configuredType() reflect.Type {
 	return reflect.TypeOf((*T)(nil)).Elem()
 }
 
-func copyConfiguredValue[T ConfigurableElements](t *T) *T {
-	if t == nil {
-		return nil
+func expressionToConfiguredValue[T ConfigurableElements](expr parser.Expression, scope *parser.Scope) (*T, error) {
+	expr, err := expr.Eval(scope)
+	if err != nil {
+		return nil, err
 	}
-	switch t2 := any(*t).(type) {
-	case []string:
-		result := any(slices.Clone(t2)).(T)
-		return &result
+	switch e := expr.(type) {
+	case *parser.UnsetProperty:
+		return nil, nil
+	case *parser.String:
+		if result, ok := any(&e.Value).(*T); ok {
+			return result, nil
+		} else {
+			return nil, fmt.Errorf("can't assign string value to %s property", configuredTypeToString[T]())
+		}
+	case *parser.Bool:
+		if result, ok := any(&e.Value).(*T); ok {
+			return result, nil
+		} else {
+			return nil, fmt.Errorf("can't assign bool value to %s property", configuredTypeToString[T]())
+		}
+	case *parser.List:
+		result := make([]string, 0, len(e.Values))
+		for _, x := range e.Values {
+			if y, ok := x.(*parser.String); ok {
+				result = append(result, y.Value)
+			} else {
+				return nil, fmt.Errorf("expected list of strings but found list of %s", x.Type())
+			}
+		}
+		if result, ok := any(&result).(*T); ok {
+			return result, nil
+		} else {
+			return nil, fmt.Errorf("can't assign list of strings to list of %s property", configuredTypeToString[T]())
+		}
 	default:
-		x := *t
-		return &x
+		// If the expression was not evaluated beforehand we could hit this error even when the types match,
+		// but that's an internal logic error.
+		return nil, fmt.Errorf("expected %s but found %s (%#v)", configuredTypeToString[T](), expr.Type().String(), expr)
+	}
+}
+
+func configuredValueToExpression[T ConfigurableElements](value T) parser.Expression {
+	switch v := any(value).(type) {
+	case string:
+		return &parser.String{Value: v}
+	case bool:
+		return &parser.Bool{Value: v}
+	case []string:
+		values := make([]parser.Expression, 0, len(v))
+		for _, x := range v {
+			values = append(values, &parser.String{Value: x})
+		}
+		return &parser.List{Values: values}
+	default:
+		panic("unhandled type in configuredValueToExpression")
+	}
+}
+
+func configuredTypeToString[T ConfigurableElements]() string {
+	var zero T
+	switch any(zero).(type) {
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case []string:
+		return "list of strings"
+	default:
+		panic("should be unreachable")
+	}
+}
+
+func copyConfiguredValue[T ConfigurableElements](t T) T {
+	switch t2 := any(t).(type) {
+	case []string:
+		return any(slices.Clone(t2)).(T)
+	default:
+		return t
 	}
 }
 
@@ -781,18 +929,72 @@ func configuredValuePtrToOptional[T ConfigurableElements](t *T) ConfigurableOpti
 	}
 }
 
-func copyAndDereferenceConfiguredValue[T ConfigurableElements](t *T) T {
-	switch t2 := any(*t).(type) {
-	case []string:
-		return any(slices.Clone(t2)).(T)
-	default:
-		return *t
-	}
-}
-
 // PrintfIntoConfigurable replaces %s occurrences in strings in Configurable properties
 // with the provided string value. It's intention is to support soong config value variables
 // on Configurable properties.
 func PrintfIntoConfigurable(c any, value string) error {
 	return c.(configurableReflection).printfInto(value)
+}
+
+func promoteValueToConfigurable(origional reflect.Value) reflect.Value {
+	var expr parser.Expression
+	var kind reflect.Kind
+	if origional.Kind() == reflect.Pointer && origional.IsNil() {
+		expr = &parser.UnsetProperty{}
+		kind = origional.Type().Elem().Kind()
+	} else {
+		if origional.Kind() == reflect.Pointer {
+			origional = origional.Elem()
+		}
+		kind = origional.Kind()
+		switch kind {
+		case reflect.String:
+			expr = &parser.String{Value: origional.String()}
+		case reflect.Bool:
+			expr = &parser.Bool{Value: origional.Bool()}
+		case reflect.Slice:
+			strList := origional.Interface().([]string)
+			exprList := make([]parser.Expression, 0, len(strList))
+			for _, x := range strList {
+				exprList = append(exprList, &parser.String{Value: x})
+			}
+			expr = &parser.List{Values: exprList}
+		default:
+			panic("can only convert string/bool/[]string to configurable")
+		}
+	}
+	switch kind {
+	case reflect.String:
+		return reflect.ValueOf(Configurable[string]{
+			inner: &configurableInner[string]{
+				single: singleConfigurable[string]{
+					cases: []ConfigurableCase[string]{{
+						value: expr,
+					}},
+				},
+			},
+		})
+	case reflect.Bool:
+		return reflect.ValueOf(Configurable[bool]{
+			inner: &configurableInner[bool]{
+				single: singleConfigurable[bool]{
+					cases: []ConfigurableCase[bool]{{
+						value: expr,
+					}},
+				},
+			},
+		})
+	case reflect.Slice:
+		return reflect.ValueOf(Configurable[[]string]{
+			inner: &configurableInner[[]string]{
+				single: singleConfigurable[[]string]{
+					cases: []ConfigurableCase[[]string]{{
+						value: expr,
+					}},
+				},
+			},
+		})
+	default:
+		panic(fmt.Sprintf("Can't convert %s property to a configurable", origional.Kind().String()))
+	}
 }
