@@ -191,6 +191,7 @@ type EarlyModuleContext interface {
 	AddNinjaFileDeps(deps ...string)
 
 	moduleInfo() *moduleInfo
+
 	error(err error)
 
 	// Namespace returns the Namespace object provided by the NameInterface set by Context.SetNameInterface, or the
@@ -361,6 +362,12 @@ type BaseModuleContext interface {
 
 	EarlyGetMissingDependencies() []string
 
+	GetIncrementalEnabled() bool
+
+	GetIncrementalAnalysis() bool
+
+	OtherModuleProviderInitialValueHashes(module Module) []uint64
+
 	base() *baseModuleContext
 }
 
@@ -372,6 +379,8 @@ type ModuleContext interface {
 	// ModuleSubDir returns a unique name for the current variant of a module that can be used as part of the path
 	// to ensure that each variant of a module gets its own intermediates directory to write to.
 	ModuleSubDir() string
+
+	ModuleCacheKey() string
 
 	// Variable creates a new ninja variable scoped to the module.  It can be referenced by calls to Rule and Build
 	// in the same module.
@@ -387,6 +396,10 @@ type ModuleContext interface {
 	// but do not exist.  It can be used with Context.SetAllowMissingDependencies to allow the primary builder to
 	// handle missing dependencies on its own instead of having Blueprint treat them as an error.
 	GetMissingDependencies() []string
+
+	CacheBuildActions(key *BuildActionCacheKey, im *Incremental)
+
+	RestoreBuildActions(key *BuildActionCacheKey) bool
 }
 
 var _ BaseModuleContext = (*baseModuleContext)(nil)
@@ -498,6 +511,7 @@ type moduleContext struct {
 	scope              *localScope
 	actionDefs         localBuildActions
 	handledMissingDeps bool
+	buildParams        []BuildParams
 }
 
 func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
@@ -535,8 +549,12 @@ func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 
 func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) DependencyTag {
 	// fast path for calling OtherModuleDependencyTag from inside VisitDirectDeps
-	if logicModule == m.visitingDep.module.logicModule {
+	if m.visitingDep.module != nil && logicModule == m.visitingDep.module.logicModule {
 		return m.visitingDep.tag
+	}
+
+	if m.visitingParent == nil {
+		return nil
 	}
 
 	for _, dep := range m.visitingParent.directDeps {
@@ -608,6 +626,78 @@ func (m *baseModuleContext) Provider(provider AnyProviderKey) (any, bool) {
 
 func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface{}) {
 	m.context.setProvider(m.module, provider.provider(), value)
+}
+
+func (m *baseModuleContext) GetIncrementalEnabled() bool {
+	return m.context.GetIncrementalEnabled()
+}
+
+func (m *baseModuleContext) GetIncrementalAnalysis() bool {
+	return m.context.GetIncrementalAnalysis()
+}
+
+func (m *baseModuleContext) OtherModuleProviderInitialValueHashes(module Module) []uint64 {
+	return m.context.moduleInfo[module].providerInitialValueHashes
+}
+
+func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey, im *Incremental) {
+	var providers []CachedProvider
+	for _, pKey := range (*im).BuildActionProviderKeys() {
+		if pKey.provider().mutator == "" {
+			providers = append(providers,
+				CachedProvider{
+					Id: &providerKey{
+						id:      pKey.provider().id,
+						typ:     pKey.provider().typ,
+						mutator: pKey.provider().mutator,
+					},
+					Value: &m.module.providers[pKey.provider().id],
+				})
+		}
+	}
+
+	// These show up in the ninja file, so we need to cache these to ensure we
+	// re-generate ninja file if they changed.
+	relPos := m.module.pos
+	relPos.Filename = m.module.relBlueprintsFile
+	data := BuildActionCachedData{
+		Providers: providers,
+		Pos:       &relPos,
+	}
+
+	var orderOnlyStrings *[]string
+	if m.module.incrementalRestored {
+		orderOnlyStrings = m.module.orderOnlyStrings
+	} else {
+		orderOnlyStrings = new([]string)
+		for _, b := range m.actionDefs.buildDefs {
+			if len(b.OrderOnly) == 0 && len(b.OrderOnlyStrings) > 0 {
+				*orderOnlyStrings = append(*orderOnlyStrings, b.OrderOnlyStrings...)
+			}
+		}
+	}
+
+	if orderOnlyStrings != nil && len(*orderOnlyStrings) > 0 {
+		data.OrderOnlyStrings = orderOnlyStrings
+	}
+
+	m.context.CacheBuildActions(key, &data)
+}
+
+func (m *moduleContext) RestoreBuildActions(key *BuildActionCacheKey) bool {
+	data := m.context.GetBuildActionCache(key)
+	relPos := m.module.pos
+	relPos.Filename = m.module.relBlueprintsFile
+	if data != nil && data.Pos != nil && relPos == *data.Pos {
+		for _, provider := range data.Providers {
+			m.context.setProvider(m.module, provider.Id, *provider.Value)
+		}
+		m.module.incrementalRestored = true
+		m.module.buildActionCacheKey = key
+		m.module.orderOnlyStrings = data.OrderOnlyStrings
+		return true
+	}
+	return false
 }
 
 func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
@@ -761,6 +851,10 @@ func (m *moduleContext) ModuleSubDir() string {
 	return m.module.variant.name
 }
 
+func (m *moduleContext) ModuleCacheKey() string {
+	return m.module.ModuleCacheKey()
+}
+
 func (m *moduleContext) Variable(pctx PackageContext, name, value string) {
 	m.scope.ReparentTo(pctx)
 
@@ -795,6 +889,11 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 		panic(err)
 	}
 
+	if m.GetIncrementalEnabled() {
+		if im, ok := m.module.logicModule.(Incremental); ok && im.IncrementalSupported() {
+			m.buildParams = append(m.buildParams, params)
+		}
+	}
 	m.actionDefs.buildDefs = append(m.actionDefs.buildDefs, def)
 }
 
@@ -1049,7 +1148,7 @@ func (mctx *mutatorContext) AliasVariation(variationName string) {
 	}
 
 	for _, variant := range mctx.newVariations {
-		if variant.moduleOrAliasVariant().variations[mctx.mutator.name] == variationName {
+		if variant.moduleOrAliasVariant().variations.get(mctx.mutator.name) == variationName {
 			alias := &moduleAlias{
 				variant: mctx.module.variant,
 				target:  variant.moduleOrAliasTarget(),
@@ -1063,7 +1162,7 @@ func (mctx *mutatorContext) AliasVariation(variationName string) {
 
 	var foundVariations []string
 	for _, variant := range mctx.newVariations {
-		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations[mctx.mutator.name])
+		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations.get(mctx.mutator.name))
 	}
 	panic(fmt.Errorf("no %q variation in module variations %q", variationName, foundVariations))
 }
@@ -1082,7 +1181,7 @@ func (mctx *mutatorContext) CreateAliasVariation(aliasVariationName, targetVaria
 	}
 
 	for _, variant := range mctx.newVariations {
-		if variant.moduleOrAliasVariant().variations[mctx.mutator.name] == targetVariationName {
+		if variant.moduleOrAliasVariant().variations.get(mctx.mutator.name) == targetVariationName {
 			// Append the alias here so that it comes after any aliases created by AliasVariation.
 			mctx.module.splitModules = append(mctx.module.splitModules, &moduleAlias{
 				variant: newVariant,
@@ -1094,7 +1193,7 @@ func (mctx *mutatorContext) CreateAliasVariation(aliasVariationName, targetVaria
 
 	var foundVariations []string
 	for _, variant := range mctx.newVariations {
-		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations[mctx.mutator.name])
+		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations.get(mctx.mutator.name))
 	}
 	panic(fmt.Errorf("no %q variation in module variations %q", targetVariationName, foundVariations))
 }
@@ -1392,8 +1491,7 @@ func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
 //
 // The filename is only used for reporting errors.
 func CheckBlueprintSyntax(moduleFactories map[string]ModuleFactory, filename string, contents string) []error {
-	scope := parser.NewScope(nil)
-	file, errs := parser.Parse(filename, strings.NewReader(contents), scope)
+	file, errs := parser.Parse(filename, strings.NewReader(contents))
 	if len(errs) != 0 {
 		return errs
 	}
