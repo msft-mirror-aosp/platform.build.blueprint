@@ -646,11 +646,7 @@ func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey, im *Incremen
 		if pKey.provider().mutator == "" {
 			providers = append(providers,
 				CachedProvider{
-					Id: &providerKey{
-						id:      pKey.provider().id,
-						typ:     pKey.provider().typ,
-						mutator: pKey.provider().mutator,
-					},
+					Id:    pKey.provider(),
 					Value: &m.module.providers[pKey.provider().id],
 				})
 		}
