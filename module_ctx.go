@@ -191,6 +191,7 @@ type EarlyModuleContext interface {
 	AddNinjaFileDeps(deps ...string)
 
 	moduleInfo() *moduleInfo
+
 	error(err error)
 
 	// Namespace returns the Namespace object provided by the NameInterface set by Context.SetNameInterface, or the
@@ -379,7 +380,7 @@ type ModuleContext interface {
 	// to ensure that each variant of a module gets its own intermediates directory to write to.
 	ModuleSubDir() string
 
-	ModuleId() string
+	ModuleCacheKey() string
 
 	// Variable creates a new ninja variable scoped to the module.  It can be referenced by calls to Rule and Build
 	// in the same module.
@@ -398,7 +399,7 @@ type ModuleContext interface {
 
 	CacheBuildActions(key *BuildActionCacheKey, im *Incremental)
 
-	RestoreBuildActions(key *BuildActionCacheKey, im *Incremental) bool
+	RestoreBuildActions(key *BuildActionCacheKey) bool
 }
 
 var _ BaseModuleContext = (*baseModuleContext)(nil)
@@ -548,8 +549,12 @@ func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 
 func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) DependencyTag {
 	// fast path for calling OtherModuleDependencyTag from inside VisitDirectDeps
-	if logicModule == m.visitingDep.module.logicModule {
+	if m.visitingDep.module != nil && logicModule == m.visitingDep.module.logicModule {
 		return m.visitingDep.tag
+	}
+
+	if m.visitingParent == nil {
+		return nil
 	}
 
 	for _, dep := range m.visitingParent.directDeps {
@@ -641,81 +646,51 @@ func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey, im *Incremen
 		if pKey.provider().mutator == "" {
 			providers = append(providers,
 				CachedProvider{
-					Id: &providerKey{
-						id:      pKey.provider().id,
-						typ:     pKey.provider().typ,
-						mutator: pKey.provider().mutator,
-					},
+					Id:    pKey.provider(),
 					Value: &m.module.providers[pKey.provider().id],
 				})
 		}
 	}
 
-	var buildParams []CachedBuildParams
-	for _, params := range m.buildParams {
-		buildParams = append(buildParams, CachedBuildParams{
-			Comment:         params.Comment,
-			Depfile:         params.Depfile,
-			Deps:            params.Deps,
-			Description:     params.Description,
-			Rule:            params.Rule.name(),
-			Outputs:         params.Outputs,
-			ImplicitOutputs: params.ImplicitOutputs,
-			Inputs:          params.Inputs,
-			Implicits:       params.Implicits,
-			OrderOnly:       params.OrderOnly,
-			Validations:     params.Validations,
-			Args:            params.Args,
-			Optional:        params.Optional,
-		})
+	// These show up in the ninja file, so we need to cache these to ensure we
+	// re-generate ninja file if they changed.
+	relPos := m.module.pos
+	relPos.Filename = m.module.relBlueprintsFile
+	data := BuildActionCachedData{
+		Providers: providers,
+		Pos:       &relPos,
 	}
 
-	if len(providers) > 0 || len(buildParams) > 0 {
-		data := BuildActionCachedData{
-			Providers: providers,
-			BuildActions: CachedBuildActions{
-				BuildParams: buildParams,
-			},
+	var orderOnlyStrings *[]string
+	if m.module.incrementalRestored {
+		orderOnlyStrings = m.module.orderOnlyStrings
+	} else {
+		orderOnlyStrings = new([]string)
+		for _, b := range m.actionDefs.buildDefs {
+			if len(b.OrderOnly) == 0 && len(b.OrderOnlyStrings) > 0 {
+				*orderOnlyStrings = append(*orderOnlyStrings, b.OrderOnlyStrings...)
+			}
 		}
-		m.context.CacheBuildActions(key, &data)
 	}
+
+	if orderOnlyStrings != nil && len(*orderOnlyStrings) > 0 {
+		data.OrderOnlyStrings = orderOnlyStrings
+	}
+
+	m.context.CacheBuildActions(key, &data)
 }
 
-func (m *moduleContext) RestoreBuildActions(key *BuildActionCacheKey, im *Incremental) bool {
+func (m *moduleContext) RestoreBuildActions(key *BuildActionCacheKey) bool {
 	data := m.context.GetBuildActionCache(key)
-	if data != nil {
+	relPos := m.module.pos
+	relPos.Filename = m.module.relBlueprintsFile
+	if data != nil && data.Pos != nil && relPos == *data.Pos {
 		for _, provider := range data.Providers {
 			m.context.setProvider(m.module, provider.Id, *provider.Value)
 		}
-
-		for _, params := range data.BuildActions.BuildParams {
-			var rule Rule
-			for _, r := range (*im).CachedRules() {
-				if params.Rule == r.name() {
-					rule = r
-					break
-				}
-			}
-			if rule == nil {
-				return false
-			}
-			buildParams := BuildParams{
-				Comment:         params.Comment,
-				Depfile:         params.Depfile,
-				Deps:            params.Deps,
-				Description:     params.Description,
-				Outputs:         params.Outputs,
-				ImplicitOutputs: params.ImplicitOutputs,
-				Inputs:          params.Inputs,
-				Implicits:       params.Implicits,
-				OrderOnly:       params.OrderOnly,
-				Validations:     params.Validations,
-				Args:            params.Args,
-				Optional:        params.Optional,
-			}
-			buildParams.Rule = rule
-			m.Build(packageContexts[(*im).PackageContextPath()], buildParams)
-		}
+		m.module.incrementalRestored = true
+		m.module.buildActionCacheKey = key
+		m.module.orderOnlyStrings = data.OrderOnlyStrings
 		return true
 	}
 	return false
@@ -872,8 +847,8 @@ func (m *moduleContext) ModuleSubDir() string {
 	return m.module.variant.name
 }
 
-func (m *moduleContext) ModuleId() string {
-	return strings.Join([]string{m.ModuleDir(), m.ModuleName(), m.module.variant.name, m.ModuleType()}, "$")
+func (m *moduleContext) ModuleCacheKey() string {
+	return m.module.ModuleCacheKey()
 }
 
 func (m *moduleContext) Variable(pctx PackageContext, name, value string) {
