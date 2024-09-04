@@ -55,6 +55,7 @@ const MockModuleListFile = "bplist"
 const OutFilePermissions = 0666
 
 const BuildActionsCacheFile = "build_actions.gob"
+const OrderOnlyStringsCacheFile = "order_only_strings.gob"
 
 // A Context contains all the state needed to parse a set of Blueprints files
 // and generate a Ninja file.  The process of generating a Ninja file proceeds
@@ -163,14 +164,24 @@ type Context struct {
 
 	sourceRootDirs *SourceRootDirs
 
+	// True if an incremental analysis can be attempted, i.e., there is no Soong
+	// code changes, no environmental variable changes and no product config
+	// variable changes.
 	incrementalAnalysis bool
 
+	// True if the flag --incremental-build-actions is set, in which case Soong
+	// will try to do a incremental build. Mainly two tasks will involve here:
+	// caching the providers of all the participating modules, and restoring the
+	// providers and skip the build action generations if there is a cache hit.
+	// Enabling this flag will only guarantee the former task to be performed, the
+	// latter will depend on the flag above.
 	incrementalEnabled bool
 
-	BuildActionToCache     BuildActionCache
-	BuildActionToCacheLock sync.Mutex
-
-	BuildActionFromCache BuildActionCache
+	BuildActionToCache        BuildActionCache
+	buildActionToCacheLock    sync.Mutex
+	BuildActionFromCache      BuildActionCache
+	OrderOnlyStringsFromCache OrderOnlyStringsCache
+	OrderOnlyStringsToCache   OrderOnlyStringsCache
 }
 
 // A container for String keys. The keys can be used to gate build graph traversal
@@ -386,6 +397,14 @@ type moduleInfo struct {
 
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
+
+	incrementalInfo
+}
+
+type incrementalInfo struct {
+	incrementalRestored bool
+	buildActionCacheKey *BuildActionCacheKey
+	orderOnlyStrings    *[]string
 }
 
 type variant struct {
@@ -426,6 +445,16 @@ func (module *moduleInfo) String() string {
 
 func (module *moduleInfo) namespace() Namespace {
 	return module.group.namespace
+}
+
+func (module *moduleInfo) ModuleCacheKey() string {
+	variant := module.variant.name
+	if variant == "" {
+		variant = "none"
+	}
+	return fmt.Sprintf("%s-%s-%s-%s",
+		strings.ReplaceAll(filepath.Dir(module.relBlueprintsFile), "/", "."),
+		module.Name(), variant, module.typeName)
 }
 
 // A Variation is a way that a variant of a module differs from other variants of the same module.
@@ -553,6 +582,7 @@ func newContext() *Context {
 		requiredNinjaMicro:          0,
 		verifyProvidersAreUnchanged: true,
 		BuildActionToCache:          make(BuildActionCache),
+		OrderOnlyStringsToCache:     make(OrderOnlyStringsCache),
 	}
 }
 
@@ -693,8 +723,8 @@ func (c *Context) GetIncrementalEnabled() bool {
 
 func (c *Context) CacheBuildActions(key *BuildActionCacheKey, data *BuildActionCachedData) {
 	if key != nil {
-		c.BuildActionToCacheLock.Lock()
-		defer c.BuildActionToCacheLock.Unlock()
+		c.buildActionToCacheLock.Lock()
+		defer c.buildActionToCacheLock.Unlock()
 		c.BuildActionToCache[*key] = data
 	}
 }
@@ -4556,11 +4586,16 @@ func (s moduleSorter) Swap(i, j int) {
 }
 
 func GetNinjaShardFiles(ninjaFile string) []string {
+	suffix := ".ninja"
+	if !strings.HasSuffix(ninjaFile, suffix) {
+		panic(fmt.Errorf("ninja file name in wrong format : %s", ninjaFile))
+	}
+	base := strings.TrimSuffix(ninjaFile, suffix)
 	ninjaShardCnt := 10
 	fileNames := make([]string, ninjaShardCnt)
 
 	for i := 0; i < ninjaShardCnt; i++ {
-		fileNames[i] = fmt.Sprintf("%s.%d", ninjaFile, i)
+		fileNames[i] = fmt.Sprintf("%s.%d%s", base, i, suffix)
 	}
 	return fileNames
 }
@@ -4570,12 +4605,53 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	defer c.EndEvent("modules")
 
 	modules := make([]*moduleInfo, 0, len(c.moduleInfo))
+	incrementalModules := make([]*moduleInfo, 0, 200)
+
 	for _, module := range c.moduleInfo {
+		if c.GetIncrementalEnabled() {
+			if im, ok := module.logicModule.(Incremental); ok && im.IncrementalSupported() {
+				incrementalModules = append(incrementalModules, module)
+				continue
+			}
+		}
 		modules = append(modules, module)
 	}
 	sort.Sort(moduleSorter{modules, c.nameInterface})
 
-	phonys := c.deduplicateOrderOnlyDeps(modules)
+	phonys := c.deduplicateOrderOnlyDeps(append(modules, incrementalModules...))
+
+	for _, mod := range incrementalModules {
+		if !mod.incrementalRestored {
+			continue
+		}
+		if data := c.GetBuildActionCache(mod.buildActionCacheKey); data != nil && data.OrderOnlyStrings != nil {
+			for _, dep := range *data.OrderOnlyStrings {
+				if _, ok := c.OrderOnlyStringsToCache[dep]; ok {
+					continue
+				}
+				orderOnlyStrings, ok := c.OrderOnlyStringsFromCache[dep]
+				if !ok {
+					return fmt.Errorf("no cached value found for order only dep: %s", dep)
+				}
+				phony := buildDef{
+					Rule:          Phony,
+					OutputStrings: []string{dep},
+					InputStrings:  orderOnlyStrings,
+					Optional:      true,
+				}
+				phonys.buildDefs = append(phonys.buildDefs, &phony)
+				c.OrderOnlyStringsToCache[dep] = orderOnlyStrings
+			}
+		}
+	}
+
+	c.EventHandler.Do("sort_phony_builddefs", func() {
+		// sorting for determinism, the phony output names are stable
+		sort.Slice(phonys.buildDefs, func(i int, j int) bool {
+			return phonys.buildDefs[i].OutputStrings[0] < phonys.buildDefs[j].OutputStrings[0]
+		})
+	})
+
 	if err := c.writeLocalBuildActions(nw, phonys); err != nil {
 		return err
 	}
@@ -4622,6 +4698,20 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			}(file, batchModules)
 			nw.Subninja(file)
 		}
+
+		if c.GetIncrementalEnabled() {
+			file := fmt.Sprintf("%s.incremental", ninjaFileName)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				err := writeIncrementalModules(c, file, incrementalModules, headerTemplate)
+				if err != nil {
+					errorCh <- err
+				}
+			}()
+			nw.Subninja(file)
+		}
+
 		go func() {
 			wg.Wait()
 			close(errorCh)
@@ -4640,6 +4730,43 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	}
 }
 
+func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
+	bf, err := os.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+	if err != nil {
+		return err
+	}
+	defer bf.Close()
+	bBuf := bufio.NewWriterSize(bf, 16*1024*1024)
+	defer bBuf.Flush()
+	bWriter := newNinjaWriter(bBuf)
+	ninjaPath := filepath.Join(filepath.Dir(baseFile), strings.ReplaceAll(filepath.Base(baseFile), ".", "_"))
+	err = os.MkdirAll(JoinPath(c.SrcDir(), ninjaPath), 0755)
+	if err != nil {
+		return err
+	}
+	for _, module := range modules {
+		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
+		if !module.incrementalRestored {
+			err := func() error {
+				mf, err := os.OpenFile(JoinPath(c.SrcDir(), moduleFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+				if err != nil {
+					return err
+				}
+				defer mf.Close()
+				mBuf := bufio.NewWriterSize(mf, 4*1024*1024)
+				defer mBuf.Flush()
+				mWriter := newNinjaWriter(mBuf)
+				return c.writeModuleAction([]*moduleInfo{module}, mWriter, headerTemplate)
+			}()
+			if err != nil {
+				return err
+			}
+		}
+		bWriter.Subninja(moduleFile)
+	}
+	return nil
+}
+
 func (c *Context) writeModuleAction(modules []*moduleInfo, nw *ninjaWriter, headerTemplate *template.Template) error {
 	buf := bytes.NewBuffer(nil)
 
@@ -4647,7 +4774,6 @@ func (c *Context) writeModuleAction(modules []*moduleInfo, nw *ninjaWriter, head
 		if len(module.actionDefs.variables)+len(module.actionDefs.rules)+len(module.actionDefs.buildDefs) == 0 {
 			continue
 		}
-
 		buf.Reset()
 
 		// In order to make the bootstrap build manifest independent of the
@@ -4846,15 +4972,12 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 		candidate := v.(*phonyCandidate)
 		if candidate.phony != nil {
 			phonys = append(phonys, candidate.phony)
+			if c.GetIncrementalEnabled() {
+				c.OrderOnlyStringsToCache[candidate.phony.OutputStrings[0]] =
+					candidate.phony.InputStrings
+			}
 		}
 		return true
-	})
-
-	c.EventHandler.Do("sort_phony_builddefs", func() {
-		// sorting for determinism, the phony output names are stable
-		sort.Slice(phonys, func(i int, j int) bool {
-			return phonys[i].OutputStrings[0] < phonys[j].OutputStrings[0]
-		})
 	})
 
 	return &localBuildActions{buildDefs: phonys}
