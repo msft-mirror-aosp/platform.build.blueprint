@@ -4586,11 +4586,16 @@ func (s moduleSorter) Swap(i, j int) {
 }
 
 func GetNinjaShardFiles(ninjaFile string) []string {
+	suffix := ".ninja"
+	if !strings.HasSuffix(ninjaFile, suffix) {
+		panic(fmt.Errorf("ninja file name in wrong format : %s", ninjaFile))
+	}
+	base := strings.TrimSuffix(ninjaFile, suffix)
 	ninjaShardCnt := 10
 	fileNames := make([]string, ninjaShardCnt)
 
 	for i := 0; i < ninjaShardCnt; i++ {
-		fileNames[i] = fmt.Sprintf("%s.%d", ninjaFile, i)
+		fileNames[i] = fmt.Sprintf("%s.%d%s", base, i, suffix)
 	}
 	return fileNames
 }
