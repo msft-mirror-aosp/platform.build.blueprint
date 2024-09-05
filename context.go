@@ -4164,6 +4164,12 @@ func (c *Context) VisitAllModulesIf(pred func(Module) bool,
 }
 
 func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
+	c.VisitDirectDepsWithTags(module, func(m Module, _ DependencyTag) {
+		visit(m)
+	})
+}
+
+func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, DependencyTag)) {
 	topModule := c.moduleInfo[module]
 
 	var visiting *moduleInfo
@@ -4177,7 +4183,7 @@ func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
 
 	for _, dep := range topModule.directDeps {
 		visiting = dep.module
-		visit(dep.module.logicModule)
+		visit(dep.module.logicModule, dep.tag)
 	}
 }
 
