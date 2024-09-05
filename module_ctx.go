@@ -362,10 +362,6 @@ type BaseModuleContext interface {
 
 	EarlyGetMissingDependencies() []string
 
-	GetIncrementalEnabled() bool
-
-	GetIncrementalAnalysis() bool
-
 	OtherModuleProviderInitialValueHashes(module Module) []uint64
 
 	base() *baseModuleContext
@@ -397,7 +393,7 @@ type ModuleContext interface {
 	// handle missing dependencies on its own instead of having Blueprint treat them as an error.
 	GetMissingDependencies() []string
 
-	CacheBuildActions(key *BuildActionCacheKey, im *Incremental)
+	CacheBuildActions(key *BuildActionCacheKey)
 
 	RestoreBuildActions(key *BuildActionCacheKey) bool
 }
@@ -511,7 +507,6 @@ type moduleContext struct {
 	scope              *localScope
 	actionDefs         localBuildActions
 	handledMissingDeps bool
-	buildParams        []BuildParams
 }
 
 func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
@@ -628,26 +623,18 @@ func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface
 	m.context.setProvider(m.module, provider.provider(), value)
 }
 
-func (m *baseModuleContext) GetIncrementalEnabled() bool {
-	return m.context.GetIncrementalEnabled()
-}
-
-func (m *baseModuleContext) GetIncrementalAnalysis() bool {
-	return m.context.GetIncrementalAnalysis()
-}
-
 func (m *baseModuleContext) OtherModuleProviderInitialValueHashes(module Module) []uint64 {
 	return m.context.moduleInfo[module].providerInitialValueHashes
 }
 
-func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey, im *Incremental) {
+func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey) {
 	var providers []CachedProvider
-	for _, pKey := range (*im).BuildActionProviderKeys() {
-		if pKey.provider().mutator == "" {
+	for i, p := range m.module.providers {
+		if p != nil && providerRegistry[i].mutator == "" {
 			providers = append(providers,
 				CachedProvider{
-					Id:    pKey.provider(),
-					Value: &m.module.providers[pKey.provider().id],
+					Id:    providerRegistry[i],
+					Value: &p,
 				})
 		}
 	}
@@ -659,22 +646,6 @@ func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey, im *Incremen
 	data := BuildActionCachedData{
 		Providers: providers,
 		Pos:       &relPos,
-	}
-
-	var orderOnlyStrings *[]string
-	if m.module.incrementalRestored {
-		orderOnlyStrings = m.module.orderOnlyStrings
-	} else {
-		orderOnlyStrings = new([]string)
-		for _, b := range m.actionDefs.buildDefs {
-			if len(b.OrderOnly) == 0 && len(b.OrderOnlyStrings) > 0 {
-				*orderOnlyStrings = append(*orderOnlyStrings, b.OrderOnlyStrings...)
-			}
-		}
-	}
-
-	if orderOnlyStrings != nil && len(*orderOnlyStrings) > 0 {
-		data.OrderOnlyStrings = orderOnlyStrings
 	}
 
 	m.context.CacheBuildActions(key, &data)
@@ -689,7 +660,6 @@ func (m *moduleContext) RestoreBuildActions(key *BuildActionCacheKey) bool {
 			m.context.setProvider(m.module, provider.Id, *provider.Value)
 		}
 		m.module.incrementalRestored = true
-		m.module.buildActionCacheKey = key
 		m.module.orderOnlyStrings = data.OrderOnlyStrings
 		return true
 	}
@@ -885,11 +855,6 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 		panic(err)
 	}
 
-	if m.GetIncrementalEnabled() {
-		if im, ok := m.module.logicModule.(Incremental); ok && im.IncrementalSupported() {
-			m.buildParams = append(m.buildParams, params)
-		}
-	}
 	m.actionDefs.buildDefs = append(m.actionDefs.buildDefs, def)
 }
 
