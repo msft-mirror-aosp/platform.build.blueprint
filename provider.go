@@ -98,8 +98,6 @@ var providerRegistry []*providerKey
 // inside GenerateBuildActions for the module, and to get the value from GenerateBuildActions from
 // any module later in the build graph.
 func NewProvider[K any]() ProviderKey[K] {
-	var defaultValue K
-	gob.Register(defaultValue)
 	return NewMutatorProvider[K]("")
 }
 

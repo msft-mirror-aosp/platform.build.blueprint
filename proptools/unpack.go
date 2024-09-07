@@ -354,7 +354,6 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 			})
 			return reflect.New(configurableType), false
 		}
-		var postProcessors [][]postProcessor[string]
 		result := Configurable[string]{
 			propertyName: property.Name,
 			inner: &configurableInner[string]{
@@ -364,7 +363,6 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 					}},
 				},
 			},
-			postProcessors: &postProcessors,
 		}
 		return reflect.ValueOf(&result), true
 	case *parser.Bool:
@@ -376,7 +374,6 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 			})
 			return reflect.New(configurableType), false
 		}
-		var postProcessors [][]postProcessor[bool]
 		result := Configurable[bool]{
 			propertyName: property.Name,
 			inner: &configurableInner[bool]{
@@ -386,7 +383,6 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 					}},
 				},
 			},
-			postProcessors: &postProcessors,
 		}
 		return reflect.ValueOf(&result), true
 	case *parser.List:
@@ -415,7 +411,6 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 					value[i] = exprUnpacked.Interface().(string)
 				}
 			}
-			var postProcessors [][]postProcessor[[]string]
 			result := Configurable[[]string]{
 				propertyName: property.Name,
 				inner: &configurableInner[[]string]{
@@ -425,7 +420,6 @@ func (ctx *unpackContext) unpackToConfigurable(propertyName string, property *pa
 						}},
 					},
 				},
-				postProcessors: &postProcessors,
 			}
 			return reflect.ValueOf(&result), true
 		default:

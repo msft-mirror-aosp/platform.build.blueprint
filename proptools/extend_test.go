@@ -1259,166 +1259,196 @@ func appendPropertiesTestCases() []appendPropertyTestCase {
 		{
 			name: "Append configurable",
 			dst: &struct{ S Configurable[[]string] }{
-				S: NewConfigurable[[]string]([]ConfigurableCondition{{
-					functionName: "soong_config_variable",
-					args: []string{
-						"my_namespace",
-						"foo",
+				S: Configurable[[]string]{
+					inner: &configurableInner[[]string]{
+						single: singleConfigurable[[]string]{
+							conditions: []ConfigurableCondition{{
+								functionName: "soong_config_variable",
+								args: []string{
+									"my_namespace",
+									"foo",
+								},
+							}},
+							cases: []ConfigurableCase[[]string]{{
+								patterns: []ConfigurablePattern{{
+									typ:         configurablePatternTypeString,
+									stringValue: "a",
+								}},
+								value: &parser.List{Values: []parser.Expression{
+									&parser.String{Value: "1"},
+									&parser.String{Value: "2"},
+								}},
+							}},
+						},
 					},
-				}},
-					[]ConfigurableCase[[]string]{{
-						patterns: []ConfigurablePattern{{
-							typ:         configurablePatternTypeString,
-							stringValue: "a",
-						}},
-						value: &parser.List{Values: []parser.Expression{
-							&parser.String{Value: "1"},
-							&parser.String{Value: "2"},
-						}},
-					}},
-				),
+				},
 			},
 			src: &struct{ S Configurable[[]string] }{
-				S: NewConfigurable([]ConfigurableCondition{{
-					functionName: "release_variable",
-					args: []string{
-						"bar",
+				S: Configurable[[]string]{
+					inner: &configurableInner[[]string]{
+						single: singleConfigurable[[]string]{
+							conditions: []ConfigurableCondition{{
+								functionName: "release_variable",
+								args: []string{
+									"bar",
+								},
+							}},
+							cases: []ConfigurableCase[[]string]{{
+								patterns: []ConfigurablePattern{{
+									typ:         configurablePatternTypeString,
+									stringValue: "b",
+								}},
+								value: &parser.List{Values: []parser.Expression{
+									&parser.String{Value: "3"},
+									&parser.String{Value: "4"},
+								}},
+							}},
+						},
 					},
-				}},
-					[]ConfigurableCase[[]string]{{
-						patterns: []ConfigurablePattern{{
-							typ:         configurablePatternTypeString,
-							stringValue: "b",
-						}},
-						value: &parser.List{Values: []parser.Expression{
-							&parser.String{Value: "3"},
-							&parser.String{Value: "4"},
-						}},
-					}},
-				),
+				},
 			},
 			out: &struct{ S Configurable[[]string] }{
-				S: func() Configurable[[]string] {
-					result := NewConfigurable([]ConfigurableCondition{{
-						functionName: "soong_config_variable",
-						args: []string{
-							"my_namespace",
-							"foo",
+				S: Configurable[[]string]{
+					inner: &configurableInner[[]string]{
+						single: singleConfigurable[[]string]{
+							conditions: []ConfigurableCondition{{
+								functionName: "soong_config_variable",
+								args: []string{
+									"my_namespace",
+									"foo",
+								},
+							}},
+							cases: []ConfigurableCase[[]string]{{
+								patterns: []ConfigurablePattern{{
+									typ:         configurablePatternTypeString,
+									stringValue: "a",
+								}},
+								value: &parser.List{Values: []parser.Expression{
+									&parser.String{Value: "1"},
+									&parser.String{Value: "2"},
+								}},
+							}},
 						},
-					}},
-						[]ConfigurableCase[[]string]{{
-							patterns: []ConfigurablePattern{{
-								typ:         configurablePatternTypeString,
-								stringValue: "a",
-							}},
-							value: &parser.List{Values: []parser.Expression{
-								&parser.String{Value: "1"},
-								&parser.String{Value: "2"},
-							}},
-						}},
-					)
-					result.Append(NewConfigurable([]ConfigurableCondition{{
-						functionName: "release_variable",
-						args: []string{
-							"bar",
+						next: &configurableInner[[]string]{
+							single: singleConfigurable[[]string]{
+								conditions: []ConfigurableCondition{{
+									functionName: "release_variable",
+									args: []string{
+										"bar",
+									},
+								}},
+								cases: []ConfigurableCase[[]string]{{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "b",
+									}},
+									value: &parser.List{Values: []parser.Expression{
+										&parser.String{Value: "3"},
+										&parser.String{Value: "4"},
+									}},
+								}},
+							},
 						},
-					}},
-						[]ConfigurableCase[[]string]{{
-							patterns: []ConfigurablePattern{{
-								typ:         configurablePatternTypeString,
-								stringValue: "b",
-							}},
-							value: &parser.List{Values: []parser.Expression{
-								&parser.String{Value: "3"},
-								&parser.String{Value: "4"},
-							}},
-						}}))
-					return result
-				}(),
+					},
+				},
 			},
 		},
 		{
 			name:  "Prepend configurable",
 			order: Prepend,
 			dst: &struct{ S Configurable[[]string] }{
-				S: NewConfigurable([]ConfigurableCondition{{
-					functionName: "soong_config_variable",
-					args: []string{
-						"my_namespace",
-						"foo",
+				S: Configurable[[]string]{
+					inner: &configurableInner[[]string]{
+						single: singleConfigurable[[]string]{
+							conditions: []ConfigurableCondition{{
+								functionName: "soong_config_variable",
+								args: []string{
+									"my_namespace",
+									"foo",
+								},
+							}},
+							cases: []ConfigurableCase[[]string]{{
+								patterns: []ConfigurablePattern{{
+									typ:         configurablePatternTypeString,
+									stringValue: "a",
+								}},
+								value: &parser.List{Values: []parser.Expression{
+									&parser.String{Value: "1"},
+									&parser.String{Value: "2"},
+								}},
+							}},
+						},
 					},
-				}},
-					[]ConfigurableCase[[]string]{{
-						patterns: []ConfigurablePattern{{
-							typ:         configurablePatternTypeString,
-							stringValue: "a",
-						}},
-						value: &parser.List{Values: []parser.Expression{
-							&parser.String{Value: "1"},
-							&parser.String{Value: "2"},
-						}},
-					}},
-				),
+				},
 			},
 			src: &struct{ S Configurable[[]string] }{
-				S: NewConfigurable([]ConfigurableCondition{{
-					functionName: "release_variable",
-					args: []string{
-						"bar",
+				S: Configurable[[]string]{
+					inner: &configurableInner[[]string]{
+						single: singleConfigurable[[]string]{
+							conditions: []ConfigurableCondition{{
+								functionName: "release_variable",
+								args: []string{
+									"bar",
+								},
+							}},
+							cases: []ConfigurableCase[[]string]{{
+								patterns: []ConfigurablePattern{{
+									typ:         configurablePatternTypeString,
+									stringValue: "b",
+								}},
+								value: &parser.List{Values: []parser.Expression{
+									&parser.String{Value: "3"},
+									&parser.String{Value: "4"},
+								}},
+							}},
+						},
 					},
-				}},
-					[]ConfigurableCase[[]string]{{
-						patterns: []ConfigurablePattern{{
-							typ:         configurablePatternTypeString,
-							stringValue: "b",
-						}},
-						value: &parser.List{Values: []parser.Expression{
-							&parser.String{Value: "3"},
-							&parser.String{Value: "4"},
-						}},
-					}},
-				),
+				},
 			},
 			out: &struct{ S Configurable[[]string] }{
-				S: func() Configurable[[]string] {
-					result := NewConfigurable(
-						[]ConfigurableCondition{{
-							functionName: "release_variable",
-							args: []string{
-								"bar",
+				S: Configurable[[]string]{
+					inner: &configurableInner[[]string]{
+						single: singleConfigurable[[]string]{
+							conditions: []ConfigurableCondition{{
+								functionName: "release_variable",
+								args: []string{
+									"bar",
+								},
+							}},
+							cases: []ConfigurableCase[[]string]{{
+								patterns: []ConfigurablePattern{{
+									typ:         configurablePatternTypeString,
+									stringValue: "b",
+								}},
+								value: &parser.List{Values: []parser.Expression{
+									&parser.String{Value: "3"},
+									&parser.String{Value: "4"},
+								}},
+							}},
+						},
+						next: &configurableInner[[]string]{
+							single: singleConfigurable[[]string]{
+								conditions: []ConfigurableCondition{{
+									functionName: "soong_config_variable",
+									args: []string{
+										"my_namespace",
+										"foo",
+									},
+								}},
+								cases: []ConfigurableCase[[]string]{{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "a",
+									}},
+									value: &parser.List{Values: []parser.Expression{
+										&parser.String{Value: "1"},
+										&parser.String{Value: "2"},
+									}},
+								}},
 							},
-						}},
-						[]ConfigurableCase[[]string]{{
-							patterns: []ConfigurablePattern{{
-								typ:         configurablePatternTypeString,
-								stringValue: "b",
-							}},
-							value: &parser.List{Values: []parser.Expression{
-								&parser.String{Value: "3"},
-								&parser.String{Value: "4"},
-							}},
-						}},
-					)
-					result.Append(NewConfigurable(
-						[]ConfigurableCondition{{
-							functionName: "soong_config_variable",
-							args: []string{
-								"my_namespace",
-								"foo",
-							},
-						}},
-						[]ConfigurableCase[[]string]{{
-							patterns: []ConfigurablePattern{{
-								typ:         configurablePatternTypeString,
-								stringValue: "a",
-							}},
-							value: &parser.List{Values: []parser.Expression{
-								&parser.String{Value: "1"},
-								&parser.String{Value: "2"},
-							}},
-						}}))
-					return result
-				}(),
+						},
+					},
+				},
 			},
 		},
 	}
@@ -1888,24 +1918,31 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			order: Append,
 			dst: []interface{}{
 				&struct{ S Configurable[bool] }{
-					S: NewConfigurable[bool]([]ConfigurableCondition{{
-						functionName: "soong_config_variable",
-						args: []string{
-							"my_namespace",
-							"foo",
+					S: Configurable[bool]{
+						inner: &configurableInner[bool]{
+							single: singleConfigurable[bool]{
+								conditions: []ConfigurableCondition{{
+									functionName: "soong_config_variable",
+									args: []string{
+										"my_namespace",
+										"foo",
+									},
+								}},
+								cases: []ConfigurableCase[bool]{{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "a",
+									}},
+									value: &parser.Bool{Value: true},
+								}, {
+									patterns: []ConfigurablePattern{{
+										typ: configurablePatternTypeDefault,
+									}},
+									value: &parser.Bool{Value: false},
+								}},
+							},
 						},
-					}}, []ConfigurableCase[bool]{{
-						patterns: []ConfigurablePattern{{
-							typ:         configurablePatternTypeString,
-							stringValue: "a",
-						}},
-						value: &parser.Bool{Value: true},
-					}, {
-						patterns: []ConfigurablePattern{{
-							typ: configurablePatternTypeDefault,
-						}},
-						value: &parser.Bool{Value: false},
-					}}),
+					},
 				},
 			},
 			src: &struct{ S *bool }{
@@ -1913,30 +1950,38 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			},
 			out: []interface{}{
 				&struct{ S Configurable[bool] }{
-					S: func() Configurable[bool] {
-						result := NewConfigurable[bool]([]ConfigurableCondition{{
-							functionName: "soong_config_variable",
-							args: []string{
-								"my_namespace",
-								"foo",
+					S: Configurable[bool]{
+						inner: &configurableInner[bool]{
+							single: singleConfigurable[bool]{
+								conditions: []ConfigurableCondition{{
+									functionName: "soong_config_variable",
+									args: []string{
+										"my_namespace",
+										"foo",
+									},
+								}},
+								cases: []ConfigurableCase[bool]{{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "a",
+									}},
+									value: &parser.Bool{Value: true},
+								}, {
+									patterns: []ConfigurablePattern{{
+										typ: configurablePatternTypeDefault,
+									}},
+									value: &parser.Bool{Value: false},
+								}},
 							},
-						}},
-							[]ConfigurableCase[bool]{{
-								patterns: []ConfigurablePattern{{
-									typ:         configurablePatternTypeString,
-									stringValue: "a",
-								}},
-								value: &parser.Bool{Value: true},
-							}, {
-								patterns: []ConfigurablePattern{{
-									typ: configurablePatternTypeDefault,
-								}},
-								value: &parser.Bool{Value: false},
-							}},
-						)
-						result.AppendSimpleValue(true)
-						return result
-					}(),
+							next: &configurableInner[bool]{
+								single: singleConfigurable[bool]{
+									cases: []ConfigurableCase[bool]{{
+										value: &parser.Bool{Value: true},
+									}},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -1945,26 +1990,31 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			order: Append,
 			dst: []interface{}{
 				&struct{ S Configurable[bool] }{
-					S: NewConfigurable[bool]([]ConfigurableCondition{{
-						functionName: "soong_config_variable",
-						args: []string{
-							"my_namespace",
-							"foo",
+					S: Configurable[bool]{
+						inner: &configurableInner[bool]{
+							single: singleConfigurable[bool]{
+								conditions: []ConfigurableCondition{{
+									functionName: "soong_config_variable",
+									args: []string{
+										"my_namespace",
+										"foo",
+									},
+								}},
+								cases: []ConfigurableCase[bool]{{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "a",
+									}},
+									value: &parser.Bool{Value: true},
+								}, {
+									patterns: []ConfigurablePattern{{
+										typ: configurablePatternTypeDefault,
+									}},
+									value: &parser.Bool{Value: false},
+								}},
+							},
 						},
-					}},
-						[]ConfigurableCase[bool]{{
-							patterns: []ConfigurablePattern{{
-								typ:         configurablePatternTypeString,
-								stringValue: "a",
-							}},
-							value: &parser.Bool{Value: true},
-						}, {
-							patterns: []ConfigurablePattern{{
-								typ: configurablePatternTypeDefault,
-							}},
-							value: &parser.Bool{Value: false},
-						}},
-					),
+					},
 				},
 			},
 			src: &struct{ S bool }{
@@ -1972,31 +2022,38 @@ func appendMatchingPropertiesTestCases() []appendMatchingPropertiesTestCase {
 			},
 			out: []interface{}{
 				&struct{ S Configurable[bool] }{
-					S: func() Configurable[bool] {
-						result := NewConfigurable[bool](
-							[]ConfigurableCondition{{
-								functionName: "soong_config_variable",
-								args: []string{
-									"my_namespace",
-									"foo",
+					S: Configurable[bool]{
+						inner: &configurableInner[bool]{
+							single: singleConfigurable[bool]{
+								conditions: []ConfigurableCondition{{
+									functionName: "soong_config_variable",
+									args: []string{
+										"my_namespace",
+										"foo",
+									},
+								}},
+								cases: []ConfigurableCase[bool]{{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "a",
+									}},
+									value: &parser.Bool{Value: true},
+								}, {
+									patterns: []ConfigurablePattern{{
+										typ: configurablePatternTypeDefault,
+									}},
+									value: &parser.Bool{Value: false},
+								}},
+							},
+							next: &configurableInner[bool]{
+								single: singleConfigurable[bool]{
+									cases: []ConfigurableCase[bool]{{
+										value: &parser.Bool{Value: true},
+									}},
 								},
-							}},
-							[]ConfigurableCase[bool]{{
-								patterns: []ConfigurablePattern{{
-									typ:         configurablePatternTypeString,
-									stringValue: "a",
-								}},
-								value: &parser.Bool{Value: true},
-							}, {
-								patterns: []ConfigurablePattern{{
-									typ: configurablePatternTypeDefault,
-								}},
-								value: &parser.Bool{Value: false},
-							}},
-						)
-						result.AppendSimpleValue(true)
-						return result
-					}(),
+							},
+						},
+					},
 				},
 			},
 		},

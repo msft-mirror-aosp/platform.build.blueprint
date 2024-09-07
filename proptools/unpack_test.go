@@ -733,21 +733,23 @@ var validUnpackTestCases = []struct {
 			&struct {
 				Foo Configurable[string]
 			}{
-				Foo: newConfigurableWithPropertyName(
-					"foo",
-					nil,
-					[]ConfigurableCase[string]{{
-						value: &parser.String{
-							LiteralPos: scanner.Position{
-								Offset: 17,
-								Line:   3,
-								Column: 10,
-							},
-							Value: "bar",
+				Foo: Configurable[string]{
+					propertyName: "foo",
+					inner: &configurableInner[string]{
+						single: singleConfigurable[string]{
+							cases: []ConfigurableCase[string]{{
+								value: &parser.String{
+									LiteralPos: scanner.Position{
+										Offset: 17,
+										Line:   3,
+										Column: 10,
+									},
+									Value: "bar",
+								},
+							}},
 						},
-					}},
-					false,
-				),
+					},
+				},
 			},
 		},
 	},
@@ -762,22 +764,24 @@ var validUnpackTestCases = []struct {
 			&struct {
 				Foo Configurable[bool]
 			}{
-				Foo: newConfigurableWithPropertyName(
-					"foo",
-					nil,
-					[]ConfigurableCase[bool]{{
-						value: &parser.Bool{
-							LiteralPos: scanner.Position{
-								Offset: 17,
-								Line:   3,
-								Column: 10,
-							},
-							Value: true,
-							Token: "true",
+				Foo: Configurable[bool]{
+					propertyName: "foo",
+					inner: &configurableInner[bool]{
+						single: singleConfigurable[bool]{
+							cases: []ConfigurableCase[bool]{{
+								value: &parser.Bool{
+									LiteralPos: scanner.Position{
+										Offset: 17,
+										Line:   3,
+										Column: 10,
+									},
+									Value: true,
+									Token: "true",
+								},
+							}},
 						},
-					}},
-					false,
-				),
+					},
+				},
 			},
 		},
 	},
@@ -792,43 +796,45 @@ var validUnpackTestCases = []struct {
 			&struct {
 				Foo Configurable[[]string]
 			}{
-				Foo: newConfigurableWithPropertyName(
-					"foo",
-					nil,
-					[]ConfigurableCase[[]string]{{
-						value: &parser.List{
-							LBracePos: scanner.Position{
-								Offset: 17,
-								Line:   3,
-								Column: 10,
-							},
-							RBracePos: scanner.Position{
-								Offset: 26,
-								Line:   3,
-								Column: 19,
-							},
-							Values: []parser.Expression{
-								&parser.String{
-									LiteralPos: scanner.Position{
-										Offset: 18,
+				Foo: Configurable[[]string]{
+					propertyName: "foo",
+					inner: &configurableInner[[]string]{
+						single: singleConfigurable[[]string]{
+							cases: []ConfigurableCase[[]string]{{
+								value: &parser.List{
+									LBracePos: scanner.Position{
+										Offset: 17,
 										Line:   3,
-										Column: 11,
+										Column: 10,
 									},
-									Value: "a",
-								},
-								&parser.String{
-									LiteralPos: scanner.Position{
-										Offset: 23,
+									RBracePos: scanner.Position{
+										Offset: 26,
 										Line:   3,
-										Column: 16,
+										Column: 19,
 									},
-									Value: "b",
+									Values: []parser.Expression{
+										&parser.String{
+											LiteralPos: scanner.Position{
+												Offset: 18,
+												Line:   3,
+												Column: 11,
+											},
+											Value: "a",
+										},
+										&parser.String{
+											LiteralPos: scanner.Position{
+												Offset: 23,
+												Line:   3,
+												Column: 16,
+											},
+											Value: "b",
+										},
+									},
 								},
-							},
+							}},
 						},
-					}},
-					false,
-				),
+					},
+				},
 			},
 		},
 	},
@@ -847,60 +853,64 @@ var validUnpackTestCases = []struct {
 			&struct {
 				Foo Configurable[string]
 			}{
-				Foo: newConfigurableWithPropertyName(
-					"foo",
-					[]ConfigurableCondition{{
-						functionName: "soong_config_variable",
-						args: []string{
-							"my_namespace",
-							"my_variable",
-						},
-					}},
-					[]ConfigurableCase[string]{
-						{
-							patterns: []ConfigurablePattern{{
-								typ:         configurablePatternTypeString,
-								stringValue: "a",
-							}},
-							value: &parser.String{
-								LiteralPos: scanner.Position{
-									Offset: 90,
-									Line:   4,
-									Column: 11,
+				Foo: Configurable[string]{
+					propertyName: "foo",
+					inner: &configurableInner[string]{
+						single: singleConfigurable[string]{
+							scope: parser.NewScope(nil),
+							conditions: []ConfigurableCondition{{
+								functionName: "soong_config_variable",
+								args: []string{
+									"my_namespace",
+									"my_variable",
 								},
-								Value: "a2",
-							},
-						},
-						{
-							patterns: []ConfigurablePattern{{
-								typ:         configurablePatternTypeString,
-								stringValue: "b",
 							}},
-							value: &parser.String{
-								LiteralPos: scanner.Position{
-									Offset: 106,
-									Line:   5,
-									Column: 11,
+							cases: []ConfigurableCase[string]{
+								{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "a",
+									}},
+									value: &parser.String{
+										LiteralPos: scanner.Position{
+											Offset: 90,
+											Line:   4,
+											Column: 11,
+										},
+										Value: "a2",
+									},
 								},
-								Value: "b2",
-							},
-						},
-						{
-							patterns: []ConfigurablePattern{{
-								typ: configurablePatternTypeDefault,
-							}},
-							value: &parser.String{
-								LiteralPos: scanner.Position{
-									Offset: 126,
-									Line:   6,
-									Column: 15,
+								{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "b",
+									}},
+									value: &parser.String{
+										LiteralPos: scanner.Position{
+											Offset: 106,
+											Line:   5,
+											Column: 11,
+										},
+										Value: "b2",
+									},
 								},
-								Value: "c2",
+								{
+									patterns: []ConfigurablePattern{{
+										typ: configurablePatternTypeDefault,
+									}},
+									value: &parser.String{
+										LiteralPos: scanner.Position{
+											Offset: 126,
+											Line:   6,
+											Column: 15,
+										},
+										Value: "c2",
+									},
+								},
 							},
 						},
 					},
-					true,
-				),
+				},
 			},
 		},
 	},
@@ -923,117 +933,119 @@ var validUnpackTestCases = []struct {
 			&struct {
 				Foo Configurable[string]
 			}{
-				Foo: func() Configurable[string] {
-					result := newConfigurableWithPropertyName(
-						"foo",
-						[]ConfigurableCondition{{
-							functionName: "soong_config_variable",
-							args: []string{
-								"my_namespace",
-								"my_variable",
-							},
-						}},
-						[]ConfigurableCase[string]{
-							{
-								patterns: []ConfigurablePattern{{
-									typ:         configurablePatternTypeString,
-									stringValue: "a",
-								}},
-								value: &parser.String{
-									LiteralPos: scanner.Position{
-										Offset: 90,
-										Line:   4,
-										Column: 11,
-									},
-									Value: "a2",
+				Foo: Configurable[string]{
+					propertyName: "foo",
+					inner: &configurableInner[string]{
+						single: singleConfigurable[string]{
+							scope: parser.NewScope(nil),
+							conditions: []ConfigurableCondition{{
+								functionName: "soong_config_variable",
+								args: []string{
+									"my_namespace",
+									"my_variable",
 								},
-							},
-							{
-								patterns: []ConfigurablePattern{{
-									typ:         configurablePatternTypeString,
-									stringValue: "b",
-								}},
-								value: &parser.String{
-									LiteralPos: scanner.Position{
-										Offset: 106,
-										Line:   5,
-										Column: 11,
+							}},
+							cases: []ConfigurableCase[string]{
+								{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "a",
+									}},
+									value: &parser.String{
+										LiteralPos: scanner.Position{
+											Offset: 90,
+											Line:   4,
+											Column: 11,
+										},
+										Value: "a2",
 									},
-									Value: "b2",
 								},
-							},
-							{
-								patterns: []ConfigurablePattern{{
-									typ: configurablePatternTypeDefault,
-								}},
-								value: &parser.String{
-									LiteralPos: scanner.Position{
-										Offset: 126,
-										Line:   6,
-										Column: 15,
+								{
+									patterns: []ConfigurablePattern{{
+										typ:         configurablePatternTypeString,
+										stringValue: "b",
+									}},
+									value: &parser.String{
+										LiteralPos: scanner.Position{
+											Offset: 106,
+											Line:   5,
+											Column: 11,
+										},
+										Value: "b2",
 									},
-									Value: "c2",
 								},
-							},
-						},
-						true,
-					)
-					result.Append(newConfigurableWithPropertyName(
-						"",
-						[]ConfigurableCondition{{
-							functionName: "soong_config_variable",
-							args: []string{
-								"my_namespace",
-								"my_2nd_variable",
-							},
-						}},
-						[]ConfigurableCase[string]{
-							{
-								patterns: []ConfigurablePattern{{
-									typ:         configurablePatternTypeString,
-									stringValue: "d",
-								}},
-								value: &parser.String{
-									LiteralPos: scanner.Position{
-										Offset: 218,
-										Line:   8,
-										Column: 11,
+								{
+									patterns: []ConfigurablePattern{{
+										typ: configurablePatternTypeDefault,
+									}},
+									value: &parser.String{
+										LiteralPos: scanner.Position{
+											Offset: 126,
+											Line:   6,
+											Column: 15,
+										},
+										Value: "c2",
 									},
-									Value: "d2",
-								},
-							},
-							{
-								patterns: []ConfigurablePattern{{
-									typ:         configurablePatternTypeString,
-									stringValue: "e",
-								}},
-								value: &parser.String{
-									LiteralPos: scanner.Position{
-										Offset: 234,
-										Line:   9,
-										Column: 11,
-									},
-									Value: "e2",
-								},
-							},
-							{
-								patterns: []ConfigurablePattern{{
-									typ: configurablePatternTypeDefault,
-								}},
-								value: &parser.String{
-									LiteralPos: scanner.Position{
-										Offset: 254,
-										Line:   10,
-										Column: 15,
-									},
-									Value: "f2",
 								},
 							},
 						},
-						true,
-					))
-					return result
-				}(),
+						next: &configurableInner[string]{
+							single: singleConfigurable[string]{
+								scope: parser.NewScope(nil),
+								conditions: []ConfigurableCondition{{
+									functionName: "soong_config_variable",
+									args: []string{
+										"my_namespace",
+										"my_2nd_variable",
+									},
+								}},
+								cases: []ConfigurableCase[string]{
+									{
+										patterns: []ConfigurablePattern{{
+											typ:         configurablePatternTypeString,
+											stringValue: "d",
+										}},
+										value: &parser.String{
+											LiteralPos: scanner.Position{
+												Offset: 218,
+												Line:   8,
+												Column: 11,
+											},
+											Value: "d2",
+										},
+									},
+									{
+										patterns: []ConfigurablePattern{{
+											typ:         configurablePatternTypeString,
+											stringValue: "e",
+										}},
+										value: &parser.String{
+											LiteralPos: scanner.Position{
+												Offset: 234,
+												Line:   9,
+												Column: 11,
+											},
+											Value: "e2",
+										},
+									},
+									{
+										patterns: []ConfigurablePattern{{
+											typ: configurablePatternTypeDefault,
+										}},
+										value: &parser.String{
+											LiteralPos: scanner.Position{
+												Offset: 254,
+												Line:   10,
+												Column: 15,
+											},
+											Value: "f2",
+										},
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 		},
 	},
@@ -1052,37 +1064,41 @@ var validUnpackTestCases = []struct {
 				Foo Configurable[string]
 				Bar Configurable[bool]
 			}{
-				Foo: newConfigurableWithPropertyName(
-					"foo",
-					nil,
-					[]ConfigurableCase[string]{{
-						value: &parser.String{
-							LiteralPos: scanner.Position{
-								Offset: 25,
-								Line:   2,
-								Column: 25,
-							},
-							Value: "asdf",
+				Foo: Configurable[string]{
+					propertyName: "foo",
+					inner: &configurableInner[string]{
+						single: singleConfigurable[string]{
+							cases: []ConfigurableCase[string]{{
+								value: &parser.String{
+									LiteralPos: scanner.Position{
+										Offset: 25,
+										Line:   2,
+										Column: 25,
+									},
+									Value: "asdf",
+								},
+							}},
 						},
-					}},
-					false,
-				),
-				Bar: newConfigurableWithPropertyName(
-					"bar",
-					nil,
-					[]ConfigurableCase[bool]{{
-						value: &parser.Bool{
-							LiteralPos: scanner.Position{
-								Offset: 54,
-								Line:   3,
-								Column: 23,
-							},
-							Value: true,
-							Token: "true",
+					},
+				},
+				Bar: Configurable[bool]{
+					propertyName: "bar",
+					inner: &configurableInner[bool]{
+						single: singleConfigurable[bool]{
+							cases: []ConfigurableCase[bool]{{
+								value: &parser.Bool{
+									LiteralPos: scanner.Position{
+										Offset: 54,
+										Line:   3,
+										Column: 23,
+									},
+									Value: true,
+									Token: "true",
+								},
+							}},
 						},
-					}},
-					false,
-				),
+					},
+				},
 			},
 		},
 	},

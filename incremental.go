@@ -14,9 +14,7 @@
 
 package blueprint
 
-import (
-	"text/scanner"
-)
+import "text/scanner"
 
 type BuildActionCacheKey struct {
 	Id        string
@@ -45,6 +43,8 @@ type BuildActionCacheInput struct {
 
 type Incremental interface {
 	IncrementalSupported() bool
+	// TODO(b/357130153): Get rid of this method.
+	BuildActionProviderKeys() []AnyProviderKey
 }
 
 type IncrementalModule struct{}
