@@ -468,6 +468,12 @@ func NewConfigurable[T ConfigurableElements](conditions []ConfigurableCondition,
 	}
 }
 
+func NewSimpleConfigurable[T ConfigurableElements](value T) Configurable[T] {
+	return NewConfigurable(nil, []ConfigurableCase[T]{
+		NewConfigurableCase(nil, &value),
+	})
+}
+
 func newConfigurableWithPropertyName[T ConfigurableElements](propertyName string, conditions []ConfigurableCondition, cases []ConfigurableCase[T], addScope bool) Configurable[T] {
 	result := NewConfigurable(conditions, cases)
 	result.propertyName = propertyName
@@ -502,8 +508,12 @@ func (c *Configurable[T]) AddPostProcessor(p func(T) T) {
 	// See Configurable.evaluate for more details on the postProcessors algorithm
 	// and data structure.
 	num_links := c.inner.numLinks()
-	if c.postProcessors == nil || len(*c.postProcessors) == 0 {
-		c.postProcessors = &[][]postProcessor[T]{{{
+	if c.postProcessors == nil {
+		var nilCases []ConfigurableCase[T]
+		c.initialize(nil, "", nil, nilCases)
+	}
+	if len(*c.postProcessors) == 0 {
+		*c.postProcessors = [][]postProcessor[T]{{{
 			f:     p,
 			start: 0,
 			end:   num_links,
