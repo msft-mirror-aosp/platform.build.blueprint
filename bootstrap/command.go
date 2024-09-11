@@ -100,7 +100,7 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}
 	ctx.EndEvent("list_modules")
 
-	ctx.RegisterBottomUpMutator("bootstrap_plugin_deps", pluginDeps)
+	ctx.RegisterBottomUpMutator("bootstrap_deps", bootstrapDeps)
 	ctx.RegisterSingletonType("bootstrap", newSingletonFactory(), false)
 	RegisterGoModuleTypes(ctx)
 
