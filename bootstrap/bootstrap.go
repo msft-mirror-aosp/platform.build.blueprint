@@ -175,6 +175,7 @@ var PackageProvider = blueprint.NewProvider[*PackageInfo]()
 
 type BinaryInfo struct {
 	InstallPath string
+	TestTargets []string
 }
 
 var BinaryProvider = blueprint.NewProvider[*BinaryInfo]()
@@ -417,8 +418,9 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		testSrcs = append(g.properties.TestSrcs, g.properties.Linux.TestSrcs...)
 	}
 
-	testDeps = buildGoTest(ctx, testRoot(ctx), testArchiveFile,
+	testResultFile := buildGoTest(ctx, testRoot(ctx), testArchiveFile,
 		name, srcs, genSrcs, testSrcs, g.properties.EmbedSrcs)
+	testDeps = append(testDeps, testResultFile...)
 
 	buildGoPackage(ctx, objDir, "main", archiveFile, srcs, genSrcs, g.properties.EmbedSrcs)
 
@@ -463,6 +465,7 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	blueprint.SetProvider(ctx, blueprint.SrcsFileProviderKey, blueprint.SrcsFileProviderData{SrcPaths: srcs})
 	blueprint.SetProvider(ctx, BinaryProvider, &BinaryInfo{
 		InstallPath: g.installPath,
+		TestTargets: testResultFile,
 	})
 }
 
@@ -662,6 +665,7 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 		if ctx.PrimaryModule(module) == module {
 			if binaryInfo, ok := blueprint.SingletonModuleProvider(ctx, module, BinaryProvider); ok {
 				blueprintTools = append(blueprintTools, binaryInfo.InstallPath)
+				blueprintTests = append(blueprintTests, binaryInfo.TestTargets...)
 				if _, ok := blueprint.SingletonModuleProvider(ctx, module, PrimaryBuilderProvider); ok {
 					primaryBuilders = append(primaryBuilders, binaryInfo.InstallPath)
 				}
