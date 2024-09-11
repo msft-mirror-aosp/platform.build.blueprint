@@ -335,38 +335,6 @@ func (g *GoPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	blueprint.SetProvider(ctx, blueprint.SrcsFileProviderKey, blueprint.SrcsFileProviderData{SrcPaths: srcs})
 }
 
-func (g *GoPackage) Srcs() []string {
-	return g.properties.Srcs
-}
-
-func (g *GoPackage) LinuxSrcs() []string {
-	return g.properties.Linux.Srcs
-}
-
-func (g *GoPackage) DarwinSrcs() []string {
-	return g.properties.Darwin.Srcs
-}
-
-func (g *GoPackage) TestSrcs() []string {
-	return g.properties.TestSrcs
-}
-
-func (g *GoPackage) LinuxTestSrcs() []string {
-	return g.properties.Linux.TestSrcs
-}
-
-func (g *GoPackage) DarwinTestSrcs() []string {
-	return g.properties.Darwin.TestSrcs
-}
-
-func (g *GoPackage) Deps() []string {
-	return g.properties.Deps
-}
-
-func (g *GoPackage) TestData() []string {
-	return g.properties.TestData
-}
-
 // A GoBinary is a module for building executable binaries from Go sources.
 type GoBinary struct {
 	blueprint.SimpleName
@@ -411,38 +379,6 @@ func (g *GoBinary) DynamicDependencies(ctx blueprint.DynamicDependerModuleContex
 func (g *GoBinary) isGoBinary() {}
 func (g *GoBinary) InstallPath() string {
 	return g.installPath
-}
-
-func (g *GoBinary) Srcs() []string {
-	return g.properties.Srcs
-}
-
-func (g *GoBinary) LinuxSrcs() []string {
-	return g.properties.Linux.Srcs
-}
-
-func (g *GoBinary) DarwinSrcs() []string {
-	return g.properties.Darwin.Srcs
-}
-
-func (g *GoBinary) TestSrcs() []string {
-	return g.properties.TestSrcs
-}
-
-func (g *GoBinary) LinuxTestSrcs() []string {
-	return g.properties.Linux.TestSrcs
-}
-
-func (g *GoBinary) DarwinTestSrcs() []string {
-	return g.properties.Darwin.TestSrcs
-}
-
-func (g *GoBinary) Deps() []string {
-	return g.properties.Deps
-}
-
-func (g *GoBinary) TestData() []string {
-	return g.properties.TestData
 }
 
 func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
