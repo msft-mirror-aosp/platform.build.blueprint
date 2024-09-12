@@ -360,6 +360,10 @@ type BaseModuleContext interface {
 	// This method shouldn't be used directly, prefer the type-safe android.SetProvider instead.
 	SetProvider(provider AnyProviderKey, value any)
 
+	// HasMutatorFinished returns true if the given mutator has finished running.
+	// It will panic if given an invalid mutator name.
+	HasMutatorFinished(mutatorName string) bool
+
 	EarlyGetMissingDependencies() []string
 
 	OtherModuleProviderInitialValueHashes(module Module) []uint64
@@ -494,6 +498,10 @@ func (d *baseModuleContext) Fs() pathtools.FileSystem {
 
 func (d *baseModuleContext) Namespace() Namespace {
 	return d.context.nameInterface.GetNamespace(newNamespaceContext(d.module))
+}
+
+func (d *baseModuleContext) HasMutatorFinished(mutatorName string) bool {
+	return d.context.HasMutatorFinished(mutatorName)
 }
 
 var _ ModuleContext = (*moduleContext)(nil)

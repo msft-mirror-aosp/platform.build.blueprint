@@ -854,6 +854,18 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 	return info
 }
 
+// HasMutatorFinished returns true if the given mutator has finished running.
+// It will panic if given an invalid mutator name.
+func (c *Context) HasMutatorFinished(mutatorName string) bool {
+	for _, mutator := range c.mutatorInfo {
+		if mutator.name == mutatorName {
+			finished, ok := c.finishedMutators[mutator]
+			return ok && finished
+		}
+	}
+	panic(fmt.Sprintf("unknown mutator %q", mutatorName))
+}
+
 type MutatorHandle interface {
 	// Set the mutator to visit modules in parallel while maintaining ordering.  Calling any
 	// method on the mutator context is thread-safe, but the mutator must handle synchronization
