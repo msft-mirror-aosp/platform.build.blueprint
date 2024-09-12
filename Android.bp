@@ -166,7 +166,6 @@ bootstrap_go_package {
         "bootstrap/bootstrap.go",
         "bootstrap/command.go",
         "bootstrap/config.go",
-        "bootstrap/glob.go",
         "bootstrap/writedocs.go",
     ],
 }
@@ -188,12 +187,6 @@ bootstrap_go_package {
         "bootstrap/bpdoc/properties_test.go",
         "bootstrap/bpdoc/reader_test.go",
     ],
-}
-
-blueprint_go_binary {
-    name: "bpglob",
-    deps: ["blueprint-pathtools"],
-    srcs: ["bootstrap/bpglob/bpglob.go"],
 }
 
 blueprint_go_binary {
