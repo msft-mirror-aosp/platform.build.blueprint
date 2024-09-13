@@ -191,6 +191,7 @@ type EarlyModuleContext interface {
 	AddNinjaFileDeps(deps ...string)
 
 	moduleInfo() *moduleInfo
+
 	error(err error)
 
 	// Namespace returns the Namespace object provided by the NameInterface set by Context.SetNameInterface, or the
@@ -359,13 +360,11 @@ type BaseModuleContext interface {
 	// This method shouldn't be used directly, prefer the type-safe android.SetProvider instead.
 	SetProvider(provider AnyProviderKey, value any)
 
+	// HasMutatorFinished returns true if the given mutator has finished running.
+	// It will panic if given an invalid mutator name.
+	HasMutatorFinished(mutatorName string) bool
+
 	EarlyGetMissingDependencies() []string
-
-	GetIncrementalEnabled() bool
-
-	GetIncrementalAnalysis() bool
-
-	OtherModuleProviderInitialValueHashes(module Module) []uint64
 
 	base() *baseModuleContext
 }
@@ -379,7 +378,7 @@ type ModuleContext interface {
 	// to ensure that each variant of a module gets its own intermediates directory to write to.
 	ModuleSubDir() string
 
-	ModuleId() string
+	ModuleCacheKey() string
 
 	// Variable creates a new ninja variable scoped to the module.  It can be referenced by calls to Rule and Build
 	// in the same module.
@@ -395,10 +394,6 @@ type ModuleContext interface {
 	// but do not exist.  It can be used with Context.SetAllowMissingDependencies to allow the primary builder to
 	// handle missing dependencies on its own instead of having Blueprint treat them as an error.
 	GetMissingDependencies() []string
-
-	CacheBuildActions(key *BuildActionCacheKey, im *Incremental)
-
-	RestoreBuildActions(key *BuildActionCacheKey, im *Incremental) bool
 }
 
 var _ BaseModuleContext = (*baseModuleContext)(nil)
@@ -503,6 +498,10 @@ func (d *baseModuleContext) Namespace() Namespace {
 	return d.context.nameInterface.GetNamespace(newNamespaceContext(d.module))
 }
 
+func (d *baseModuleContext) HasMutatorFinished(mutatorName string) bool {
+	return d.context.HasMutatorFinished(mutatorName)
+}
+
 var _ ModuleContext = (*moduleContext)(nil)
 
 type moduleContext struct {
@@ -510,7 +509,6 @@ type moduleContext struct {
 	scope              *localScope
 	actionDefs         localBuildActions
 	handledMissingDeps bool
-	buildParams        []BuildParams
 }
 
 func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
@@ -548,8 +546,12 @@ func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 
 func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) DependencyTag {
 	// fast path for calling OtherModuleDependencyTag from inside VisitDirectDeps
-	if logicModule == m.visitingDep.module.logicModule {
+	if m.visitingDep.module != nil && logicModule == m.visitingDep.module.logicModule {
 		return m.visitingDep.tag
+	}
+
+	if m.visitingParent == nil {
+		return nil
 	}
 
 	for _, dep := range m.visitingParent.directDeps {
@@ -623,102 +625,84 @@ func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface
 	m.context.setProvider(m.module, provider.provider(), value)
 }
 
-func (m *baseModuleContext) GetIncrementalEnabled() bool {
-	return m.context.GetIncrementalEnabled()
-}
-
-func (m *baseModuleContext) GetIncrementalAnalysis() bool {
-	return m.context.GetIncrementalAnalysis()
-}
-
-func (m *baseModuleContext) OtherModuleProviderInitialValueHashes(module Module) []uint64 {
-	return m.context.moduleInfo[module].providerInitialValueHashes
-}
-
-func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey, im *Incremental) {
+func (m *moduleContext) cacheModuleBuildActions(key *BuildActionCacheKey) {
 	var providers []CachedProvider
-	for _, pKey := range (*im).BuildActionProviderKeys() {
-		if pKey.provider().mutator == "" {
+	for i, p := range m.module.providers {
+		if p != nil && providerRegistry[i].mutator == "" {
 			providers = append(providers,
 				CachedProvider{
-					Id: &providerKey{
-						id:      pKey.provider().id,
-						typ:     pKey.provider().typ,
-						mutator: pKey.provider().mutator,
-					},
-					Value: &m.module.providers[pKey.provider().id],
+					Id:    providerRegistry[i],
+					Value: &p,
 				})
 		}
 	}
 
-	var buildParams []CachedBuildParams
-	for _, params := range m.buildParams {
-		buildParams = append(buildParams, CachedBuildParams{
-			Comment:         params.Comment,
-			Depfile:         params.Depfile,
-			Deps:            params.Deps,
-			Description:     params.Description,
-			Rule:            params.Rule.name(),
-			Outputs:         params.Outputs,
-			ImplicitOutputs: params.ImplicitOutputs,
-			Inputs:          params.Inputs,
-			Implicits:       params.Implicits,
-			OrderOnly:       params.OrderOnly,
-			Validations:     params.Validations,
-			Args:            params.Args,
-			Optional:        params.Optional,
-		})
+	// These show up in the ninja file, so we need to cache these to ensure we
+	// re-generate ninja file if they changed.
+	relPos := m.module.pos
+	relPos.Filename = m.module.relBlueprintsFile
+	data := BuildActionCachedData{
+		Providers: providers,
+		Pos:       &relPos,
 	}
 
-	if len(providers) > 0 || len(buildParams) > 0 {
-		data := BuildActionCachedData{
-			Providers: providers,
-			BuildActions: CachedBuildActions{
-				BuildParams: buildParams,
-			},
-		}
-		m.context.CacheBuildActions(key, &data)
-	}
+	m.context.updateBuildActionsCache(key, &data)
 }
 
-func (m *moduleContext) RestoreBuildActions(key *BuildActionCacheKey, im *Incremental) bool {
-	data := m.context.GetBuildActionCache(key)
-	if data != nil {
-		for _, provider := range data.Providers {
-			m.context.setProvider(m.module, provider.Id, *provider.Value)
+func (m *moduleContext) restoreModuleBuildActions() (bool, *BuildActionCacheKey) {
+	// Whether the incremental flag is set and the module type supports
+	// incremental, this will decide weather to cache the data for the module.
+	incrementalEnabled := false
+	// Whether the above conditions are true and we can try to restore from
+	// the cache for this module, i.e., no env, product variables and Soong
+	// code changes.
+	incrementalAnalysis := false
+	var cacheKey *BuildActionCacheKey = nil
+	if m.context.GetIncrementalEnabled() {
+		if im, ok := m.module.logicModule.(Incremental); ok {
+			incrementalEnabled = im.IncrementalSupported()
+			incrementalAnalysis = m.context.GetIncrementalAnalysis() && incrementalEnabled
 		}
-
-		for _, params := range data.BuildActions.BuildParams {
-			var rule Rule
-			for _, r := range (*im).CachedRules() {
-				if params.Rule == r.name() {
-					rule = r
-					break
-				}
-			}
-			if rule == nil {
-				return false
-			}
-			buildParams := BuildParams{
-				Comment:         params.Comment,
-				Depfile:         params.Depfile,
-				Deps:            params.Deps,
-				Description:     params.Description,
-				Outputs:         params.Outputs,
-				ImplicitOutputs: params.ImplicitOutputs,
-				Inputs:          params.Inputs,
-				Implicits:       params.Implicits,
-				OrderOnly:       params.OrderOnly,
-				Validations:     params.Validations,
-				Args:            params.Args,
-				Optional:        params.Optional,
-			}
-			buildParams.Rule = rule
-			m.Build(packageContexts[(*im).PackageContextPath()], buildParams)
-		}
-		return true
 	}
-	return false
+	if incrementalEnabled {
+		hash, err := proptools.CalculateHash(m.module.properties)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate properties hash"))
+		}
+		cacheInput := new(BuildActionCacheInput)
+		cacheInput.PropertiesHash = hash
+		m.VisitDirectDeps(func(module Module) {
+			cacheInput.ProvidersHash =
+				append(cacheInput.ProvidersHash, m.context.moduleInfo[module].providerInitialValueHashes)
+		})
+		hash, err = proptools.CalculateHash(&cacheInput)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
+		}
+		cacheKey = &BuildActionCacheKey{
+			Id:        m.ModuleCacheKey(),
+			InputHash: hash,
+		}
+		m.module.buildActionCacheKey = cacheKey
+	}
+
+	restored := false
+	if incrementalAnalysis && cacheKey != nil {
+		// Try to restore from cache if there is a cache hit
+		data := m.context.getBuildActionsFromCache(cacheKey)
+		relPos := m.module.pos
+		relPos.Filename = m.module.relBlueprintsFile
+		if data != nil && data.Pos != nil && relPos == *data.Pos {
+			for _, provider := range data.Providers {
+				m.context.setProvider(m.module, provider.Id, *provider.Value)
+			}
+			m.module.incrementalRestored = true
+			m.module.orderOnlyStrings = data.OrderOnlyStrings
+			restored = true
+		}
+	}
+
+	return restored, cacheKey
 }
 
 func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
@@ -872,8 +856,8 @@ func (m *moduleContext) ModuleSubDir() string {
 	return m.module.variant.name
 }
 
-func (m *moduleContext) ModuleId() string {
-	return strings.Join([]string{m.ModuleDir(), m.ModuleName(), m.module.variant.name, m.ModuleType()}, "$")
+func (m *moduleContext) ModuleCacheKey() string {
+	return m.module.ModuleCacheKey()
 }
 
 func (m *moduleContext) Variable(pctx PackageContext, name, value string) {
@@ -910,11 +894,6 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 		panic(err)
 	}
 
-	if m.GetIncrementalEnabled() {
-		if im, ok := m.module.logicModule.(Incremental); ok && im.IncrementalSupported() {
-			m.buildParams = append(m.buildParams, params)
-		}
-	}
 	m.actionDefs.buildDefs = append(m.actionDefs.buildDefs, def)
 }
 
