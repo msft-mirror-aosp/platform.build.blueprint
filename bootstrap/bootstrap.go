@@ -192,6 +192,9 @@ type GoPackage struct {
 		TestData  []string
 		PluginFor []string
 		EmbedSrcs []string
+		// The visibility property is unused in blueprint, but exists so that soong
+		// can add one and not have the bp files fail to parse during the bootstrap build.
+		Visibility []string
 
 		Darwin struct {
 			Srcs     []string
@@ -321,6 +324,9 @@ type GoBinary struct {
 		EmbedSrcs      []string
 		PrimaryBuilder bool
 		Default        bool
+		// The visibility property is unused in blueprint, but exists so that soong
+		// can add one and not have the bp files fail to parse during the bootstrap build.
+		Visibility []string
 
 		Darwin struct {
 			Srcs     []string
