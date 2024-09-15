@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,9 +178,9 @@ type Context struct {
 	// latter will depend on the flag above.
 	incrementalEnabled bool
 
-	BuildActionToCache        BuildActionCache
-	buildActionToCacheLock    sync.Mutex
-	BuildActionFromCache      BuildActionCache
+	BuildActionsToCache       BuildActionCache
+	buildActionsToCacheLock   sync.Mutex
+	BuildActionsFromCache     BuildActionCache
 	OrderOnlyStringsFromCache OrderOnlyStringsCache
 	OrderOnlyStringsToCache   OrderOnlyStringsCache
 }
@@ -581,7 +582,7 @@ func newContext() *Context {
 		requiredNinjaMinor:          7,
 		requiredNinjaMicro:          0,
 		verifyProvidersAreUnchanged: true,
-		BuildActionToCache:          make(BuildActionCache),
+		BuildActionsToCache:         make(BuildActionCache),
 		OrderOnlyStringsToCache:     make(OrderOnlyStringsCache),
 	}
 }
@@ -721,19 +722,56 @@ func (c *Context) GetIncrementalEnabled() bool {
 	return c.incrementalEnabled
 }
 
-func (c *Context) CacheBuildActions(key *BuildActionCacheKey, data *BuildActionCachedData) {
+func (c *Context) updateBuildActionsCache(key *BuildActionCacheKey, data *BuildActionCachedData) {
 	if key != nil {
-		c.buildActionToCacheLock.Lock()
-		defer c.buildActionToCacheLock.Unlock()
-		c.BuildActionToCache[*key] = data
+		c.buildActionsToCacheLock.Lock()
+		defer c.buildActionsToCacheLock.Unlock()
+		c.BuildActionsToCache[*key] = data
 	}
 }
 
-func (c *Context) GetBuildActionCache(key *BuildActionCacheKey) *BuildActionCachedData {
-	if c.BuildActionFromCache != nil && key != nil {
-		return c.BuildActionFromCache[*key]
+func (c *Context) getBuildActionsFromCache(key *BuildActionCacheKey) *BuildActionCachedData {
+	if c.BuildActionsFromCache != nil && key != nil {
+		return c.BuildActionsFromCache[*key]
 	}
 	return nil
+}
+
+func (c *Context) CacheAllBuildActions(soongOutDir string) error {
+	return errors.Join(writeToCache(c, soongOutDir, BuildActionsCacheFile, &c.BuildActionsToCache),
+		writeToCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.OrderOnlyStringsToCache))
+}
+
+func writeToCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
+	file, err := os.Create(filepath.Join(ctx.SrcDir(), soongOutDir, fileName))
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := gob.NewEncoder(file)
+	return encoder.Encode(data)
+}
+
+func (c *Context) RestoreAllBuildActions(soongOutDir string) error {
+	c.BuildActionsFromCache = make(BuildActionCache)
+	c.OrderOnlyStringsFromCache = make(OrderOnlyStringsCache)
+	return errors.Join(restoreFromCache(c, soongOutDir, BuildActionsCacheFile, &c.BuildActionsFromCache),
+		restoreFromCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.OrderOnlyStringsFromCache))
+}
+
+func restoreFromCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
+	file, err := os.Open(filepath.Join(ctx.SrcDir(), soongOutDir, fileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			err = nil
+		}
+		return err
+	}
+	defer file.Close()
+
+	decoder := gob.NewDecoder(file)
+	return decoder.Decode(data)
 }
 
 func (c *Context) SetSrcDir(path string) {
@@ -814,6 +852,18 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 	c.variantMutatorNames = append(c.variantMutatorNames, name)
 
 	return info
+}
+
+// HasMutatorFinished returns true if the given mutator has finished running.
+// It will panic if given an invalid mutator name.
+func (c *Context) HasMutatorFinished(mutatorName string) bool {
+	for _, mutator := range c.mutatorInfo {
+		if mutator.name == mutatorName {
+			finished, ok := c.finishedMutators[mutator]
+			return ok && finished
+		}
+	}
+	panic(fmt.Sprintf("unknown mutator %q", mutatorName))
 }
 
 type MutatorHandle interface {
@@ -3379,12 +3429,12 @@ func (c *Context) generateModuleBuildActions(config interface{},
 						}
 					}
 				}()
-				restored, cacheKey := restoreBuildActions(c, mctx)
+				restored, cacheKey := mctx.restoreModuleBuildActions()
 				if !restored {
 					mctx.module.logicModule.GenerateBuildActions(mctx)
 				}
 				if cacheKey != nil {
-					mctx.CacheBuildActions(cacheKey)
+					mctx.cacheModuleBuildActions(cacheKey)
 				}
 			}()
 
@@ -3421,54 +3471,6 @@ func (c *Context) generateModuleBuildActions(config interface{},
 	errs = append(errs, visitErrs...)
 
 	return deps, errs
-}
-
-func restoreBuildActions(c *Context, mctx *moduleContext) (bool, *BuildActionCacheKey) {
-	// Whether the incremental flag is set and the module type supports
-	// incremental, this will decide weather to cache the data for the module.
-	incrementalEnabled := false
-	// Whether the above conditions are true and we can try to restore from
-	// the cache for this module, i.e., no env, product variables and Soong
-	// code changes.
-	incrementalAnalysis := false
-	var cacheKey *BuildActionCacheKey = nil
-	if c.GetIncrementalEnabled() {
-		if im, ok := mctx.module.logicModule.(Incremental); ok {
-			incrementalEnabled = im.IncrementalSupported()
-			incrementalAnalysis = c.GetIncrementalAnalysis() && incrementalEnabled
-		}
-	}
-	if incrementalEnabled {
-		hash, err := proptools.CalculateHash(mctx.module.properties)
-		if err != nil {
-			panic(newPanicErrorf(err, "failed to calculate properties hash"))
-			return false, nil
-		}
-		cacheInput := new(BuildActionCacheInput)
-		cacheInput.PropertiesHash = hash
-		mctx.VisitDirectDeps(func(module Module) {
-			cacheInput.ProvidersHash =
-				append(cacheInput.ProvidersHash, mctx.OtherModuleProviderInitialValueHashes(module))
-		})
-		hash, err = proptools.CalculateHash(&cacheInput)
-		if err != nil {
-			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
-			return false, nil
-		}
-		cacheKey = &BuildActionCacheKey{
-			Id:        mctx.ModuleCacheKey(),
-			InputHash: hash,
-		}
-		mctx.module.buildActionCacheKey = cacheKey
-	}
-
-	restored := false
-	if incrementalAnalysis && cacheKey != nil {
-		// Try to restore from cache if there is a cache hit
-		restored = mctx.RestoreBuildActions(cacheKey)
-	}
-
-	return restored, cacheKey
 }
 
 func (c *Context) generateOneSingletonBuildActions(config interface{},
@@ -4164,6 +4166,12 @@ func (c *Context) VisitAllModulesIf(pred func(Module) bool,
 }
 
 func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
+	c.VisitDirectDepsWithTags(module, func(m Module, _ DependencyTag) {
+		visit(m)
+	})
+}
+
+func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, DependencyTag)) {
 	topModule := c.moduleInfo[module]
 
 	var visiting *moduleInfo
@@ -4177,7 +4185,7 @@ func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
 
 	for _, dep := range topModule.directDeps {
 		visiting = dep.module
-		visit(dep.module.logicModule)
+		visit(dep.module.logicModule, dep.tag)
 	}
 }
 
@@ -4787,7 +4795,7 @@ func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBui
 		}
 
 		// update the order only string cache with the info found above.
-		if data, ok := c.BuildActionToCache[*mod.buildActionCacheKey]; ok {
+		if data, ok := c.BuildActionsToCache[*mod.buildActionCacheKey]; ok {
 			data.OrderOnlyStrings = orderOnlyStrings
 		}
 

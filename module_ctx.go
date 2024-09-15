@@ -360,6 +360,10 @@ type BaseModuleContext interface {
 	// This method shouldn't be used directly, prefer the type-safe android.SetProvider instead.
 	SetProvider(provider AnyProviderKey, value any)
 
+	// HasMutatorFinished returns true if the given mutator has finished running.
+	// It will panic if given an invalid mutator name.
+	HasMutatorFinished(mutatorName string) bool
+
 	EarlyGetMissingDependencies() []string
 
 	OtherModuleProviderInitialValueHashes(module Module) []uint64
@@ -392,10 +396,6 @@ type ModuleContext interface {
 	// but do not exist.  It can be used with Context.SetAllowMissingDependencies to allow the primary builder to
 	// handle missing dependencies on its own instead of having Blueprint treat them as an error.
 	GetMissingDependencies() []string
-
-	CacheBuildActions(key *BuildActionCacheKey)
-
-	RestoreBuildActions(key *BuildActionCacheKey) bool
 }
 
 var _ BaseModuleContext = (*baseModuleContext)(nil)
@@ -498,6 +498,10 @@ func (d *baseModuleContext) Fs() pathtools.FileSystem {
 
 func (d *baseModuleContext) Namespace() Namespace {
 	return d.context.nameInterface.GetNamespace(newNamespaceContext(d.module))
+}
+
+func (d *baseModuleContext) HasMutatorFinished(mutatorName string) bool {
+	return d.context.HasMutatorFinished(mutatorName)
 }
 
 var _ ModuleContext = (*moduleContext)(nil)
@@ -627,7 +631,7 @@ func (m *baseModuleContext) OtherModuleProviderInitialValueHashes(module Module)
 	return m.context.moduleInfo[module].providerInitialValueHashes
 }
 
-func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey) {
+func (m *moduleContext) cacheModuleBuildActions(key *BuildActionCacheKey) {
 	var providers []CachedProvider
 	for i, p := range m.module.providers {
 		if p != nil && providerRegistry[i].mutator == "" {
@@ -648,22 +652,65 @@ func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey) {
 		Pos:       &relPos,
 	}
 
-	m.context.CacheBuildActions(key, &data)
+	m.context.updateBuildActionsCache(key, &data)
 }
 
-func (m *moduleContext) RestoreBuildActions(key *BuildActionCacheKey) bool {
-	data := m.context.GetBuildActionCache(key)
-	relPos := m.module.pos
-	relPos.Filename = m.module.relBlueprintsFile
-	if data != nil && data.Pos != nil && relPos == *data.Pos {
-		for _, provider := range data.Providers {
-			m.context.setProvider(m.module, provider.Id, *provider.Value)
+func (m *moduleContext) restoreModuleBuildActions() (bool, *BuildActionCacheKey) {
+	// Whether the incremental flag is set and the module type supports
+	// incremental, this will decide weather to cache the data for the module.
+	incrementalEnabled := false
+	// Whether the above conditions are true and we can try to restore from
+	// the cache for this module, i.e., no env, product variables and Soong
+	// code changes.
+	incrementalAnalysis := false
+	var cacheKey *BuildActionCacheKey = nil
+	if m.context.GetIncrementalEnabled() {
+		if im, ok := m.module.logicModule.(Incremental); ok {
+			incrementalEnabled = im.IncrementalSupported()
+			incrementalAnalysis = m.context.GetIncrementalAnalysis() && incrementalEnabled
 		}
-		m.module.incrementalRestored = true
-		m.module.orderOnlyStrings = data.OrderOnlyStrings
-		return true
 	}
-	return false
+	if incrementalEnabled {
+		hash, err := proptools.CalculateHash(m.module.properties)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate properties hash"))
+			return false, nil
+		}
+		cacheInput := new(BuildActionCacheInput)
+		cacheInput.PropertiesHash = hash
+		m.VisitDirectDeps(func(module Module) {
+			cacheInput.ProvidersHash =
+				append(cacheInput.ProvidersHash, m.OtherModuleProviderInitialValueHashes(module))
+		})
+		hash, err = proptools.CalculateHash(&cacheInput)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
+			return false, nil
+		}
+		cacheKey = &BuildActionCacheKey{
+			Id:        m.ModuleCacheKey(),
+			InputHash: hash,
+		}
+		m.module.buildActionCacheKey = cacheKey
+	}
+
+	restored := false
+	if incrementalAnalysis && cacheKey != nil {
+		// Try to restore from cache if there is a cache hit
+		data := m.context.getBuildActionsFromCache(cacheKey)
+		relPos := m.module.pos
+		relPos.Filename = m.module.relBlueprintsFile
+		if data != nil && data.Pos != nil && relPos == *data.Pos {
+			for _, provider := range data.Providers {
+				m.context.setProvider(m.module, provider.Id, *provider.Value)
+			}
+			m.module.incrementalRestored = true
+			m.module.orderOnlyStrings = data.OrderOnlyStrings
+			restored = true
+		}
+	}
+
+	return restored, cacheKey
 }
 
 func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
