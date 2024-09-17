@@ -18,8 +18,10 @@ func ModuleTypeDocs(ctx *blueprint.Context, factories map[string]reflect.Value) 
 	// build.ninja file.
 	var primaryBuilders []blueprint.Module
 	ctx.VisitAllModules(func(module blueprint.Module) {
-		if _, ok := blueprint.SingletonModuleProvider(ctx, module, PrimaryBuilderProvider); ok {
-			primaryBuilders = append(primaryBuilders, module)
+		if ctx.PrimaryModule(module) == module {
+			if _, ok := blueprint.SingletonModuleProvider(ctx, module, PrimaryBuilderProvider); ok {
+				primaryBuilders = append(primaryBuilders, module)
+			}
 		}
 	})
 
@@ -40,8 +42,6 @@ func ModuleTypeDocs(ctx *blueprint.Context, factories map[string]reflect.Value) 
 		if info, ok := blueprint.SingletonModuleProvider(ctx, module, DocsPackageProvider); ok {
 			pkgFiles[info.PkgPath] = pathtools.PrefixPaths(info.Srcs,
 				filepath.Join(ctx.SrcDir(), ctx.ModuleDir(module)))
-		} else {
-			panic(fmt.Errorf("unknown dependency type %T", module))
 		}
 	})
 
