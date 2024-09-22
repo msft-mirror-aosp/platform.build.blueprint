@@ -141,13 +141,6 @@ var (
 	})
 )
 
-type GoBinaryTool interface {
-	InstallPath() string
-
-	// So that other packages can't implement this interface
-	isGoBinary()
-}
-
 type pluginDependencyTag struct {
 	blueprint.BaseDependencyTag
 }
@@ -158,7 +151,7 @@ type bootstrapDependencies interface {
 
 var pluginDepTag = pluginDependencyTag{}
 
-func bootstrapDeps(ctx blueprint.BottomUpMutatorContext) {
+func BootstrapDeps(ctx blueprint.BottomUpMutatorContext) {
 	if pkg, ok := ctx.Module().(bootstrapDependencies); ok {
 		pkg.bootstrapDeps(ctx)
 	}
@@ -174,8 +167,9 @@ type PackageInfo struct {
 var PackageProvider = blueprint.NewProvider[*PackageInfo]()
 
 type BinaryInfo struct {
-	InstallPath string
-	TestTargets []string
+	IntermediatePath string
+	InstallPath      string
+	TestTargets      []string
 }
 
 var BinaryProvider = blueprint.NewProvider[*BinaryInfo]()
@@ -186,12 +180,6 @@ type DocsPackageInfo struct {
 }
 
 var DocsPackageProvider = blueprint.NewMutatorProvider[*DocsPackageInfo]("bootstrap_deps")
-
-func IsBootstrapModule(module blueprint.Module) bool {
-	_, isPackage := module.(*GoPackage)
-	_, isBinary := module.(*GoBinary)
-	return isPackage || isBinary
-}
 
 // A GoPackage is a module for building Go packages.
 type GoPackage struct {
@@ -204,6 +192,9 @@ type GoPackage struct {
 		TestData  []string
 		PluginFor []string
 		EmbedSrcs []string
+		// The visibility property is unused in blueprint, but exists so that soong
+		// can add one and not have the bp files fail to parse during the bootstrap build.
+		Visibility []string
 
 		Darwin struct {
 			Srcs     []string
@@ -221,6 +212,11 @@ func newGoPackageModuleFactory() func() (blueprint.Module, []interface{}) {
 		module := &GoPackage{}
 		return module, []interface{}{&module.properties, &module.SimpleName.Properties}
 	}
+}
+
+// Properties returns the list of property structs to be used for registering a wrapped module type.
+func (g *GoPackage) Properties() []interface{} {
+	return []interface{}{&g.properties}
 }
 
 func (g *GoPackage) DynamicDependencies(ctx blueprint.DynamicDependerModuleContext) []string {
@@ -328,6 +324,9 @@ type GoBinary struct {
 		EmbedSrcs      []string
 		PrimaryBuilder bool
 		Default        bool
+		// The visibility property is unused in blueprint, but exists so that soong
+		// can add one and not have the bp files fail to parse during the bootstrap build.
+		Visibility []string
 
 		Darwin struct {
 			Srcs     []string
@@ -340,9 +339,14 @@ type GoBinary struct {
 	}
 
 	installPath string
-}
 
-var _ GoBinaryTool = (*GoBinary)(nil)
+	// skipInstall can be set to true by a module type that wraps GoBinary to skip the install rule,
+	// allowing the wrapping module type to create the install rule itself.
+	skipInstall bool
+
+	// outputFile is set to the path to the intermediate output file.
+	outputFile string
+}
 
 func newGoBinaryModuleFactory() func() (blueprint.Module, []interface{}) {
 	return func() (blueprint.Module, []interface{}) {
@@ -364,9 +368,20 @@ func (g *GoBinary) bootstrapDeps(ctx blueprint.BottomUpMutatorContext) {
 	}
 }
 
-func (g *GoBinary) isGoBinary() {}
-func (g *GoBinary) InstallPath() string {
-	return g.installPath
+// IntermediateFile returns the path to the final linked intermedate file.
+func (g *GoBinary) IntermediateFile() string {
+	return g.outputFile
+}
+
+// SetSkipInstall is called by module types that wrap GoBinary to skip the install rule,
+// allowing the wrapping module type to create the install rule itself.
+func (g *GoBinary) SetSkipInstall() {
+	g.skipInstall = true
+}
+
+// Properties returns the list of property structs to be used for registering a wrapped module type.
+func (g *GoBinary) Properties() []interface{} {
+	return []interface{}{&g.properties}
 }
 
 func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
@@ -375,6 +390,7 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	if ctx.Module() != ctx.PrimaryModule() {
 		if info, ok := blueprint.OtherModuleProvider(ctx, ctx.PrimaryModule(), BinaryProvider); ok {
 			g.installPath = info.InstallPath
+			g.outputFile = info.IntermediatePath
 			blueprint.SetProvider(ctx, BinaryProvider, info)
 		}
 		return
@@ -385,13 +401,15 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		objDir          = moduleObjDir(ctx)
 		archiveFile     = filepath.Join(objDir, name+".a")
 		testArchiveFile = filepath.Join(testRoot(ctx), name+".a")
-		aoutFile        = filepath.Join(objDir, "a.out")
+		aoutFile        = filepath.Join(objDir, name)
 		hasPlugins      = false
 		pluginSrc       = ""
 		genSrcs         = []string{}
 	)
 
-	g.installPath = filepath.Join(ctx.Config().(BootstrapConfig).HostToolDir(), name)
+	if !g.skipInstall {
+		g.installPath = filepath.Join(ctx.Config().(BootstrapConfig).HostToolDir(), name)
+	}
 
 	ctx.VisitDirectDeps(func(module blueprint.Module) {
 		if ctx.OtherModuleDependencyTag(module) == pluginDepTag {
@@ -449,23 +467,28 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		Optional:  true,
 	})
 
+	g.outputFile = aoutFile
+
 	var validations []string
 	if ctx.Config().(BootstrapConfig).RunGoTests() {
 		validations = testDeps
 	}
 
-	ctx.Build(pctx, blueprint.BuildParams{
-		Rule:        cp,
-		Outputs:     []string{g.installPath},
-		Inputs:      []string{aoutFile},
-		Validations: validations,
-		Optional:    !g.properties.Default,
-	})
+	if !g.skipInstall {
+		ctx.Build(pctx, blueprint.BuildParams{
+			Rule:        cp,
+			Outputs:     []string{g.installPath},
+			Inputs:      []string{aoutFile},
+			Validations: validations,
+			Optional:    !g.properties.Default,
+		})
+	}
 
 	blueprint.SetProvider(ctx, blueprint.SrcsFileProviderKey, blueprint.SrcsFileProviderData{SrcPaths: srcs})
 	blueprint.SetProvider(ctx, BinaryProvider, &BinaryInfo{
-		InstallPath: g.installPath,
-		TestTargets: testResultFile,
+		IntermediatePath: g.outputFile,
+		InstallPath:      g.installPath,
+		TestTargets:      testResultFile,
 	})
 }
 
@@ -664,7 +687,9 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	ctx.VisitAllModules(func(module blueprint.Module) {
 		if ctx.PrimaryModule(module) == module {
 			if binaryInfo, ok := blueprint.SingletonModuleProvider(ctx, module, BinaryProvider); ok {
-				blueprintTools = append(blueprintTools, binaryInfo.InstallPath)
+				if binaryInfo.InstallPath != "" {
+					blueprintTools = append(blueprintTools, binaryInfo.InstallPath)
+				}
 				blueprintTests = append(blueprintTests, binaryInfo.TestTargets...)
 				if _, ok := blueprint.SingletonModuleProvider(ctx, module, PrimaryBuilderProvider); ok {
 					primaryBuilders = append(primaryBuilders, binaryInfo.InstallPath)
@@ -736,11 +761,13 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	}
 
 	// Add a phony target for building various tools that are part of blueprint
-	ctx.Build(pctx, blueprint.BuildParams{
-		Rule:    blueprint.Phony,
-		Outputs: []string{"blueprint_tools"},
-		Inputs:  blueprintTools,
-	})
+	if len(blueprintTools) > 0 {
+		ctx.Build(pctx, blueprint.BuildParams{
+			Rule:    blueprint.Phony,
+			Outputs: []string{"blueprint_tools"},
+			Inputs:  blueprintTools,
+		})
+	}
 
 	// Add a phony target for running various tests that are part of blueprint
 	ctx.Build(pctx, blueprint.BuildParams{

@@ -366,8 +366,6 @@ type BaseModuleContext interface {
 
 	EarlyGetMissingDependencies() []string
 
-	OtherModuleProviderInitialValueHashes(module Module) []uint64
-
 	base() *baseModuleContext
 }
 
@@ -627,10 +625,6 @@ func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface
 	m.context.setProvider(m.module, provider.provider(), value)
 }
 
-func (m *baseModuleContext) OtherModuleProviderInitialValueHashes(module Module) []uint64 {
-	return m.context.moduleInfo[module].providerInitialValueHashes
-}
-
 func (m *moduleContext) cacheModuleBuildActions(key *BuildActionCacheKey) {
 	var providers []CachedProvider
 	for i, p := range m.module.providers {
@@ -674,18 +668,16 @@ func (m *moduleContext) restoreModuleBuildActions() (bool, *BuildActionCacheKey)
 		hash, err := proptools.CalculateHash(m.module.properties)
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate properties hash"))
-			return false, nil
 		}
 		cacheInput := new(BuildActionCacheInput)
 		cacheInput.PropertiesHash = hash
 		m.VisitDirectDeps(func(module Module) {
 			cacheInput.ProvidersHash =
-				append(cacheInput.ProvidersHash, m.OtherModuleProviderInitialValueHashes(module))
+				append(cacheInput.ProvidersHash, m.context.moduleInfo[module].providerInitialValueHashes)
 		})
 		hash, err = proptools.CalculateHash(&cacheInput)
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
-			return false, nil
 		}
 		cacheKey = &BuildActionCacheKey{
 			Id:        m.ModuleCacheKey(),
@@ -939,14 +931,14 @@ type BaseMutatorContext interface {
 
 	// MutatorName returns the name that this mutator was registered with.
 	MutatorName() string
-}
-
-type TopDownMutatorContext interface {
-	BaseMutatorContext
 
 	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
 	// the specified property structs to it as if the properties were set in a blueprint file.
 	CreateModule(ModuleFactory, string, ...interface{}) Module
+}
+
+type TopDownMutatorContext interface {
+	BaseMutatorContext
 }
 
 type BottomUpMutatorContext interface {
