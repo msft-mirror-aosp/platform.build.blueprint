@@ -569,7 +569,7 @@ func (m *baseModuleContext) ModuleFromName(name string) (Module, bool) {
 		if len(moduleGroup.modules) != 1 {
 			panic(fmt.Errorf("Expected exactly one module named %q, but got %d", name, len(moduleGroup.modules)))
 		}
-		moduleInfo := moduleGroup.modules[0].module()
+		moduleInfo := moduleGroup.modules[0]
 		if moduleInfo != nil {
 			return moduleInfo.logicModule, true
 		} else {
@@ -916,8 +916,8 @@ type mutatorContext struct {
 	reverseDeps      []reverseDep
 	rename           []rename
 	replace          []replace
-	newVariations    modulesOrAliases // new variants of existing modules
-	newModules       []*moduleInfo    // brand new modules
+	newVariations    moduleList    // new variants of existing modules
+	newModules       []*moduleInfo // brand new modules
 	defaultVariation *string
 	pauseCh          chan<- pauseSpec
 }
@@ -1040,7 +1040,7 @@ func (mctx *mutatorContext) createVariations(variationNames []string, depChooser
 	}
 
 	for _, module := range modules {
-		ret = append(ret, module.module().logicModule)
+		ret = append(ret, module.logicModule)
 	}
 
 	if mctx.newVariations != nil {
