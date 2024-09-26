@@ -633,12 +633,6 @@ func Test_findVariant(t *testing.T) {
 			variations: variationMap{
 				map[string]string{
 					"normal": "normal",
-					"local":  "local",
-				},
-			},
-			dependencyVariations: variationMap{
-				map[string]string{
-					"normal": "normal",
 				},
 			},
 		},

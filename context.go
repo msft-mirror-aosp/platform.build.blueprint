@@ -409,9 +409,8 @@ type incrementalInfo struct {
 }
 
 type variant struct {
-	name                 string
-	variations           variationMap
-	dependencyVariations variationMap
+	name       string
+	variations variationMap
 }
 
 type depInfo struct {
@@ -1586,8 +1585,7 @@ func (c *Context) cloneLogicModule(origModule *moduleInfo) (Module, []interface{
 	return newLogicModule, newProperties
 }
 
-func newVariant(module *moduleInfo, mutatorName string, variationName string,
-	local bool) variant {
+func newVariant(module *moduleInfo, mutatorName string, variationName string) variant {
 
 	newVariantName := module.variant.name
 	if variationName != "" {
@@ -1601,16 +1599,11 @@ func newVariant(module *moduleInfo, mutatorName string, variationName string,
 	newVariations := module.variant.variations.clone()
 	newVariations.set(mutatorName, variationName)
 
-	newDependencyVariations := module.variant.dependencyVariations.clone()
-	if !local {
-		newDependencyVariations.set(mutatorName, variationName)
-	}
-
-	return variant{newVariantName, newVariations, newDependencyVariations}
+	return variant{newVariantName, newVariations}
 }
 
 func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
-	depChooser depChooser, variationNames []string, local bool) (modulesOrAliases, []error) {
+	depChooser depChooser, variationNames []string) (modulesOrAliases, []error) {
 
 	if len(variationNames) == 0 {
 		panic(fmt.Errorf("mutator %q passed zero-length variation list for module %q",
@@ -1640,7 +1633,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 		newModule.reverseDeps = nil
 		newModule.forwardDeps = nil
 		newModule.logicModule = newLogicModule
-		newModule.variant = newVariant(origModule, mutator.name, variationName, local)
+		newModule.variant = newVariant(origModule, mutator.name, variationName)
 		newModule.properties = newProperties
 		newModule.providers = slices.Clone(origModule.providers)
 		newModule.providerInitialValueHashes = slices.Clone(origModule.providerInitialValueHashes)
@@ -1952,13 +1945,13 @@ func (c *Context) addDependency(module *moduleInfo, config any, tag DependencyTa
 
 	if c.allowMissingDependencies {
 		// Allow missing variants.
-		return nil, c.discoveredMissingDependencies(module, depName, module.variant.dependencyVariations)
+		return nil, c.discoveredMissingDependencies(module, depName, module.variant.variations)
 	}
 
 	return nil, []error{&BlueprintError{
 		Err: fmt.Errorf("dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
 			depName, module.Name(),
-			c.prettyPrintVariant(module.variant.dependencyVariations),
+			c.prettyPrintVariant(module.variant.variations),
 			c.prettyPrintGroupVariants(possibleDeps)),
 		Pos: module.pos,
 	}}
@@ -1987,13 +1980,13 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, destName
 
 	if c.allowMissingDependencies {
 		// Allow missing variants.
-		return module, c.discoveredMissingDependencies(module, destName, module.variant.dependencyVariations)
+		return module, c.discoveredMissingDependencies(module, destName, module.variant.variations)
 	}
 
 	return nil, []error{&BlueprintError{
 		Err: fmt.Errorf("reverse dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
 			destName, module.Name(),
-			c.prettyPrintVariant(module.variant.dependencyVariations),
+			c.prettyPrintVariant(module.variant.variations),
 			c.prettyPrintGroupVariants(possibleDeps)),
 		Pos: module.pos,
 	}}
@@ -2084,14 +2077,7 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 	// Create a new map instead, and then deep compare the maps.
 	var newVariant variationMap
 	if !far {
-		if !reverse {
-			// For forward dependency, ignore local variants by matching against
-			// dependencyVariant which doesn't have the local variants
-			newVariant = module.variant.dependencyVariations.clone()
-		} else {
-			// For reverse dependency, use all the variants
-			newVariant = module.variant.variations.clone()
-		}
+		newVariant = module.variant.variations.clone()
 	}
 	for _, v := range requestedVariations {
 		newVariant.set(v.Mutator, v.Variation)
@@ -2179,37 +2165,6 @@ func (c *Context) addVariationDependency(module *moduleInfo, config any, variati
 	module.newDirectDeps = append(module.newDirectDeps, depInfo{foundDep, tag})
 	atomic.AddUint32(&c.depsModified, 1)
 	return foundDep, nil
-}
-
-func (c *Context) addInterVariantDependency(origModule *moduleInfo, tag DependencyTag,
-	from, to Module) *moduleInfo {
-	if _, ok := tag.(BaseDependencyTag); ok {
-		panic("BaseDependencyTag is not allowed to be used directly!")
-	}
-
-	var fromInfo, toInfo *moduleInfo
-	for _, moduleOrAlias := range origModule.splitModules {
-		if m := moduleOrAlias.module(); m != nil {
-			if m.logicModule == from {
-				fromInfo = m
-			}
-			if m.logicModule == to {
-				toInfo = m
-				if fromInfo != nil {
-					panic(fmt.Errorf("%q depends on later version of itself", origModule.Name()))
-				}
-			}
-		}
-	}
-
-	if fromInfo == nil || toInfo == nil {
-		panic(fmt.Errorf("AddInterVariantDependency called for module %q on invalid variant",
-			origModule.Name()))
-	}
-
-	fromInfo.newDirectDeps = append(fromInfo.newDirectDeps, depInfo{toInfo, tag})
-	atomic.AddUint32(&c.depsModified, 1)
-	return toInfo
 }
 
 // findBlueprintDescendants returns a map linking parent Blueprint files to child Blueprints files
