@@ -114,8 +114,6 @@ type Context struct {
 	// set by SetAllowMissingDependencies
 	allowMissingDependencies bool
 
-	verifyProvidersAreUnchanged bool
-
 	// set during PrepareBuildActions
 	nameTracker     *nameTracker
 	liveGlobals     *liveTracker
@@ -567,23 +565,22 @@ type mutatorInfo struct {
 func newContext() *Context {
 	eventHandler := metrics.EventHandler{}
 	return &Context{
-		Context:                     context.Background(),
-		EventHandler:                &eventHandler,
-		moduleFactories:             make(map[string]ModuleFactory),
-		nameInterface:               NewSimpleNameInterface(),
-		moduleInfo:                  make(map[Module]*moduleInfo),
-		globs:                       make(map[globKey]pathtools.GlobResult),
-		fs:                          pathtools.OsFs,
-		finishedMutators:            make(map[*mutatorInfo]bool),
-		includeTags:                 &IncludeTags{},
-		sourceRootDirs:              &SourceRootDirs{},
-		outDir:                      nil,
-		requiredNinjaMajor:          1,
-		requiredNinjaMinor:          7,
-		requiredNinjaMicro:          0,
-		verifyProvidersAreUnchanged: true,
-		buildActionsToCache:         make(BuildActionCache),
-		orderOnlyStringsToCache:     make(OrderOnlyStringsCache),
+		Context:                 context.Background(),
+		EventHandler:            &eventHandler,
+		moduleFactories:         make(map[string]ModuleFactory),
+		nameInterface:           NewSimpleNameInterface(),
+		moduleInfo:              make(map[Module]*moduleInfo),
+		globs:                   make(map[globKey]pathtools.GlobResult),
+		fs:                      pathtools.OsFs,
+		finishedMutators:        make(map[*mutatorInfo]bool),
+		includeTags:             &IncludeTags{},
+		sourceRootDirs:          &SourceRootDirs{},
+		outDir:                  nil,
+		requiredNinjaMajor:      1,
+		requiredNinjaMinor:      7,
+		requiredNinjaMicro:      0,
+		buildActionsToCache:     make(BuildActionCache),
+		orderOnlyStringsToCache: make(OrderOnlyStringsCache),
 	}
 }
 
@@ -904,18 +901,6 @@ func (c *Context) SetIgnoreUnknownModuleTypes(ignoreUnknownModuleTypes bool) {
 // for missing dependencies.
 func (c *Context) SetAllowMissingDependencies(allowMissingDependencies bool) {
 	c.allowMissingDependencies = allowMissingDependencies
-}
-
-// SetVerifyProvidersAreUnchanged makes blueprint hash all providers immediately
-// after SetProvider() is called, and then hash them again after the build finished.
-// If the hashes change, it's an error. Providers are supposed to be immutable, but
-// we don't have any more direct way to enforce that in go.
-func (c *Context) SetVerifyProvidersAreUnchanged(verifyProvidersAreUnchanged bool) {
-	c.verifyProvidersAreUnchanged = verifyProvidersAreUnchanged
-}
-
-func (c *Context) GetVerifyProvidersAreUnchanged() bool {
-	return c.verifyProvidersAreUnchanged
 }
 
 func (c *Context) SetModuleListFile(listFile string) {
