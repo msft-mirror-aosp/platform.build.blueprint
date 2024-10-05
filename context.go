@@ -1854,8 +1854,8 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 // findExactVariantOrSingle searches the moduleGroup for a module with the same variant as module,
 // and returns the matching module, or nil if one is not found.  A group with exactly one module
 // is always considered matching.
-func (c *Context) findExactVariantOrSingle(module *moduleInfo, config any, possible *moduleGroup, requestedVariations []Variation, reverse bool) *moduleInfo {
-	found, _ := c.findVariant(module, config, possible, requestedVariations, false, reverse)
+func (c *Context) findExactVariantOrSingle(module *moduleInfo, config any, possible *moduleGroup, reverse bool) *moduleInfo {
+	found, _ := c.findVariant(module, config, possible, nil, false, reverse)
 	if found == nil {
 		for _, m := range possible.modules {
 			if found != nil {
@@ -1885,7 +1885,7 @@ func (c *Context) addDependency(module *moduleInfo, config any, tag DependencyTa
 		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
-	if m := c.findExactVariantOrSingle(module, config, possibleDeps, nil, false); m != nil {
+	if m := c.findExactVariantOrSingle(module, config, possibleDeps, false); m != nil {
 		module.newDirectDeps = append(module.newDirectDeps, depInfo{m, tag})
 		atomic.AddUint32(&c.depsModified, 1)
 		return m, nil
@@ -1922,13 +1922,13 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, requeste
 		}}
 	}
 
-	if m := c.findExactVariantOrSingle(module, config, possibleDeps, requestedVariations, true); m != nil {
+	if m, _ := c.findVariant(module, config, possibleDeps, requestedVariations, false, true); m != nil {
 		return m, nil
 	}
 
 	if c.allowMissingDependencies {
 		// Allow missing variants.
-		return module, c.discoveredMissingDependencies(module, destName, module.variant.variations)
+		return nil, c.discoveredMissingDependencies(module, destName, module.variant.variations)
 	}
 
 	return nil, []error{&BlueprintError{

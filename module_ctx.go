@@ -1097,6 +1097,11 @@ func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTa
 		return
 	}
 
+	if destModule == nil {
+		// allowMissingDependencies is true and the module wasn't found
+		return
+	}
+
 	mctx.reverseDeps = append(mctx.reverseDeps, reverseDep{
 		destModule,
 		depInfo{mctx.context.moduleInfo[module], tag},
@@ -1111,6 +1116,11 @@ func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation
 	destModule, errs := mctx.context.findReverseDependency(mctx.module, mctx.config, variations, destName)
 	if len(errs) > 0 {
 		mctx.errs = append(mctx.errs, errs...)
+		return
+	}
+
+	if destModule == nil {
+		// allowMissingDependencies is true and the module wasn't found
 		return
 	}
 
