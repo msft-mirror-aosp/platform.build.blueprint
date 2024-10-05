@@ -428,7 +428,7 @@ func TestCreateModule(t *testing.T) {
 		`),
 	})
 
-	ctx.RegisterBottomUpMutator("create", createTestMutator)
+	ctx.RegisterBottomUpMutator("create", createTestMutator).UsesCreateModule()
 	ctx.RegisterBottomUpMutator("deps", depsMutator)
 
 	ctx.RegisterModuleType("foo_module", newFooModule)
