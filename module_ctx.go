@@ -106,6 +106,24 @@ type Module interface {
 	GenerateBuildActions(ModuleContext)
 }
 
+type ModuleProxy struct {
+	module Module
+}
+
+func CreateModuleProxy(module Module) ModuleProxy {
+	return ModuleProxy{
+		module: module,
+	}
+}
+
+func (m ModuleProxy) Name() string {
+	return m.module.Name()
+}
+
+func (m ModuleProxy) GenerateBuildActions(context ModuleContext) {
+	m.module.GenerateBuildActions(context)
+}
+
 // A DynamicDependerModule is a Module that may add dependencies that do not
 // appear in its "deps" property.  Any Module that implements this interface
 // will have its DynamicDependencies method called by the Context that created
@@ -226,6 +244,8 @@ type BaseModuleContext interface {
 	// invalidated by future mutators.
 	VisitDirectDeps(visit func(Module))
 
+	VisitDirectDepsProxy(visit func(proxy ModuleProxy))
+
 	// VisitDirectDepsIf calls pred for each direct dependency, and if pred returns true calls visit.  If there are
 	// multiple direct dependencies on the same module pred and visit will be called multiple times on that module and
 	// OtherModuleDependencyTag will return a different tag for each.
@@ -261,6 +281,8 @@ type BaseModuleContext interface {
 	// The Modules passed to the visit function should not be retained outside of the visit function, they may be
 	// invalidated by future mutators.
 	WalkDeps(visit func(Module, Module) bool)
+
+	WalkDepsProxy(visit func(ModuleProxy, ModuleProxy) bool)
 
 	// PrimaryModule returns the first variant of the current module.  Variants of a module are always visited in
 	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
@@ -365,6 +387,8 @@ type BaseModuleContext interface {
 	SetProvider(provider AnyProviderKey, value any)
 
 	EarlyGetMissingDependencies() []string
+
+	EqualModules(m1, m2 Module) bool
 
 	base() *baseModuleContext
 }
@@ -511,8 +535,12 @@ type moduleContext struct {
 	handledMissingDeps bool
 }
 
+func (m *baseModuleContext) EqualModules(m1, m2 Module) bool {
+	return getWrappedModule(m1) == getWrappedModule(m2)
+}
+
 func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return module.Name()
 }
 
@@ -544,9 +572,16 @@ func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 	})
 }
 
+func getWrappedModule(module Module) Module {
+	if mp, isProxy := module.(ModuleProxy); isProxy {
+		return mp.module
+	}
+	return module
+}
+
 func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) DependencyTag {
 	// fast path for calling OtherModuleDependencyTag from inside VisitDirectDeps
-	if m.visitingDep.module != nil && logicModule == m.visitingDep.module.logicModule {
+	if m.visitingDep.module != nil && getWrappedModule(logicModule) == m.visitingDep.module.logicModule {
 		return m.visitingDep.tag
 	}
 
@@ -555,7 +590,7 @@ func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) Depende
 	}
 
 	for _, dep := range m.visitingParent.directDeps {
-		if dep.module.logicModule == logicModule {
+		if dep.module.logicModule == getWrappedModule(logicModule) {
 			return dep.tag
 		}
 	}
@@ -613,7 +648,7 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 }
 
 func (m *baseModuleContext) OtherModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return m.context.provider(module, provider.provider())
 }
 
@@ -752,6 +787,25 @@ func (m *baseModuleContext) VisitDirectDeps(visit func(Module)) {
 	m.visitingDep = depInfo{}
 }
 
+func (m *baseModuleContext) VisitDirectDepsProxy(visit func(proxy ModuleProxy)) {
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitDirectDeps(%s, %s) for dependency %s",
+				m.module, funcName(visit), m.visitingDep.module))
+		}
+	}()
+
+	m.visitingParent = m.module
+
+	for _, dep := range m.module.directDeps {
+		m.visitingDep = dep
+		visit(ModuleProxy{dep.module.logicModule})
+	}
+
+	m.visitingParent = nil
+	m.visitingDep = depInfo{}
+}
+
 func (m *baseModuleContext) VisitDirectDepsIf(pred func(Module) bool, visit func(Module)) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -818,6 +872,17 @@ func (m *baseModuleContext) WalkDeps(visit func(child, parent Module) bool) {
 		m.visitingParent = parent
 		m.visitingDep = dep
 		return visit(dep.module.logicModule, parent.logicModule)
+	}, nil)
+
+	m.visitingParent = nil
+	m.visitingDep = depInfo{}
+}
+
+func (m *baseModuleContext) WalkDepsProxy(visit func(child, parent ModuleProxy) bool) {
+	m.context.walkDeps(m.module, true, func(dep depInfo, parent *moduleInfo) bool {
+		m.visitingParent = parent
+		m.visitingDep = dep
+		return visit(ModuleProxy{dep.module.logicModule}, ModuleProxy{parent.logicModule})
 	}, nil)
 
 	m.visitingParent = nil
