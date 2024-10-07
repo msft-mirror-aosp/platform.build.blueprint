@@ -15,9 +15,7 @@
 package blueprint
 
 import (
-	"bytes"
 	"encoding/gob"
-	"errors"
 	"fmt"
 
 	"github.com/google/blueprint/proptools"
@@ -56,26 +54,32 @@ type providerKey struct {
 	mutator string
 }
 
-func (m *providerKey) GobEncode() ([]byte, error) {
-	w := new(bytes.Buffer)
-	encoder := gob.NewEncoder(w)
-	err := errors.Join(encoder.Encode(m.id), encoder.Encode(m.typ), encoder.Encode(m.mutator))
-	if err != nil {
-		return nil, err
-	}
+type providerKeyGob struct {
+	Id      int
+	Typ     string
+	Mutator string
+}
 
-	return w.Bytes(), nil
+func (m *providerKey) ToGob() *providerKeyGob {
+	return &providerKeyGob{
+		Id:      m.id,
+		Typ:     m.typ,
+		Mutator: m.mutator,
+	}
+}
+
+func (m *providerKey) FromGob(data *providerKeyGob) {
+	m.id = data.Id
+	m.typ = data.Typ
+	m.mutator = data.Mutator
+}
+
+func (m *providerKey) GobEncode() ([]byte, error) {
+	return CustomGobEncode[providerKeyGob](m)
 }
 
 func (m *providerKey) GobDecode(data []byte) error {
-	r := bytes.NewBuffer(data)
-	decoder := gob.NewDecoder(r)
-	err := errors.Join(decoder.Decode(&m.id), decoder.Decode(&m.typ), decoder.Decode(&m.mutator))
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return CustomGobDecode[providerKeyGob](data, m)
 }
 
 func (p *providerKey) provider() *providerKey { return p }
