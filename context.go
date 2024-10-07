@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,8 +114,6 @@ type Context struct {
 	// set by SetAllowMissingDependencies
 	allowMissingDependencies bool
 
-	verifyProvidersAreUnchanged bool
-
 	// set during PrepareBuildActions
 	nameTracker     *nameTracker
 	liveGlobals     *liveTracker
@@ -177,11 +176,11 @@ type Context struct {
 	// latter will depend on the flag above.
 	incrementalEnabled bool
 
-	BuildActionToCache        BuildActionCache
-	buildActionToCacheLock    sync.Mutex
-	BuildActionFromCache      BuildActionCache
-	OrderOnlyStringsFromCache OrderOnlyStringsCache
-	OrderOnlyStringsToCache   OrderOnlyStringsCache
+	buildActionsToCache       BuildActionCache
+	buildActionsToCacheLock   sync.Mutex
+	buildActionsFromCache     BuildActionCache
+	orderOnlyStringsFromCache OrderOnlyStringsCache
+	orderOnlyStringsToCache   OrderOnlyStringsCache
 }
 
 // A container for String keys. The keys can be used to gate build graph traversal
@@ -282,44 +281,18 @@ type localBuildActions struct {
 	buildDefs []*buildDef
 }
 
-type moduleAlias struct {
-	variant variant
-	target  *moduleInfo
-}
+type moduleList []*moduleInfo
 
-func (m *moduleAlias) alias() *moduleAlias              { return m }
-func (m *moduleAlias) module() *moduleInfo              { return nil }
-func (m *moduleAlias) moduleOrAliasTarget() *moduleInfo { return m.target }
-func (m *moduleAlias) moduleOrAliasVariant() variant    { return m.variant }
-
-func (m *moduleInfo) alias() *moduleAlias              { return nil }
-func (m *moduleInfo) module() *moduleInfo              { return m }
-func (m *moduleInfo) moduleOrAliasTarget() *moduleInfo { return m }
-func (m *moduleInfo) moduleOrAliasVariant() variant    { return m.variant }
-
-type moduleOrAlias interface {
-	alias() *moduleAlias
-	module() *moduleInfo
-	moduleOrAliasTarget() *moduleInfo
-	moduleOrAliasVariant() variant
-}
-
-type modulesOrAliases []moduleOrAlias
-
-func (l modulesOrAliases) firstModule() *moduleInfo {
-	for _, moduleOrAlias := range l {
-		if m := moduleOrAlias.module(); m != nil {
-			return m
-		}
+func (l moduleList) firstModule() *moduleInfo {
+	if len(l) > 0 {
+		return l[0]
 	}
 	panic(fmt.Errorf("no first module!"))
 }
 
-func (l modulesOrAliases) lastModule() *moduleInfo {
-	for i := range l {
-		if m := l[len(l)-1-i].module(); m != nil {
-			return m
-		}
+func (l moduleList) lastModule() *moduleInfo {
+	if len(l) > 0 {
+		return l[len(l)-1]
 	}
 	panic(fmt.Errorf("no last module!"))
 }
@@ -328,22 +301,18 @@ type moduleGroup struct {
 	name      string
 	ninjaName string
 
-	modules modulesOrAliases
+	modules moduleList
 
 	namespace Namespace
 }
 
-func (group *moduleGroup) moduleOrAliasByVariantName(name string) moduleOrAlias {
+func (group *moduleGroup) moduleByVariantName(name string) *moduleInfo {
 	for _, module := range group.modules {
-		if module.moduleOrAliasVariant().name == name {
+		if module.variant.name == name {
 			return module
 		}
 	}
 	return nil
-}
-
-func (group *moduleGroup) moduleByVariantName(name string) *moduleInfo {
-	return group.moduleOrAliasByVariantName(name).module()
 }
 
 type moduleInfo struct {
@@ -374,7 +343,7 @@ type moduleInfo struct {
 	waitingCount int
 
 	// set during each runMutator
-	splitModules           modulesOrAliases
+	splitModules           moduleList
 	obsoletedByNewVariants bool
 
 	// Used by TransitionMutator implementations
@@ -408,9 +377,8 @@ type incrementalInfo struct {
 }
 
 type variant struct {
-	name                 string
-	variations           variationMap
-	dependencyVariations variationMap
+	name       string
+	variations variationMap
 }
 
 type depInfo struct {
@@ -566,23 +534,22 @@ type mutatorInfo struct {
 func newContext() *Context {
 	eventHandler := metrics.EventHandler{}
 	return &Context{
-		Context:                     context.Background(),
-		EventHandler:                &eventHandler,
-		moduleFactories:             make(map[string]ModuleFactory),
-		nameInterface:               NewSimpleNameInterface(),
-		moduleInfo:                  make(map[Module]*moduleInfo),
-		globs:                       make(map[globKey]pathtools.GlobResult),
-		fs:                          pathtools.OsFs,
-		finishedMutators:            make(map[*mutatorInfo]bool),
-		includeTags:                 &IncludeTags{},
-		sourceRootDirs:              &SourceRootDirs{},
-		outDir:                      nil,
-		requiredNinjaMajor:          1,
-		requiredNinjaMinor:          7,
-		requiredNinjaMicro:          0,
-		verifyProvidersAreUnchanged: true,
-		BuildActionToCache:          make(BuildActionCache),
-		OrderOnlyStringsToCache:     make(OrderOnlyStringsCache),
+		Context:                 context.Background(),
+		EventHandler:            &eventHandler,
+		moduleFactories:         make(map[string]ModuleFactory),
+		nameInterface:           NewSimpleNameInterface(),
+		moduleInfo:              make(map[Module]*moduleInfo),
+		globs:                   make(map[globKey]pathtools.GlobResult),
+		fs:                      pathtools.OsFs,
+		finishedMutators:        make(map[*mutatorInfo]bool),
+		includeTags:             &IncludeTags{},
+		sourceRootDirs:          &SourceRootDirs{},
+		outDir:                  nil,
+		requiredNinjaMajor:      1,
+		requiredNinjaMinor:      7,
+		requiredNinjaMicro:      0,
+		buildActionsToCache:     make(BuildActionCache),
+		orderOnlyStringsToCache: make(OrderOnlyStringsCache),
 	}
 }
 
@@ -721,19 +688,57 @@ func (c *Context) GetIncrementalEnabled() bool {
 	return c.incrementalEnabled
 }
 
-func (c *Context) CacheBuildActions(key *BuildActionCacheKey, data *BuildActionCachedData) {
+func (c *Context) updateBuildActionsCache(key *BuildActionCacheKey, data *BuildActionCachedData) {
 	if key != nil {
-		c.buildActionToCacheLock.Lock()
-		defer c.buildActionToCacheLock.Unlock()
-		c.BuildActionToCache[*key] = data
+		c.buildActionsToCacheLock.Lock()
+		defer c.buildActionsToCacheLock.Unlock()
+		c.buildActionsToCache[*key] = data
 	}
 }
 
-func (c *Context) GetBuildActionCache(key *BuildActionCacheKey) *BuildActionCachedData {
-	if c.BuildActionFromCache != nil && key != nil {
-		return c.BuildActionFromCache[*key]
+func (c *Context) getBuildActionsFromCache(key *BuildActionCacheKey) *BuildActionCachedData {
+	if c.buildActionsFromCache != nil && key != nil {
+		return c.buildActionsFromCache[*key]
 	}
 	return nil
+}
+
+func (c *Context) CacheAllBuildActions(soongOutDir string) error {
+	return errors.Join(writeToCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsToCache),
+		writeToCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsToCache))
+}
+
+func writeToCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
+	file, err := ctx.fs.OpenFile(filepath.Join(ctx.SrcDir(), soongOutDir, fileName),
+		os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := gob.NewEncoder(file)
+	return encoder.Encode(data)
+}
+
+func (c *Context) RestoreAllBuildActions(soongOutDir string) error {
+	c.buildActionsFromCache = make(BuildActionCache)
+	c.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
+	return errors.Join(restoreFromCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsFromCache),
+		restoreFromCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsFromCache))
+}
+
+func restoreFromCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
+	file, err := ctx.fs.Open(filepath.Join(ctx.SrcDir(), soongOutDir, fileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			err = nil
+		}
+		return err
+	}
+	defer file.Close()
+
+	decoder := gob.NewDecoder(file)
+	return decoder.Decode(data)
 }
 
 func (c *Context) SetSrcDir(path string) {
@@ -816,6 +821,18 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 	return info
 }
 
+// HasMutatorFinished returns true if the given mutator has finished running.
+// It will panic if given an invalid mutator name.
+func (c *Context) HasMutatorFinished(mutatorName string) bool {
+	for _, mutator := range c.mutatorInfo {
+		if mutator.name == mutatorName {
+			finished, ok := c.finishedMutators[mutator]
+			return ok && finished
+		}
+	}
+	panic(fmt.Sprintf("unknown mutator %q", mutatorName))
+}
+
 type MutatorHandle interface {
 	// Set the mutator to visit modules in parallel while maintaining ordering.  Calling any
 	// method on the mutator context is thread-safe, but the mutator must handle synchronization
@@ -853,18 +870,6 @@ func (c *Context) SetIgnoreUnknownModuleTypes(ignoreUnknownModuleTypes bool) {
 // for missing dependencies.
 func (c *Context) SetAllowMissingDependencies(allowMissingDependencies bool) {
 	c.allowMissingDependencies = allowMissingDependencies
-}
-
-// SetVerifyProvidersAreUnchanged makes blueprint hash all providers immediately
-// after SetProvider() is called, and then hash them again after the build finished.
-// If the hashes change, it's an error. Providers are supposed to be immutable, but
-// we don't have any more direct way to enforce that in go.
-func (c *Context) SetVerifyProvidersAreUnchanged(verifyProvidersAreUnchanged bool) {
-	c.verifyProvidersAreUnchanged = verifyProvidersAreUnchanged
-}
-
-func (c *Context) GetVerifyProvidersAreUnchanged() bool {
-	return c.verifyProvidersAreUnchanged
 }
 
 func (c *Context) SetModuleListFile(listFile string) {
@@ -1535,8 +1540,7 @@ func (c *Context) cloneLogicModule(origModule *moduleInfo) (Module, []interface{
 	return newLogicModule, newProperties
 }
 
-func newVariant(module *moduleInfo, mutatorName string, variationName string,
-	local bool) variant {
+func newVariant(module *moduleInfo, mutatorName string, variationName string) variant {
 
 	newVariantName := module.variant.name
 	if variationName != "" {
@@ -1550,23 +1554,18 @@ func newVariant(module *moduleInfo, mutatorName string, variationName string,
 	newVariations := module.variant.variations.clone()
 	newVariations.set(mutatorName, variationName)
 
-	newDependencyVariations := module.variant.dependencyVariations.clone()
-	if !local {
-		newDependencyVariations.set(mutatorName, variationName)
-	}
-
-	return variant{newVariantName, newVariations, newDependencyVariations}
+	return variant{newVariantName, newVariations}
 }
 
 func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
-	depChooser depChooser, variationNames []string, local bool) (modulesOrAliases, []error) {
+	depChooser depChooser, variationNames []string) (moduleList, []error) {
 
 	if len(variationNames) == 0 {
 		panic(fmt.Errorf("mutator %q passed zero-length variation list for module %q",
 			mutator.name, origModule.Name()))
 	}
 
-	var newModules modulesOrAliases
+	var newModules moduleList
 
 	var errs []error
 
@@ -1589,7 +1588,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 		newModule.reverseDeps = nil
 		newModule.forwardDeps = nil
 		newModule.logicModule = newLogicModule
-		newModule.variant = newVariant(origModule, mutator.name, variationName, local)
+		newModule.variant = newVariant(origModule, mutator.name, variationName)
 		newModule.properties = newProperties
 		newModule.providers = slices.Clone(origModule.providers)
 		newModule.providerInitialValueHashes = slices.Clone(origModule.providerInitialValueHashes)
@@ -1614,18 +1613,18 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 
 type depChooser func(source *moduleInfo, variationIndex, depIndex int, dep depInfo) (*moduleInfo, string)
 
-func chooseDep(candidates modulesOrAliases, mutatorName, variationName string, defaultVariationName *string) (*moduleInfo, string) {
+func chooseDep(candidates moduleList, mutatorName, variationName string, defaultVariationName *string) (*moduleInfo, string) {
 	for _, m := range candidates {
-		if m.moduleOrAliasVariant().variations.get(mutatorName) == variationName {
-			return m.moduleOrAliasTarget(), ""
+		if m.variant.variations.get(mutatorName) == variationName {
+			return m, ""
 		}
 	}
 
 	if defaultVariationName != nil {
 		// give it a second chance; match with defaultVariationName
 		for _, m := range candidates {
-			if m.moduleOrAliasVariant().variations.get(mutatorName) == *defaultVariationName {
-				return m.moduleOrAliasTarget(), ""
+			if m.variant.variations.get(mutatorName) == *defaultVariationName {
+				return m, ""
 			}
 		}
 	}
@@ -1689,13 +1688,8 @@ func (c *Context) prettyPrintVariant(variations variationMap) string {
 
 func (c *Context) prettyPrintGroupVariants(group *moduleGroup) string {
 	var variants []string
-	for _, moduleOrAlias := range group.modules {
-		if mod := moduleOrAlias.module(); mod != nil {
-			variants = append(variants, c.prettyPrintVariant(mod.variant.variations))
-		} else if alias := moduleOrAlias.alias(); alias != nil {
-			variants = append(variants, c.prettyPrintVariant(alias.variant.variations)+
-				" (alias to "+c.prettyPrintVariant(alias.target.variant.variations)+")")
-		}
+	for _, module := range group.modules {
+		variants = append(variants, c.prettyPrintVariant(module.variant.variations))
 	}
 	return strings.Join(variants, "\n  ")
 }
@@ -1772,7 +1766,7 @@ func (c *Context) addModule(module *moduleInfo) []error {
 
 	group := &moduleGroup{
 		name:    name,
-		modules: modulesOrAliases{module},
+		modules: moduleList{module},
 	}
 	module.group = group
 	namespace, errs := c.nameInterface.NewModule(
@@ -1863,14 +1857,12 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 func (c *Context) findExactVariantOrSingle(module *moduleInfo, config any, possible *moduleGroup, reverse bool) *moduleInfo {
 	found, _ := c.findVariant(module, config, possible, nil, false, reverse)
 	if found == nil {
-		for _, moduleOrAlias := range possible.modules {
-			if m := moduleOrAlias.module(); m != nil {
-				if found != nil {
-					// more than one possible match, give up
-					return nil
-				}
-				found = m
+		for _, m := range possible.modules {
+			if found != nil {
+				// more than one possible match, give up
+				return nil
 			}
+			found = m
 		}
 	}
 	return found
@@ -1901,19 +1893,19 @@ func (c *Context) addDependency(module *moduleInfo, config any, tag DependencyTa
 
 	if c.allowMissingDependencies {
 		// Allow missing variants.
-		return nil, c.discoveredMissingDependencies(module, depName, module.variant.dependencyVariations)
+		return nil, c.discoveredMissingDependencies(module, depName, module.variant.variations)
 	}
 
 	return nil, []error{&BlueprintError{
 		Err: fmt.Errorf("dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
 			depName, module.Name(),
-			c.prettyPrintVariant(module.variant.dependencyVariations),
+			c.prettyPrintVariant(module.variant.variations),
 			c.prettyPrintGroupVariants(possibleDeps)),
 		Pos: module.pos,
 	}}
 }
 
-func (c *Context) findReverseDependency(module *moduleInfo, config any, destName string) (*moduleInfo, []error) {
+func (c *Context) findReverseDependency(module *moduleInfo, config any, requestedVariations []Variation, destName string) (*moduleInfo, []error) {
 	if destName == module.Name() {
 		return nil, []error{&BlueprintError{
 			Err: fmt.Errorf("%q depends on itself", destName),
@@ -1930,19 +1922,19 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, destName
 		}}
 	}
 
-	if m := c.findExactVariantOrSingle(module, config, possibleDeps, true); m != nil {
+	if m, _ := c.findVariant(module, config, possibleDeps, requestedVariations, false, true); m != nil {
 		return m, nil
 	}
 
 	if c.allowMissingDependencies {
 		// Allow missing variants.
-		return module, c.discoveredMissingDependencies(module, destName, module.variant.dependencyVariations)
+		return nil, c.discoveredMissingDependencies(module, destName, module.variant.variations)
 	}
 
 	return nil, []error{&BlueprintError{
 		Err: fmt.Errorf("reverse dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
 			destName, module.Name(),
-			c.prettyPrintVariant(module.variant.dependencyVariations),
+			c.prettyPrintVariant(module.variant.variations),
 			c.prettyPrintGroupVariants(possibleDeps)),
 		Pos: module.pos,
 	}}
@@ -1994,12 +1986,10 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 			// the mutator only created a single "" variant when it ran on this module.  Matching against all variants
 			// is slightly worse  than checking the input variants, as the selected variant could have been modified
 			// by a later mutator in a way that affects the results of IncomingTransition.
-			for _, moduleOrAlias := range group.modules {
-				if module := moduleOrAlias.module(); module != nil {
-					if check(module.variant.variations) {
-						matchingInputVariant = module
-						break
-					}
+			for _, module := range group.modules {
+				if check(module.variant.variations) {
+					matchingInputVariant = module
+					break
 				}
 			}
 		}
@@ -2033,14 +2023,7 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 	// Create a new map instead, and then deep compare the maps.
 	var newVariant variationMap
 	if !far {
-		if !reverse {
-			// For forward dependency, ignore local variants by matching against
-			// dependencyVariant which doesn't have the local variants
-			newVariant = module.variant.dependencyVariations.clone()
-		} else {
-			// For reverse dependency, use all the variants
-			newVariant = module.variant.variations.clone()
-		}
+		newVariant = module.variant.variations.clone()
 	}
 	for _, v := range requestedVariations {
 		newVariant.set(v.Mutator, v.Variation)
@@ -2070,8 +2053,8 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 	var foundDep *moduleInfo
 	bestDivergence := math.MaxInt
 	for _, m := range possibleDeps.modules {
-		if match, divergence := check(m.moduleOrAliasVariant().variations); match && divergence < bestDivergence {
-			foundDep = m.moduleOrAliasTarget()
+		if match, divergence := check(m.variant.variations); match && divergence < bestDivergence {
+			foundDep = m
 			bestDivergence = divergence
 			if !far {
 				// non-far dependencies use equality, so only the first match needs to be checked.
@@ -2128,37 +2111,6 @@ func (c *Context) addVariationDependency(module *moduleInfo, config any, variati
 	module.newDirectDeps = append(module.newDirectDeps, depInfo{foundDep, tag})
 	atomic.AddUint32(&c.depsModified, 1)
 	return foundDep, nil
-}
-
-func (c *Context) addInterVariantDependency(origModule *moduleInfo, tag DependencyTag,
-	from, to Module) *moduleInfo {
-	if _, ok := tag.(BaseDependencyTag); ok {
-		panic("BaseDependencyTag is not allowed to be used directly!")
-	}
-
-	var fromInfo, toInfo *moduleInfo
-	for _, moduleOrAlias := range origModule.splitModules {
-		if m := moduleOrAlias.module(); m != nil {
-			if m.logicModule == from {
-				fromInfo = m
-			}
-			if m.logicModule == to {
-				toInfo = m
-				if fromInfo != nil {
-					panic(fmt.Errorf("%q depends on later version of itself", origModule.Name()))
-				}
-			}
-		}
-	}
-
-	if fromInfo == nil || toInfo == nil {
-		panic(fmt.Errorf("AddInterVariantDependency called for module %q on invalid variant",
-			origModule.Name()))
-	}
-
-	fromInfo.newDirectDeps = append(fromInfo.newDirectDeps, depInfo{toInfo, tag})
-	atomic.AddUint32(&c.depsModified, 1)
-	return toInfo
 }
 
 // findBlueprintDescendants returns a map linking parent Blueprint files to child Blueprints files
@@ -2544,9 +2496,7 @@ func (c *Context) updateDependencies() (errs []error) {
 			if dep == module {
 				break
 			}
-			if depModule := dep.module(); depModule != nil {
-				module.forwardDeps = append(module.forwardDeps, depModule)
-			}
+			module.forwardDeps = append(module.forwardDeps, dep)
 		}
 
 	outer:
@@ -2990,7 +2940,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 	}
 
 	type newVariationPair struct {
-		newVariations   modulesOrAliases
+		newVariations   moduleList
 		origLogicModule Module
 	}
 
@@ -3082,13 +3032,11 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 				newModules = append(newModules, globalStateChange.newModules...)
 				deps = append(deps, globalStateChange.deps...)
 			case newVariations := <-newVariationsCh:
-				if newVariations.origLogicModule != newVariations.newVariations[0].module().logicModule {
+				if newVariations.origLogicModule != newVariations.newVariations[0].logicModule {
 					obsoleteLogicModules = append(obsoleteLogicModules, newVariations.origLogicModule)
 				}
-				for _, moduleOrAlias := range newVariations.newVariations {
-					if m := moduleOrAlias.module(); m != nil {
-						newModuleInfo[m.logicModule] = m
-					}
+				for _, module := range newVariations.newVariations {
+					newModuleInfo[module.logicModule] = module
 				}
 				createdVariations = true
 			case <-done:
@@ -3133,11 +3081,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 
 	for _, group := range c.moduleGroups {
 		for i := 0; i < len(group.modules); i++ {
-			module := group.modules[i].module()
-			if module == nil {
-				// Existing alias, skip it
-				continue
-			}
+			module := group.modules[i]
 
 			// Update module group to contain newly split variants
 			if module.splitModules != nil {
@@ -3163,43 +3107,6 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 			// Add in any new direct dependencies that were added by the mutator
 			module.directDeps = append(module.directDeps, module.newDirectDeps...)
 			module.newDirectDeps = nil
-		}
-
-		findAliasTarget := func(oldVariant variant) *moduleInfo {
-			for _, moduleOrAlias := range group.modules {
-				module := moduleOrAlias.moduleOrAliasTarget()
-				if module.splitModules != nil {
-					// Ignore any old aliases that are pointing to modules that were obsoleted.
-					continue
-				}
-				if alias := moduleOrAlias.alias(); alias != nil {
-					if alias.variant.variations.equal(oldVariant.variations) {
-						return alias.target
-					}
-				}
-				if module.variant.variations.equal(oldVariant.variations) {
-					return module
-				}
-			}
-			return nil
-		}
-
-		// Forward or delete any dangling aliases.
-		// Use a manual loop instead of range because len(group.modules) can
-		// change inside the loop
-		for i := 0; i < len(group.modules); i++ {
-			if alias := group.modules[i].alias(); alias != nil {
-				if alias.target.obsoletedByNewVariants {
-					newTarget := findAliasTarget(alias.target.variant)
-					if newTarget != nil {
-						alias.target = newTarget
-					} else {
-						// The alias was left dangling, remove it.
-						group.modules = append(group.modules[:i], group.modules[i+1:]...)
-						i--
-					}
-				}
-			}
 		}
 	}
 
@@ -3294,15 +3201,15 @@ func (c *Context) cloneModules() {
 
 // Removes modules[i] from the list and inserts newModules... where it was located, returning
 // the new slice and the index of the last inserted element
-func spliceModules(modules modulesOrAliases, i int, newModules modulesOrAliases) (modulesOrAliases, int) {
+func spliceModules(modules moduleList, i int, newModules moduleList) (moduleList, int) {
 	spliceSize := len(newModules)
 	newLen := len(modules) + spliceSize - 1
-	var dest modulesOrAliases
+	var dest moduleList
 	if cap(modules) >= len(modules)-1+len(newModules) {
 		// We can fit the splice in the existing capacity, do everything in place
 		dest = modules[:newLen]
 	} else {
-		dest = make(modulesOrAliases, newLen)
+		dest = make(moduleList, newLen)
 		copy(dest, modules[:i])
 	}
 
@@ -3379,7 +3286,13 @@ func (c *Context) generateModuleBuildActions(config interface{},
 						}
 					}
 				}()
-				mctx.module.logicModule.GenerateBuildActions(mctx)
+				restored, cacheKey := mctx.restoreModuleBuildActions()
+				if !restored {
+					mctx.module.logicModule.GenerateBuildActions(mctx)
+				}
+				if cacheKey != nil {
+					mctx.cacheModuleBuildActions(cacheKey)
+				}
 			}()
 
 			mctx.module.finishedGenerateBuildActions = true
@@ -3649,11 +3562,7 @@ func (c *Context) moduleVariantsThatDependOn(name string, dep *moduleInfo) []*mo
 		return nil
 	}
 
-	for _, module := range group.modules {
-		m := module.module()
-		if m == nil {
-			continue
-		}
+	for _, m := range group.modules {
 		for _, moduleDep := range m.directDeps {
 			if moduleDep.module == dep {
 				variants = append(variants, m)
@@ -3758,10 +3667,8 @@ func (c *Context) visitAllModules(visit func(Module)) {
 	}()
 
 	for _, moduleGroup := range c.sortedModuleGroups() {
-		for _, moduleOrAlias := range moduleGroup.modules {
-			if module = moduleOrAlias.module(); module != nil {
-				visit(module.logicModule)
-			}
+		for _, module := range moduleGroup.modules {
+			visit(module.logicModule)
 		}
 	}
 }
@@ -3779,11 +3686,9 @@ func (c *Context) visitAllModulesIf(pred func(Module) bool,
 	}()
 
 	for _, moduleGroup := range c.sortedModuleGroups() {
-		for _, moduleOrAlias := range moduleGroup.modules {
-			if module = moduleOrAlias.module(); module != nil {
-				if pred(module.logicModule) {
-					visit(module.logicModule)
-				}
+		for _, module := range moduleGroup.modules {
+			if pred(module.logicModule) {
+				visit(module.logicModule)
 			}
 		}
 	}
@@ -3801,10 +3706,8 @@ func (c *Context) visitAllModuleVariants(module *moduleInfo,
 		}
 	}()
 
-	for _, moduleOrAlias := range module.group.modules {
-		if variant = moduleOrAlias.module(); variant != nil {
-			visit(variant.logicModule)
-		}
+	for _, module := range module.group.modules {
+		visit(module.logicModule)
 	}
 }
 
@@ -3819,10 +3722,8 @@ func (c *Context) visitAllModuleInfos(visit func(*moduleInfo)) {
 	}()
 
 	for _, moduleGroup := range c.sortedModuleGroups() {
-		for _, moduleOrAlias := range moduleGroup.modules {
-			if module = moduleOrAlias.module(); module != nil {
-				visit(module)
-			}
+		for _, module := range moduleGroup.modules {
+			visit(module)
 		}
 	}
 }
@@ -4110,6 +4011,12 @@ func (c *Context) VisitAllModulesIf(pred func(Module) bool,
 }
 
 func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
+	c.VisitDirectDepsWithTags(module, func(m Module, _ DependencyTag) {
+		visit(m)
+	})
+}
+
+func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, DependencyTag)) {
 	topModule := c.moduleInfo[module]
 
 	var visiting *moduleInfo
@@ -4123,7 +4030,7 @@ func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
 
 	for _, dep := range topModule.directDeps {
 		visiting = dep.module
-		visit(dep.module.logicModule)
+		visit(dep.module.logicModule, dep.tag)
 	}
 }
 
@@ -4586,11 +4493,16 @@ func (s moduleSorter) Swap(i, j int) {
 }
 
 func GetNinjaShardFiles(ninjaFile string) []string {
+	suffix := ".ninja"
+	if !strings.HasSuffix(ninjaFile, suffix) {
+		panic(fmt.Errorf("ninja file name in wrong format : %s", ninjaFile))
+	}
+	base := strings.TrimSuffix(ninjaFile, suffix)
 	ninjaShardCnt := 10
 	fileNames := make([]string, ninjaShardCnt)
 
 	for i := 0; i < ninjaShardCnt; i++ {
-		fileNames[i] = fmt.Sprintf("%s.%d", ninjaFile, i)
+		fileNames[i] = fmt.Sprintf("%s.%d%s", base, i, suffix)
 	}
 	return fileNames
 }
@@ -4603,41 +4515,17 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	incrementalModules := make([]*moduleInfo, 0, 200)
 
 	for _, module := range c.moduleInfo {
-		if c.GetIncrementalEnabled() {
-			if im, ok := module.logicModule.(Incremental); ok && im.IncrementalSupported() {
-				incrementalModules = append(incrementalModules, module)
-				continue
-			}
+		if module.buildActionCacheKey != nil {
+			incrementalModules = append(incrementalModules, module)
+			continue
 		}
 		modules = append(modules, module)
 	}
 	sort.Sort(moduleSorter{modules, c.nameInterface})
 
 	phonys := c.deduplicateOrderOnlyDeps(append(modules, incrementalModules...))
-
-	for _, mod := range incrementalModules {
-		if !mod.incrementalRestored {
-			continue
-		}
-		if data := c.GetBuildActionCache(mod.buildActionCacheKey); data != nil && data.OrderOnlyStrings != nil {
-			for _, dep := range *data.OrderOnlyStrings {
-				if _, ok := c.OrderOnlyStringsToCache[dep]; ok {
-					continue
-				}
-				orderOnlyStrings, ok := c.OrderOnlyStringsFromCache[dep]
-				if !ok {
-					return fmt.Errorf("no cached value found for order only dep: %s", dep)
-				}
-				phony := buildDef{
-					Rule:          Phony,
-					OutputStrings: []string{dep},
-					InputStrings:  orderOnlyStrings,
-					Optional:      true,
-				}
-				phonys.buildDefs = append(phonys.buildDefs, &phony)
-				c.OrderOnlyStringsToCache[dep] = orderOnlyStrings
-			}
-		}
+	if err := orderOnlyForIncremental(c, incrementalModules, phonys); err != nil {
+		return err
 	}
 
 	c.EventHandler.Do("sort_phony_builddefs", func() {
@@ -4667,7 +4555,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			wg.Add(1)
 			go func(file string, batchModules []*moduleInfo) {
 				defer wg.Done()
-				f, err := os.OpenFile(JoinPath(c.SrcDir(), file), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+				f, err := c.fs.OpenFile(JoinPath(c.SrcDir(), file), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 				if err != nil {
 					errorCh <- fmt.Errorf("error opening Ninja file shard: %s", err)
 					return
@@ -4725,8 +4613,73 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	}
 }
 
+func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBuildActions) error {
+	for _, mod := range modules {
+		// find the order only strings of the incremental module, it can come from
+		// the cache or from buildDefs depending on if the module was skipped or not.
+		var orderOnlyStrings *[]string
+		if mod.incrementalRestored {
+			orderOnlyStrings = mod.orderOnlyStrings
+		} else {
+			orderOnlyStrings = new([]string)
+			for _, b := range mod.actionDefs.buildDefs {
+				// We do similar check when creating phonys in deduplicateOrderOnlyDeps as well
+				if len(b.OrderOnly) > 0 {
+					return fmt.Errorf("order only shouldn't be used: %s", mod.Name())
+				}
+				for _, str := range b.OrderOnlyStrings {
+					if strings.HasPrefix(str, "dedup-") {
+						*orderOnlyStrings = append(*orderOnlyStrings, str)
+					}
+				}
+			}
+		}
+
+		if orderOnlyStrings == nil || len(*orderOnlyStrings) == 0 {
+			continue
+		}
+
+		// update the order only string cache with the info found above.
+		if data, ok := c.buildActionsToCache[*mod.buildActionCacheKey]; ok {
+			data.OrderOnlyStrings = orderOnlyStrings
+		}
+
+		if !mod.incrementalRestored {
+			continue
+		}
+
+		// if the module is skipped, the order only string that we restored from the
+		// cache might not exist anymore. For example, if two modules shared the same
+		// set of order only strings initially, deduplicateOrderOnlyDeps would create
+		// a dedup-* phony and replace the order only string with this phony for these
+		// two modules. If one of the module had its order only strings changed, and
+		// we skip the other module in the next build, the dedup-* phony would not
+		// in the phony list anymore, so we need to add it here in order to avoid
+		// writing the ninja statements for the skipped module, otherwise it would
+		// reference a dedup-* phony that no longer exists.
+		for _, dep := range *orderOnlyStrings {
+			// nothing changed to this phony, the cached value is still valid
+			if _, ok := c.orderOnlyStringsToCache[dep]; ok {
+				continue
+			}
+			orderOnlyStrings, ok := c.orderOnlyStringsFromCache[dep]
+			if !ok {
+				return fmt.Errorf("no cached value found for order only dep: %s", dep)
+			}
+			phony := buildDef{
+				Rule:          Phony,
+				OutputStrings: []string{dep},
+				InputStrings:  orderOnlyStrings,
+				Optional:      true,
+			}
+			phonys.buildDefs = append(phonys.buildDefs, &phony)
+			c.orderOnlyStringsToCache[dep] = orderOnlyStrings
+		}
+	}
+	return nil
+}
 func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
-	bf, err := os.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+	bf, err := c.fs.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 	if err != nil {
 		return err
 	}
@@ -4743,7 +4696,7 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
 		if !module.incrementalRestored {
 			err := func() error {
-				mf, err := os.OpenFile(JoinPath(c.SrcDir(), moduleFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+				mf, err := c.fs.OpenFile(JoinPath(c.SrcDir(), moduleFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 				if err != nil {
 					return err
 				}
@@ -4888,9 +4841,10 @@ func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
 // to be extracted as a phony output
 type phonyCandidate struct {
 	sync.Once
-	phony            *buildDef // the phony buildDef that wraps the set
-	first            *buildDef // the first buildDef that uses this set
-	orderOnlyStrings []string  // the original OrderOnlyStrings of the first buildDef that uses this set
+	phony             *buildDef // the phony buildDef that wraps the set
+	first             *buildDef // the first buildDef that uses this set
+	orderOnlyStrings  []string  // the original OrderOnlyStrings of the first buildDef that uses this set
+	usedByIncremental bool      // if the phony is used by any incremental module
 }
 
 // keyForPhonyCandidate gives a unique identifier for a set of deps.
@@ -4914,11 +4868,12 @@ func keyForPhonyCandidate(stringDeps []string) uint64 {
 // If `b.OrderOnly` is not present in `candidates`, it gets stored.
 // But if `b.OrderOnly` already exists in `candidates`, then `b.OrderOnly`
 // (and phonyCandidate#first.OrderOnly) will be replaced with phonyCandidate#phony.Outputs
-func scanBuildDef(candidates *sync.Map, b *buildDef) {
+func scanBuildDef(candidates *sync.Map, b *buildDef, incremental bool) {
 	key := keyForPhonyCandidate(b.OrderOnlyStrings)
 	if v, loaded := candidates.LoadOrStore(key, &phonyCandidate{
-		first:            b,
-		orderOnlyStrings: b.OrderOnlyStrings,
+		first:             b,
+		orderOnlyStrings:  b.OrderOnlyStrings,
+		usedByIncremental: incremental,
 	}); loaded {
 		m := v.(*phonyCandidate)
 		if slices.Equal(m.orderOnlyStrings, b.OrderOnlyStrings) {
@@ -4937,6 +4892,10 @@ func scanBuildDef(candidates *sync.Map, b *buildDef) {
 				m.first = nil
 			})
 			b.OrderOnlyStrings = m.phony.OutputStrings
+			// don't override the value with false if it was set to true already
+			if incremental {
+				m.usedByIncremental = incremental
+			}
 		}
 	}
 }
@@ -4952,10 +4911,11 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 	candidates := sync.Map{} //used as map[key]*candidate
 	parallelVisit(modules, unorderedVisitorImpl{}, parallelVisitLimit,
 		func(m *moduleInfo, pause chan<- pauseSpec) bool {
+			incremental := m.buildActionCacheKey != nil
 			for _, b := range m.actionDefs.buildDefs {
 				// The dedup logic doesn't handle the case where OrderOnly is not empty
 				if len(b.OrderOnly) == 0 && len(b.OrderOnlyStrings) > 0 {
-					scanBuildDef(&candidates, b)
+					scanBuildDef(&candidates, b, incremental)
 				}
 			}
 			return false
@@ -4967,8 +4927,8 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 		candidate := v.(*phonyCandidate)
 		if candidate.phony != nil {
 			phonys = append(phonys, candidate.phony)
-			if c.GetIncrementalEnabled() {
-				c.OrderOnlyStringsToCache[candidate.phony.OutputStrings[0]] =
+			if candidate.usedByIncremental {
+				c.orderOnlyStringsToCache[candidate.phony.OutputStrings[0]] =
 					candidate.phony.InputStrings
 			}
 		}
@@ -5042,15 +5002,15 @@ func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
 	return nil
 }
 
-func beforeInModuleList(a, b *moduleInfo, list modulesOrAliases) bool {
+func beforeInModuleList(a, b *moduleInfo, list moduleList) bool {
 	found := false
 	if a == b {
 		return false
 	}
 	for _, l := range list {
-		if l.module() == a {
+		if l == a {
 			found = true
-		} else if l.module() == b {
+		} else if l == b {
 			return found
 		}
 	}
