@@ -560,7 +560,7 @@ func newContext() *Context {
 func NewContext() *Context {
 	ctx := newContext()
 
-	ctx.RegisterBottomUpMutator("blueprint_deps", blueprintDepsMutator)
+	ctx.RegisterBottomUpMutator("blueprint_deps", blueprintDepsMutator).Parallel()
 
 	return ctx
 }
