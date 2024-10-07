@@ -35,6 +35,7 @@ import (
 	"runtime/pprof"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1860,6 +1861,40 @@ func (c *Context) ResolveDependencies(config interface{}) (deps []string, errs [
 	return c.resolveDependencies(c.Context, config)
 }
 
+// coalesceMutators takes the list of mutators and returns a list of lists of mutators,
+// where sublist is a compatible group of mutators that can be run with relaxed
+// intra-mutator ordering.
+func coalesceMutators(mutators []*mutatorInfo) [][]*mutatorInfo {
+	var coalescedMutators [][]*mutatorInfo
+	var last *mutatorInfo
+
+	// Returns true if the mutator can be coalesced with other mutators that
+	// also return true.
+	coalescable := func(m *mutatorInfo) bool {
+		return m.bottomUpMutator != nil &&
+			m.parallel &&
+			m.transitionMutator == nil &&
+			!m.usesCreateModule &&
+			!m.usesReplaceDependencies &&
+			!m.usesReverseDependencies &&
+			!m.usesRename &&
+			!m.mutatesGlobalState &&
+			!m.mutatesDependencies
+	}
+
+	for _, mutator := range mutators {
+		if last != nil && coalescable(last) && coalescable(mutator) {
+			lastGroup := &coalescedMutators[len(coalescedMutators)-1]
+			*lastGroup = append(*lastGroup, mutator)
+		} else {
+			coalescedMutators = append(coalescedMutators, []*mutatorInfo{mutator})
+			last = mutator
+		}
+	}
+
+	return coalescedMutators
+}
+
 func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (deps []string, errs []error) {
 	pprof.Do(ctx, pprof.Labels("blueprint", "ResolveDependencies"), func(ctx context.Context) {
 		c.initProviders()
@@ -1869,7 +1904,9 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 			return
 		}
 
-		deps, errs = c.runMutators(ctx, config)
+		mutatorGroups := coalesceMutators(c.mutatorInfo)
+
+		deps, errs = c.runMutators(ctx, config, mutatorGroups)
 		if len(errs) > 0 {
 			return
 		}
@@ -2916,21 +2953,25 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 	return deps, nil
 }
 
-func (c *Context) runMutators(ctx context.Context, config interface{}) (deps []string, errs []error) {
+func (c *Context) runMutators(ctx context.Context, config interface{}, mutatorGroups [][]*mutatorInfo) (deps []string, errs []error) {
 	c.finishedMutators = make([]bool, len(c.mutatorInfo))
 
 	pprof.Do(ctx, pprof.Labels("blueprint", "runMutators"), func(ctx context.Context) {
-		for _, mutator := range c.mutatorInfo {
-			pprof.Do(ctx, pprof.Labels("mutator", mutator.name), func(context.Context) {
-				c.BeginEvent(mutator.name)
-				defer c.EndEvent(mutator.name)
+		for _, mutatorGroup := range mutatorGroups {
+			name := mutatorGroup[0].name
+			if len(mutatorGroup) > 1 {
+				name += "_plus_" + strconv.Itoa(len(mutatorGroup)-1)
+			}
+			pprof.Do(ctx, pprof.Labels("mutator", name), func(context.Context) {
+				c.BeginEvent(name)
+				defer c.EndEvent(name)
 				var newDeps []string
-				if mutator.topDownMutator != nil {
-					newDeps, errs = c.runMutator(config, mutator, topDownMutator)
-				} else if mutator.bottomUpMutator != nil {
-					newDeps, errs = c.runMutator(config, mutator, bottomUpMutator)
+				if mutatorGroup[0].topDownMutator != nil {
+					newDeps, errs = c.runMutator(config, mutatorGroup, topDownMutator)
+				} else if mutatorGroup[0].bottomUpMutator != nil {
+					newDeps, errs = c.runMutator(config, mutatorGroup, bottomUpMutator)
 				} else {
-					panic("no mutator set on " + mutator.name)
+					panic("no mutator set on " + mutatorGroup[0].name)
 				}
 				if len(errs) > 0 {
 					return
@@ -2951,15 +2992,20 @@ func (c *Context) runMutators(ctx context.Context, config interface{}) (deps []s
 }
 
 type mutatorDirection interface {
-	run(mutator *mutatorInfo, ctx *mutatorContext)
+	run(mutator []*mutatorInfo, ctx *mutatorContext)
 	orderer() visitOrderer
 	fmt.Stringer
 }
 
 type bottomUpMutatorImpl struct{}
 
-func (bottomUpMutatorImpl) run(mutator *mutatorInfo, ctx *mutatorContext) {
-	mutator.bottomUpMutator(ctx)
+func (bottomUpMutatorImpl) run(mutatorGroup []*mutatorInfo, ctx *mutatorContext) {
+	for _, mutator := range mutatorGroup {
+		ctx.mutator = mutator
+		ctx.module.startedMutator = mutator.index
+		mutator.bottomUpMutator(ctx)
+		ctx.module.finishedMutator = mutator.index
+	}
 }
 
 func (bottomUpMutatorImpl) orderer() visitOrderer {
@@ -2972,8 +3018,11 @@ func (bottomUpMutatorImpl) String() string {
 
 type topDownMutatorImpl struct{}
 
-func (topDownMutatorImpl) run(mutator *mutatorInfo, ctx *mutatorContext) {
-	mutator.topDownMutator(ctx)
+func (topDownMutatorImpl) run(mutatorGroup []*mutatorInfo, ctx *mutatorContext) {
+	if len(mutatorGroup) > 1 {
+		panic(fmt.Errorf("top down mutator group %s must only have 1 mutator, found %d", mutatorGroup[0].name, len(mutatorGroup)))
+	}
+	mutatorGroup[0].topDownMutator(ctx)
 }
 
 func (topDownMutatorImpl) orderer() visitOrderer {
@@ -2994,7 +3043,7 @@ type reverseDep struct {
 	dep    depInfo
 }
 
-func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
+func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	direction mutatorDirection) (deps []string, errs []error) {
 
 	newModuleInfo := maps.Clone(c.moduleInfo)
@@ -3035,18 +3084,18 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 				config:  config,
 				module:  module,
 			},
-			mutator: mutator,
+			mutator: mutatorGroup[0],
 			pauseCh: pause,
 		}
 
 		origLogicModule := module.logicModule
 
-		module.startedMutator = mutator.index
+		module.startedMutator = mutatorGroup[0].index
 
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					in := fmt.Sprintf("%s %q for %s", direction, mutator.name, module)
+					in := fmt.Sprintf("%s %q for %s", direction, mutatorGroup[0].name, module)
 					if err, ok := r.(panicError); ok {
 						err.addIn(in)
 						mctx.error(err)
@@ -3055,10 +3104,10 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 					}
 				}
 			}()
-			direction.run(mutator, mctx)
+			direction.run(mutatorGroup, mctx)
 		}()
 
-		module.finishedMutator = mutator.index
+		module.finishedMutator = mutatorGroup[len(mutatorGroup)-1].index
 
 		if len(mctx.errs) > 0 {
 			errsCh <- mctx.errs
@@ -3114,7 +3163,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 	}()
 
 	var visitErrs []error
-	if mutator.parallel {
+	if mutatorGroup[0].parallel {
 		visitErrs = parallelVisit(c.modulesSorted, direction.orderer(), parallelVisitLimit, visit)
 	} else {
 		direction.orderer().visit(c.modulesSorted, visit)
@@ -3124,7 +3173,9 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		return nil, visitErrs
 	}
 
-	c.finishedMutators[mutator.index] = true
+	for _, mutator := range mutatorGroup {
+		c.finishedMutators[mutator.index] = true
+	}
 
 	done <- true
 
@@ -3138,7 +3189,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 
 	c.moduleInfo = newModuleInfo
 
-	isTransitionMutator := mutator.transitionMutator != nil
+	isTransitionMutator := mutatorGroup[0].transitionMutator != nil
 
 	var transitionMutatorInputVariants map[*moduleGroup][]*moduleInfo
 	if isTransitionMutator {
@@ -3177,13 +3228,13 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 	}
 
 	if isTransitionMutator {
-		mutator.transitionMutator.inputVariants = transitionMutatorInputVariants
-		mutator.transitionMutator.variantCreatingMutatorIndex = len(c.variantCreatingMutatorOrder)
-		c.transitionMutators = append(c.transitionMutators, mutator.transitionMutator)
+		mutatorGroup[0].transitionMutator.inputVariants = transitionMutatorInputVariants
+		mutatorGroup[0].transitionMutator.variantCreatingMutatorIndex = len(c.variantCreatingMutatorOrder)
+		c.transitionMutators = append(c.transitionMutators, mutatorGroup[0].transitionMutator)
 	}
 
 	if createdVariations {
-		c.variantCreatingMutatorOrder = append(c.variantCreatingMutatorOrder, mutator.name)
+		c.variantCreatingMutatorOrder = append(c.variantCreatingMutatorOrder, mutatorGroup[0].name)
 	}
 
 	// Add in any new reverse dependencies that were added by the mutator
