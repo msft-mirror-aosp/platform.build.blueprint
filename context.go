@@ -146,10 +146,8 @@ type Context struct {
 	// not be registered in this Context.
 	providerMutators []*mutatorInfo
 
-	// The currently running mutator
-	startedMutator *mutatorInfo
-	// True for any mutators that have already run over all modules
-	finishedMutators map[*mutatorInfo]bool
+	// True for the index of any mutators that have already run over all modules
+	finishedMutators []bool
 
 	// If true, RunBlueprint will skip cloning modules at the end of RunBlueprint.
 	// Cloning modules intentionally invalidates some Module values after
@@ -361,8 +359,8 @@ type moduleInfo struct {
 	providers                  []interface{}
 	providerInitialValueHashes []uint64
 
-	startedMutator  *mutatorInfo
-	finishedMutator *mutatorInfo
+	startedMutator  int
+	finishedMutator int
 
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
@@ -527,6 +525,7 @@ type mutatorInfo struct {
 	topDownMutator    TopDownMutator
 	bottomUpMutator   BottomUpMutator
 	name              string
+	index             int
 	parallel          bool
 	transitionMutator *transitionMutatorImpl
 
@@ -548,7 +547,6 @@ func newContext() *Context {
 		moduleInfo:              make(map[Module]*moduleInfo),
 		globs:                   make(map[globKey]pathtools.GlobResult),
 		fs:                      pathtools.OsFs,
-		finishedMutators:        make(map[*mutatorInfo]bool),
 		includeTags:             &IncludeTags{},
 		sourceRootDirs:          &SourceRootDirs{},
 		outDir:                  nil,
@@ -793,6 +791,7 @@ func (c *Context) RegisterTopDownMutator(name string, mutator TopDownMutator) Mu
 	info := &mutatorInfo{
 		topDownMutator: mutator,
 		name:           name,
+		index:          len(c.mutatorInfo),
 	}
 
 	c.mutatorInfo = append(c.mutatorInfo, info)
@@ -820,6 +819,7 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 	info := &mutatorInfo{
 		bottomUpMutator: mutator,
 		name:            name,
+		index:           len(c.mutatorInfo),
 	}
 	c.mutatorInfo = append(c.mutatorInfo, info)
 
@@ -833,8 +833,7 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 func (c *Context) HasMutatorFinished(mutatorName string) bool {
 	for _, mutator := range c.mutatorInfo {
 		if mutator.name == mutatorName {
-			finished, ok := c.finishedMutators[mutator]
-			return ok && finished
+			return len(c.finishedMutators) > mutator.index && c.finishedMutators[mutator.index]
 		}
 	}
 	panic(fmt.Sprintf("unknown mutator %q", mutatorName))
@@ -2918,6 +2917,8 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 }
 
 func (c *Context) runMutators(ctx context.Context, config interface{}) (deps []string, errs []error) {
+	c.finishedMutators = make([]bool, len(c.mutatorInfo))
+
 	pprof.Do(ctx, pprof.Labels("blueprint", "runMutators"), func(ctx context.Context) {
 		for _, mutator := range c.mutatorInfo {
 			pprof.Do(ctx, pprof.Labels("mutator", mutator.name), func(context.Context) {
@@ -3040,7 +3041,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 
 		origLogicModule := module.logicModule
 
-		module.startedMutator = mutator
+		module.startedMutator = mutator.index
 
 		func() {
 			defer func() {
@@ -3057,7 +3058,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 			direction.run(mutator, mctx)
 		}()
 
-		module.finishedMutator = mutator
+		module.finishedMutator = mutator.index
 
 		if len(mctx.errs) > 0 {
 			errsCh <- mctx.errs
@@ -3112,8 +3113,6 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		}
 	}()
 
-	c.startedMutator = mutator
-
 	var visitErrs []error
 	if mutator.parallel {
 		visitErrs = parallelVisit(c.modulesSorted, direction.orderer(), parallelVisitLimit, visit)
@@ -3125,7 +3124,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		return nil, visitErrs
 	}
 
-	c.finishedMutators[mutator] = true
+	c.finishedMutators[mutator.index] = true
 
 	done <- true
 
