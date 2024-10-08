@@ -147,7 +147,7 @@ type EarlyModuleContext interface {
 	Module() Module
 
 	// ModuleName returns the name of the module.  This is generally the value that was returned by Module.Name() when
-	// the module was created, but may have been modified by calls to BaseMutatorContext.Rename.
+	// the module was created, but may have been modified by calls to BottomUpMutatorContext.Rename.
 	ModuleName() string
 
 	// ModuleDir returns the path to the directory that contains the definition of the module.
@@ -987,27 +987,12 @@ type mutatorContext struct {
 	pauseCh          chan<- pauseSpec
 }
 
-type BaseMutatorContext interface {
-	BaseModuleContext
-
-	// Rename all variants of a module.  The new name is not visible to calls to ModuleName,
-	// AddDependency or OtherModuleName until after this mutator pass is complete.
-	Rename(name string)
-
-	// MutatorName returns the name that this mutator was registered with.
-	MutatorName() string
-
-	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
-	// the specified property structs to it as if the properties were set in a blueprint file.
-	CreateModule(ModuleFactory, string, ...interface{}) Module
-}
-
 type TopDownMutatorContext interface {
-	BaseMutatorContext
+	BaseModuleContext
 }
 
 type BottomUpMutatorContext interface {
-	BaseMutatorContext
+	BaseModuleContext
 
 	// AddDependency adds a dependency to the given module.  It returns a slice of modules for each
 	// dependency (some entries may be nil).  Does not affect the ordering of the current mutator
@@ -1072,6 +1057,14 @@ type BottomUpMutatorContext interface {
 	// as long as the supplied predicate returns true.
 	// Replacements don't take effect until after the mutator pass is finished.
 	ReplaceDependenciesIf(string, ReplaceDependencyPredicate)
+
+	// Rename all variants of a module.  The new name is not visible to calls to ModuleName,
+	// AddDependency or OtherModuleName until after this mutator pass is complete.
+	Rename(name string)
+
+	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
+	// the specified property structs to it as if the properties were set in a blueprint file.
+	CreateModule(ModuleFactory, string, ...interface{}) Module
 }
 
 // A Mutator function is called for each Module, and can modify properties on the modules.
@@ -1098,10 +1091,6 @@ func (BaseDependencyTag) dependencyTag(DependencyTag) {
 }
 
 var _ DependencyTag = BaseDependencyTag{}
-
-func (mctx *mutatorContext) MutatorName() string {
-	return mctx.mutator.name
-}
 
 func (mctx *mutatorContext) createVariationsWithTransition(variationNames []string, outgoingTransitions [][]string) []Module {
 	return mctx.createVariations(variationNames, chooseDepByIndexes(mctx.mutator.name, outgoingTransitions))
