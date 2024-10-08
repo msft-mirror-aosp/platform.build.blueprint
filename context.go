@@ -529,6 +529,13 @@ type mutatorInfo struct {
 	name              string
 	parallel          bool
 	transitionMutator *transitionMutatorImpl
+
+	usesRename              bool
+	usesReverseDependencies bool
+	usesReplaceDependencies bool
+	usesCreateModule        bool
+	mutatesDependencies     bool
+	mutatesGlobalState      bool
 }
 
 func newContext() *Context {
@@ -834,16 +841,70 @@ func (c *Context) HasMutatorFinished(mutatorName string) bool {
 }
 
 type MutatorHandle interface {
-	// Set the mutator to visit modules in parallel while maintaining ordering.  Calling any
+	// Parallel sets the mutator to visit modules in parallel while maintaining ordering.  Calling any
 	// method on the mutator context is thread-safe, but the mutator must handle synchronization
 	// for any modifications to global state or any modules outside the one it was invoked on.
 	Parallel() MutatorHandle
+
+	// UsesRename marks the mutator as using the BottomUpMutatorContext.Rename method, which prevents
+	// coalescing adjacent mutators into a single mutator pass.
+	UsesRename() MutatorHandle
+
+	// UsesReverseDependencies marks the mutator as using the BottomUpMutatorContext.AddReverseDependency
+	// method, which prevents coalescing adjacent mutators into a single mutator pass.
+	UsesReverseDependencies() MutatorHandle
+
+	// UsesReplaceDependencies marks the mutator as using the BottomUpMutatorContext.ReplaceDependencies
+	// method, which prevents coalescing adjacent mutators into a single mutator pass.
+	UsesReplaceDependencies() MutatorHandle
+
+	// UsesCreateModule marks the mutator as using the BottomUpMutatorContext.CreateModule method,
+	// which prevents coalescing adjacent mutators into a single mutator pass.
+	UsesCreateModule() MutatorHandle
+
+	// MutatesDependencies marks the mutator as modifying properties in dependencies, which prevents
+	// coalescing adjacent mutators into a single mutator pass.
+	MutatesDependencies() MutatorHandle
+
+	// MutatesGlobalState marks the mutator as modifying global state, which prevents coalescing
+	// adjacent mutators into a single mutator pass.
+	MutatesGlobalState() MutatorHandle
 
 	setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle
 }
 
 func (mutator *mutatorInfo) Parallel() MutatorHandle {
 	mutator.parallel = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) UsesRename() MutatorHandle {
+	mutator.usesRename = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) UsesReverseDependencies() MutatorHandle {
+	mutator.usesReverseDependencies = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) UsesReplaceDependencies() MutatorHandle {
+	mutator.usesReplaceDependencies = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) UsesCreateModule() MutatorHandle {
+	mutator.usesCreateModule = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) MutatesDependencies() MutatorHandle {
+	mutator.mutatesDependencies = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) MutatesGlobalState() MutatorHandle {
+	mutator.mutatesGlobalState = true
 	return mutator
 }
 
@@ -1559,6 +1620,10 @@ func newVariant(module *moduleInfo, mutatorName string, variationName string) va
 
 func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 	depChooser depChooser, variationNames []string) (moduleList, []error) {
+
+	if mutator.transitionMutator == nil {
+		panic(fmt.Errorf("method createVariations called from mutator that was not a TransitionMutator"))
+	}
 
 	if len(variationNames) == 0 {
 		panic(fmt.Errorf("mutator %q passed zero-length variation list for module %q",
