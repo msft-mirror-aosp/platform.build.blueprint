@@ -428,7 +428,7 @@ func TestCreateModule(t *testing.T) {
 		`),
 	})
 
-	ctx.RegisterTopDownMutator("create", createTestMutator)
+	ctx.RegisterBottomUpMutator("create", createTestMutator)
 	ctx.RegisterBottomUpMutator("deps", depsMutator)
 
 	ctx.RegisterModuleType("foo_module", newFooModule)
@@ -474,7 +474,7 @@ func TestCreateModule(t *testing.T) {
 	checkDeps(d, "")
 }
 
-func createTestMutator(ctx TopDownMutatorContext) {
+func createTestMutator(ctx BottomUpMutatorContext) {
 	type props struct {
 		Name string
 		Deps []string
