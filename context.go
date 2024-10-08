@@ -1933,7 +1933,9 @@ func (c *Context) findExactVariantOrSingle(module *moduleInfo, config any, possi
 	return found
 }
 
-func (c *Context) addDependency(module *moduleInfo, config any, tag DependencyTag, depName string) (*moduleInfo, []error) {
+func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config any, tag DependencyTag,
+	depName string) (*moduleInfo, []error) {
+
 	if _, ok := tag.(BaseDependencyTag); ok {
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
@@ -1951,7 +1953,12 @@ func (c *Context) addDependency(module *moduleInfo, config any, tag DependencyTa
 	}
 
 	if m := c.findExactVariantOrSingle(module, config, possibleDeps, false); m != nil {
-		module.newDirectDeps = append(module.newDirectDeps, depInfo{m, tag})
+		if mutator.parallel {
+			module.directDeps = append(module.directDeps, depInfo{m, tag})
+			module.forwardDeps = append(module.forwardDeps, m)
+		} else {
+			module.newDirectDeps = append(module.newDirectDeps, depInfo{m, tag})
+		}
 		atomic.AddUint32(&c.depsModified, 1)
 		return m, nil
 	}
@@ -2131,7 +2138,7 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 	return foundDep, newVariant
 }
 
-func (c *Context) addVariationDependency(module *moduleInfo, config any, variations []Variation,
+func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInfo, config any, variations []Variation,
 	tag DependencyTag, depName string, far bool) (*moduleInfo, []error) {
 	if _, ok := tag.(BaseDependencyTag); ok {
 		panic("BaseDependencyTag is not allowed to be used directly!")
@@ -2173,7 +2180,12 @@ func (c *Context) addVariationDependency(module *moduleInfo, config any, variati
 			Pos: module.pos,
 		}}
 	}
-	module.newDirectDeps = append(module.newDirectDeps, depInfo{foundDep, tag})
+	if mutator.parallel {
+		module.directDeps = append(module.directDeps, depInfo{foundDep, tag})
+		module.forwardDeps = append(module.forwardDeps, foundDep)
+	} else {
+		module.newDirectDeps = append(module.newDirectDeps, depInfo{foundDep, tag})
+	}
 	atomic.AddUint32(&c.depsModified, 1)
 	return foundDep, nil
 }
@@ -3159,7 +3171,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 				module.createdBy = module.createdBy.splitModules.firstModule()
 			}
 
-			// Add in any new direct dependencies that were added by the mutator
+			// Add in any new direct dependencies that were added by the mutator and weren't handled inline
 			module.directDeps = append(module.directDeps, module.newDirectDeps...)
 			module.newDirectDeps = nil
 		}
