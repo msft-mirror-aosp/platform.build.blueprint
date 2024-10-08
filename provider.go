@@ -225,35 +225,21 @@ func (c *Context) provider(m *moduleInfo, provider *providerKey) (any, bool) {
 }
 
 func (c *Context) mutatorFinishedForModule(mutator *mutatorInfo, m *moduleInfo) bool {
-	if c.finishedMutators[mutator] {
+	if c.finishedMutators[mutator.index] {
 		// mutator pass finished for all modules
 		return true
 	}
 
-	if c.startedMutator == mutator {
-		// mutator pass started, check if it is finished for this module
-		return m.finishedMutator == mutator
-	}
-
-	// mutator pass hasn't started
-	return false
+	return m.finishedMutator >= mutator.index
 }
 
 func (c *Context) mutatorStartedForModule(mutator *mutatorInfo, m *moduleInfo) bool {
-	if c.finishedMutators[mutator] {
+	if c.finishedMutators[mutator.index] {
 		// mutator pass finished for all modules
 		return true
 	}
 
-	if c.startedMutator == mutator {
-		// mutator pass is currently running
-		if m.startedMutator == mutator {
-			// mutator has started for this module
-			return true
-		}
-	}
-
-	return false
+	return m.startedMutator >= mutator.index
 }
 
 // OtherModuleProviderContext is a helper interface that is a subset of ModuleContext, BottomUpMutatorContext, or
