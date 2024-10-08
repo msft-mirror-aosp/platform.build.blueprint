@@ -1008,7 +1008,8 @@ type BottomUpMutatorContext interface {
 	// Does not affect the ordering of the current mutator pass, but will be ordered
 	// correctly for all future mutator passes.  All reverse dependencies for a destination module are
 	// collected until the end of the mutator pass, sorted by name, and then appended to the destination
-	// module's dependency list.
+	// module's dependency list.  May only  be called by mutators that were marked with
+	// UsesReverseDependencies during registration.
 	AddReverseDependency(module Module, tag DependencyTag, name string)
 
 	// AddVariationDependencies adds deps as dependencies of the current module, but uses the variations
@@ -1022,14 +1023,15 @@ type BottomUpMutatorContext interface {
 	// be ordered correctly for all future mutator passes.
 	AddVariationDependencies([]Variation, DependencyTag, ...string) []Module
 
-	// AddReverseVariationDependencies adds a dependency from the named module to the current
+	// AddReverseVariationDependency adds a dependency from the named module to the current
 	// module. The given variations will be added to the current module's varations, and then the
 	// result will be used to find the correct variation of the depending module, which must exist.
 	//
 	// Does not affect the ordering of the current mutator pass, but will be ordered
 	// correctly for all future mutator passes.  All reverse dependencies for a destination module are
 	// collected until the end of the mutator pass, sorted by name, and then appended to the destination
-	// module's dependency list.
+	// module's dependency list.  May only  be called by mutators that were marked with
+	// UsesReverseDependencies during registration.
 	AddReverseVariationDependency([]Variation, DependencyTag, string)
 
 	// AddFarVariationDependencies adds deps as dependencies of the current module, but uses the
@@ -1049,21 +1051,25 @@ type BottomUpMutatorContext interface {
 
 	// ReplaceDependencies finds all the variants of the module with the specified name, then
 	// replaces all dependencies onto those variants with the current variant of this module.
-	// Replacements don't take effect until after the mutator pass is finished.
+	// Replacements don't take effect until after the mutator pass is finished.  May only
+	// be called by mutators that were marked with UsesReplaceDependencies during registration.
 	ReplaceDependencies(string)
 
 	// ReplaceDependenciesIf finds all the variants of the module with the specified name, then
 	// replaces all dependencies onto those variants with the current variant of this module
 	// as long as the supplied predicate returns true.
-	// Replacements don't take effect until after the mutator pass is finished.
+	// Replacements don't take effect until after the mutator pass is finished.  May only
+	// be called by mutators that were marked with UsesReplaceDependencies during registration.
 	ReplaceDependenciesIf(string, ReplaceDependencyPredicate)
 
 	// Rename all variants of a module.  The new name is not visible to calls to ModuleName,
-	// AddDependency or OtherModuleName until after this mutator pass is complete.
+	// AddDependency or OtherModuleName until after this mutator pass is complete.  May only be called
+	// by mutators that were marked with UsesRename during registration.
 	Rename(name string)
 
 	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
-	// the specified property structs to it as if the properties were set in a blueprint file.
+	// the specified property structs to it as if the properties were set in a blueprint file.  May only
+	// be called by mutators that were marked with UsesCreateModule during registration.
 	CreateModule(ModuleFactory, string, ...interface{}) Module
 }
 
@@ -1141,6 +1147,10 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 }
 
 func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTag, destName string) {
+	if !mctx.mutator.usesReverseDependencies {
+		panic(fmt.Errorf("method AddReverseDependency called from mutator that was not marked UsesReverseDependencies"))
+	}
+
 	if _, ok := tag.(BaseDependencyTag); ok {
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
@@ -1163,6 +1173,10 @@ func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTa
 }
 
 func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation, tag DependencyTag, destName string) {
+	if !mctx.mutator.usesReverseDependencies {
+		panic(fmt.Errorf("method AddReverseVariationDependency called from mutator that was not marked UsesReverseDependencies"))
+	}
+
 	if _, ok := tag.(BaseDependencyTag); ok {
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
@@ -1227,6 +1241,10 @@ func (mctx *mutatorContext) ReplaceDependencies(name string) {
 type ReplaceDependencyPredicate func(from Module, tag DependencyTag, to Module) bool
 
 func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate ReplaceDependencyPredicate) {
+	if !mctx.mutator.usesReplaceDependencies {
+		panic(fmt.Errorf("method ReplaceDependenciesIf called from mutator that was not marked UsesReplaceDependencies"))
+	}
+
 	targets := mctx.context.moduleVariantsThatDependOn(name, mctx.module)
 
 	if len(targets) == 0 {
@@ -1243,10 +1261,17 @@ func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate Replace
 }
 
 func (mctx *mutatorContext) Rename(name string) {
+	if !mctx.mutator.usesRename {
+		panic(fmt.Errorf("method Rename called from mutator that was not marked UsesRename"))
+	}
 	mctx.rename = append(mctx.rename, rename{mctx.module.group, name})
 }
 
 func (mctx *mutatorContext) CreateModule(factory ModuleFactory, typeName string, props ...interface{}) Module {
+	if !mctx.mutator.usesCreateModule {
+		panic(fmt.Errorf("method CreateModule called from mutator that was not marked UsesCreateModule"))
+	}
+
 	module := newModule(factory)
 
 	module.relBlueprintsFile = mctx.module.relBlueprintsFile
