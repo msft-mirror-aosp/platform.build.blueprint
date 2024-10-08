@@ -2475,8 +2475,8 @@ func cycleError(cycle []*moduleInfo) (errs []error) {
 // as well as after any mutator pass has called addDependency
 func (c *Context) updateDependencies() (errs []error) {
 	c.cachedDepsModified = true
-	visited := make(map[*moduleInfo]bool)  // modules that were already checked
-	checking := make(map[*moduleInfo]bool) // modules actively being checked
+	visited := make(map[*moduleInfo]bool, len(c.moduleInfo)) // modules that were already checked
+	checking := make(map[*moduleInfo]bool)                   // modules actively being checked
 
 	sorted := make([]*moduleInfo, 0, len(c.moduleInfo))
 
@@ -2492,20 +2492,13 @@ func (c *Context) updateDependencies() (errs []error) {
 		module.forwardDeps = module.forwardDeps[:0]
 
 		// Add an implicit dependency ordering on all earlier modules in the same module group
-		for _, dep := range module.group.modules {
-			if dep == module {
-				break
-			}
-			module.forwardDeps = append(module.forwardDeps, dep)
-		}
+		selfIndex := slices.Index(module.group.modules, module)
+		module.forwardDeps = append(module.forwardDeps, module.group.modules[:selfIndex]...)
 
 	outer:
 		for _, dep := range module.directDeps {
-			// use a loop to check for duplicates, average number of directDeps measured to be 9.5.
-			for _, exists := range module.forwardDeps {
-				if dep.module == exists {
-					continue outer
-				}
+			if slices.Contains(module.forwardDeps, dep.module) {
+				continue outer
 			}
 			module.forwardDeps = append(module.forwardDeps, dep.module)
 		}
@@ -2926,10 +2919,7 @@ type reverseDep struct {
 func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 	direction mutatorDirection) (deps []string, errs []error) {
 
-	newModuleInfo := make(map[Module]*moduleInfo)
-	for k, v := range c.moduleInfo {
-		newModuleInfo[k] = v
-	}
+	newModuleInfo := maps.Clone(c.moduleInfo)
 
 	type globalStateChange struct {
 		reverse    []reverseDep
