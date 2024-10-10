@@ -1989,6 +1989,10 @@ func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config
 	}
 
 	if m := c.findExactVariantOrSingle(module, config, possibleDeps, false); m != nil {
+		// A parallel mutator will pause until the newly added dependency has finished running the current mutator,
+		// so it is safe to add the new dependency directly to directDeps and forwardDeps where it will be visible
+		// to future calls to VisitDirectDeps.  Non-parallel mutators cannot pause, so they have to store the
+		// new dependency in newDirectDeps, it will be added to directDeps later after the mutator has finished.
 		if mutator.parallel {
 			module.directDeps = append(module.directDeps, depInfo{m, tag})
 			module.forwardDeps = append(module.forwardDeps, m)
@@ -2216,6 +2220,11 @@ func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInf
 			Pos: module.pos,
 		}}
 	}
+
+	// A parallel mutator will pause until the newly added dependency has finished running the current mutator,
+	// so it is safe to add the new dependency directly to directDeps and forwardDeps where it will be visible
+	// to future calls to VisitDirectDeps.  Non-parallel mutators cannot pause, so they have to store the
+	// new dependency in newDirectDeps, it will be added to directDeps later after the mutator has finished.
 	if mutator.parallel {
 		module.directDeps = append(module.directDeps, depInfo{foundDep, tag})
 		module.forwardDeps = append(module.forwardDeps, foundDep)
