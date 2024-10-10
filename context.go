@@ -26,6 +26,7 @@ import (
 	"hash/fnv"
 	"io"
 	"io/ioutil"
+	"iter"
 	"maps"
 	"math"
 	"os"
@@ -95,7 +96,6 @@ type Context struct {
 	nameInterface       NameInterface
 	moduleGroups        []*moduleGroup
 	moduleInfo          map[Module]*moduleInfo
-	modulesSorted       []*moduleInfo
 	singletonInfo       []*singletonInfo
 	mutatorInfo         []*mutatorInfo
 	variantMutatorNames []string
@@ -239,6 +239,19 @@ func (c *Context) AddIncludeTags(names ...string) {
 
 func (c *Context) ContainsIncludeTag(name string) bool {
 	return c.includeTags.Contains(name)
+}
+
+// iterateAllVariants returns an iter.Seq that iterates over every variant of every module.
+func (c *Context) iterateAllVariants() iter.Seq[*moduleInfo] {
+	return func(yield func(*moduleInfo) bool) {
+		for _, group := range c.moduleGroups {
+			for _, module := range group.modules {
+				if !yield(module) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // An Error describes a problem that was encountered that is related to a
@@ -2321,7 +2334,7 @@ const parallelVisitLimit = 1000
 // to wait for another dependency to be visited.  If a visit function returns true to cancel
 // while another visitor is paused, the paused visitor will never be resumed and its goroutine
 // will stay paused forever.
-func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
+func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit int,
 	visit func(module *moduleInfo, pause chan<- pauseSpec) bool) []error {
 
 	doneCh := make(chan *moduleInfo)
@@ -2337,7 +2350,7 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 
 	pauseMap := make(map[*moduleInfo][]pauseSpec)
 
-	for _, module := range modules {
+	for module := range moduleIter {
 		module.waitingCount = order.waitCount(module)
 	}
 
@@ -2384,10 +2397,11 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 		}
 	}
 
-	toVisit := len(modules)
+	toVisit := 0
 
 	// Start or backlog any modules that are not waiting for any other modules.
-	for _, module := range modules {
+	for module := range moduleIter {
+		toVisit++
 		if module.waitingCount == 0 {
 			startOrBacklog(module)
 		}
@@ -2500,7 +2514,7 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 			}
 
 			// Iterate over the modules list instead of pauseMap to provide deterministic ordering.
-			for _, module := range modules {
+			for module := range moduleIter {
 				for _, pauseSpec := range pauseMap[module] {
 					cycle := check(pauseSpec.paused, pauseSpec.until)
 					if len(cycle) > 0 {
@@ -2560,8 +2574,6 @@ func (c *Context) updateDependencies() (errs []error) {
 	visited := make(map[*moduleInfo]bool, len(c.moduleInfo)) // modules that were already checked
 	checking := make(map[*moduleInfo]bool)                   // modules actively being checked
 
-	sorted := make([]*moduleInfo, 0, len(c.moduleInfo))
-
 	var check func(group *moduleInfo) []*moduleInfo
 
 	check = func(module *moduleInfo) []*moduleInfo {
@@ -2614,8 +2626,6 @@ func (c *Context) updateDependencies() (errs []error) {
 			dep.reverseDeps = append(dep.reverseDeps, module)
 		}
 
-		sorted = append(sorted, module)
-
 		return nil
 	}
 
@@ -2630,8 +2640,6 @@ func (c *Context) updateDependencies() (errs []error) {
 			}
 		}
 	}
-
-	c.modulesSorted = sorted
 
 	return
 }
@@ -2760,7 +2768,7 @@ func getNinjaStrings(nStrs []*ninjaString, nameTracker *nameTracker) []string {
 
 func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*JsonModule) (bool, int)) map[string]int {
 	outputToWeight := make(map[string]int)
-	for _, m := range c.modulesSorted {
+	for m := range c.iterateAllVariants() {
 		jmWithActions := jsonModuleWithActionsFromModuleInfo(m, c.nameTracker)
 		if ok, weight := predicate(jmWithActions); ok {
 			for _, a := range jmWithActions.Module["Actions"].([]JSONAction) {
@@ -2782,7 +2790,7 @@ func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*JsonModule) (b
 func (c *Context) PrintJSONGraphAndActions(wGraph io.Writer, wActions io.Writer) {
 	modulesToGraph := make([]*JsonModule, 0)
 	modulesToActions := make([]*JsonModule, 0)
-	for _, m := range c.modulesSorted {
+	for m := range c.iterateAllVariants() {
 		jm := jsonModuleFromModuleInfo(m)
 		jmWithActions := jsonModuleWithActionsFromModuleInfo(m, c.nameTracker)
 		for _, d := range m.directDeps {
@@ -3131,7 +3139,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		}
 	}()
 
-	visitErrs := parallelVisit(c.modulesSorted, direction.orderer(), parallelVisitLimit, visit)
+	visitErrs := parallelVisit(c.iterateAllVariants(), direction.orderer(), parallelVisitLimit, visit)
 
 	if len(visitErrs) > 0 {
 		return nil, visitErrs
@@ -3255,7 +3263,7 @@ func (c *Context) cloneModules() {
 	ch := make(chan update)
 	doneCh := make(chan bool)
 	go func() {
-		errs := parallelVisit(c.modulesSorted, unorderedVisitorImpl{}, parallelVisitLimit,
+		errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
 			func(m *moduleInfo, pause chan<- pauseSpec) bool {
 				origLogicModule := m.logicModule
 				m.logicModule, m.properties = c.cloneLogicModule(m)
@@ -3330,7 +3338,7 @@ func (c *Context) generateModuleBuildActions(config interface{},
 		}
 	}()
 
-	visitErrs := parallelVisit(c.modulesSorted, bottomUpVisitor, parallelVisitLimit,
+	visitErrs := parallelVisit(c.iterateAllVariants(), bottomUpVisitor, parallelVisitLimit,
 		func(module *moduleInfo, pause chan<- pauseSpec) bool {
 			uniqueName := c.nameInterface.UniqueName(newNamespaceContext(module), module.group.name)
 			sanitizedName := toNinjaName(uniqueName)
@@ -4217,7 +4225,7 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 	errorCh := make(chan []error)
 	var wg sync.WaitGroup
 	go func() {
-		for _, m := range c.modulesSorted {
+		for m := range c.iterateAllVariants() {
 			toProcess <- m
 		}
 		close(toProcess)
@@ -4990,7 +4998,7 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 	defer c.EndEvent("deduplicate_order_only_deps")
 
 	candidates := sync.Map{} //used as map[key]*candidate
-	parallelVisit(modules, unorderedVisitorImpl{}, parallelVisitLimit,
+	parallelVisit(slices.Values(modules), unorderedVisitorImpl{}, parallelVisitLimit,
 		func(m *moduleInfo, pause chan<- pauseSpec) bool {
 			incremental := m.buildActionCacheKey != nil
 			for _, b := range m.actionDefs.buildDefs {
