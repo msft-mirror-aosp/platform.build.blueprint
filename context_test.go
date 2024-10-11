@@ -21,6 +21,7 @@ import (
 	"hash/fnv"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -776,7 +777,7 @@ func Test_parallelVisit(t *testing.T) {
 	addDep(moduleB, moduleC)
 
 	t.Run("no modules", func(t *testing.T) {
-		errs := parallelVisit(nil, bottomUpVisitorImpl{}, 1,
+		errs := parallelVisit(slices.Values([]*moduleInfo(nil)), bottomUpVisitorImpl{}, 1,
 			func(module *moduleInfo, pause chan<- pauseSpec) bool {
 				panic("unexpected call to visitor")
 			})
@@ -786,7 +787,7 @@ func Test_parallelVisit(t *testing.T) {
 	})
 	t.Run("bottom up", func(t *testing.T) {
 		order := ""
-		errs := parallelVisit([]*moduleInfo{moduleA, moduleB, moduleC}, bottomUpVisitorImpl{}, 1,
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleA, moduleB, moduleC}), bottomUpVisitorImpl{}, 1,
 			func(module *moduleInfo, pause chan<- pauseSpec) bool {
 				order += module.group.name
 				return false
@@ -800,7 +801,7 @@ func Test_parallelVisit(t *testing.T) {
 	})
 	t.Run("pause", func(t *testing.T) {
 		order := ""
-		errs := parallelVisit([]*moduleInfo{moduleA, moduleB, moduleC, moduleD}, bottomUpVisitorImpl{}, 1,
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleA, moduleB, moduleC, moduleD}), bottomUpVisitorImpl{}, 1,
 			func(module *moduleInfo, pause chan<- pauseSpec) bool {
 				if module == moduleC {
 					// Pause module C on module D
@@ -820,7 +821,7 @@ func Test_parallelVisit(t *testing.T) {
 	})
 	t.Run("cancel", func(t *testing.T) {
 		order := ""
-		errs := parallelVisit([]*moduleInfo{moduleA, moduleB, moduleC}, bottomUpVisitorImpl{}, 1,
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleA, moduleB, moduleC}), bottomUpVisitorImpl{}, 1,
 			func(module *moduleInfo, pause chan<- pauseSpec) bool {
 				order += module.group.name
 				// Cancel in module B
@@ -835,7 +836,7 @@ func Test_parallelVisit(t *testing.T) {
 	})
 	t.Run("pause and cancel", func(t *testing.T) {
 		order := ""
-		errs := parallelVisit([]*moduleInfo{moduleA, moduleB, moduleC, moduleD}, bottomUpVisitorImpl{}, 1,
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleA, moduleB, moduleC, moduleD}), bottomUpVisitorImpl{}, 1,
 			func(module *moduleInfo, pause chan<- pauseSpec) bool {
 				if module == moduleC {
 					// Pause module C on module D
@@ -856,7 +857,7 @@ func Test_parallelVisit(t *testing.T) {
 	})
 	t.Run("parallel", func(t *testing.T) {
 		order := ""
-		errs := parallelVisit([]*moduleInfo{moduleA, moduleB, moduleC}, bottomUpVisitorImpl{}, 3,
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleA, moduleB, moduleC}), bottomUpVisitorImpl{}, 3,
 			func(module *moduleInfo, pause chan<- pauseSpec) bool {
 				order += module.group.name
 				return false
@@ -870,7 +871,7 @@ func Test_parallelVisit(t *testing.T) {
 	})
 	t.Run("pause existing", func(t *testing.T) {
 		order := ""
-		errs := parallelVisit([]*moduleInfo{moduleA, moduleB, moduleC}, bottomUpVisitorImpl{}, 3,
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleA, moduleB, moduleC}), bottomUpVisitorImpl{}, 3,
 			func(module *moduleInfo, pause chan<- pauseSpec) bool {
 				if module == moduleA {
 					// Pause module A on module B (an existing dependency)
@@ -889,7 +890,7 @@ func Test_parallelVisit(t *testing.T) {
 		}
 	})
 	t.Run("cycle", func(t *testing.T) {
-		errs := parallelVisit([]*moduleInfo{moduleA, moduleB, moduleC}, bottomUpVisitorImpl{}, 3,
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleA, moduleB, moduleC}), bottomUpVisitorImpl{}, 3,
 			func(module *moduleInfo, pause chan<- pauseSpec) bool {
 				if module == moduleC {
 					// Pause module C on module A (a dependency cycle)
@@ -919,7 +920,7 @@ func Test_parallelVisit(t *testing.T) {
 		}
 	})
 	t.Run("pause cycle", func(t *testing.T) {
-		errs := parallelVisit([]*moduleInfo{moduleA, moduleB, moduleC, moduleD}, bottomUpVisitorImpl{}, 3,
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleA, moduleB, moduleC, moduleD}), bottomUpVisitorImpl{}, 3,
 			func(module *moduleInfo, pause chan<- pauseSpec) bool {
 				if module == moduleC {
 					// Pause module C on module D
@@ -963,7 +964,7 @@ func Test_parallelVisit(t *testing.T) {
 			moduleD: moduleE,
 			moduleE: moduleF,
 		}
-		errs := parallelVisit([]*moduleInfo{moduleD, moduleE, moduleF, moduleG}, bottomUpVisitorImpl{}, 4,
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleD, moduleE, moduleF, moduleG}), bottomUpVisitorImpl{}, 4,
 			func(module *moduleInfo, pause chan<- pauseSpec) bool {
 				if dep, ok := pauseDeps[module]; ok {
 					unpause := make(chan struct{})
