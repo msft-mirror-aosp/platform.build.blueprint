@@ -104,7 +104,7 @@ type Context struct {
 
 	transitionMutators []*transitionMutatorImpl
 
-	depsModified uint32 // positive if a mutator modified the dependencies
+	needsUpdateDependencies uint32 // positive if a mutator modified the dependencies
 
 	dependenciesReady bool // set to true on a successful ResolveDependencies
 	buildActionsReady bool // set to true on a successful PrepareBuildActions
@@ -344,7 +344,7 @@ type moduleInfo struct {
 
 	// set during ResolveDependencies
 	missingDeps   []string
-	newDirectDeps []depInfo
+	newDirectDeps []*moduleInfo
 
 	// set during updateDependencies
 	reverseDeps []*moduleInfo
@@ -1673,7 +1673,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 	origModule.obsoletedByNewVariants = true
 	origModule.splitModules = newModules
 
-	atomic.AddUint32(&c.depsModified, 1)
+	atomic.AddUint32(&c.needsUpdateDependencies, 1)
 
 	return newModules, errs
 }
@@ -1992,10 +1992,11 @@ func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config
 	if m := c.findExactVariantOrSingle(module, config, possibleDeps, false); m != nil {
 		// The mutator will pause until the newly added dependency has finished running the current mutator,
 		// so it is safe to add the new dependency directly to directDeps and forwardDeps where it will be visible
-		// to future calls to VisitDirectDeps.
+		// to future calls to VisitDirectDeps.  Set newDirectDeps so that at the end of the mutator the reverseDeps
+		// of the dependencies can be updated to point to this module without running a full c.updateDependencies()
 		module.directDeps = append(module.directDeps, depInfo{m, tag})
 		module.forwardDeps = append(module.forwardDeps, m)
-		atomic.AddUint32(&c.depsModified, 1)
+		module.newDirectDeps = append(module.newDirectDeps, m)
 		return m, nil
 	}
 
@@ -2219,10 +2220,11 @@ func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInf
 
 	// The mutator will pause until the newly added dependency has finished running the current mutator,
 	// so it is safe to add the new dependency directly to directDeps and forwardDeps where it will be visible
-	// to future calls to VisitDirectDeps.
+	// to future calls to VisitDirectDeps.  Set newDirectDeps so that at the end of the mutator the reverseDeps
+	// of the dependencies can be updated to point to this module without running a full c.updateDependencies()
 	module.directDeps = append(module.directDeps, depInfo{foundDep, tag})
 	module.forwardDeps = append(module.forwardDeps, foundDep)
-	atomic.AddUint32(&c.depsModified, 1)
+	module.newDirectDeps = append(module.newDirectDeps, foundDep)
 	return foundDep, nil
 }
 
@@ -3048,7 +3050,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	newVariationsCh := make(chan newVariationPair)
 	done := make(chan bool)
 
-	c.depsModified = 0
+	c.needsUpdateDependencies = 0
 
 	visit := func(module *moduleInfo, pause chan<- pauseSpec) bool {
 		if module.splitModules != nil {
@@ -3193,8 +3195,11 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				module.createdBy = module.createdBy.splitModules.firstModule()
 			}
 
-			// Add in any new direct dependencies that were added by the mutator and weren't handled inline
-			module.directDeps = append(module.directDeps, module.newDirectDeps...)
+			// Add any new forward dependencies to the reverse dependencies of the dependency to avoid
+			// having to call a full c.updateDependencies().
+			for _, m := range module.newDirectDeps {
+				m.reverseDeps = append(m.reverseDeps, module)
+			}
 			module.newDirectDeps = nil
 		}
 	}
@@ -3213,7 +3218,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	for module, deps := range reverseDeps {
 		sort.Sort(depSorter(deps))
 		module.directDeps = append(module.directDeps, deps...)
-		c.depsModified++
+		c.needsUpdateDependencies++
 	}
 
 	for _, module := range newModules {
@@ -3221,7 +3226,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		if len(errs) > 0 {
 			return nil, errs
 		}
-		atomic.AddUint32(&c.depsModified, 1)
+		c.needsUpdateDependencies++
 	}
 
 	errs = c.handleRenames(rename)
@@ -3234,7 +3239,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		return nil, errs
 	}
 
-	if c.depsModified > 0 {
+	if c.needsUpdateDependencies > 0 {
 		errs = c.updateDependencies()
 		if len(errs) > 0 {
 			return nil, errs
@@ -3695,7 +3700,7 @@ func (c *Context) handleReplacements(replacements []replace) []error {
 	}
 
 	if changedDeps {
-		atomic.AddUint32(&c.depsModified, 1)
+		c.needsUpdateDependencies++
 	}
 	return errs
 }
