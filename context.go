@@ -26,6 +26,7 @@ import (
 	"hash/fnv"
 	"io"
 	"io/ioutil"
+	"iter"
 	"maps"
 	"math"
 	"os"
@@ -95,7 +96,6 @@ type Context struct {
 	nameInterface       NameInterface
 	moduleGroups        []*moduleGroup
 	moduleInfo          map[Module]*moduleInfo
-	modulesSorted       []*moduleInfo
 	singletonInfo       []*singletonInfo
 	mutatorInfo         []*mutatorInfo
 	variantMutatorNames []string
@@ -104,7 +104,7 @@ type Context struct {
 
 	transitionMutators []*transitionMutatorImpl
 
-	depsModified uint32 // positive if a mutator modified the dependencies
+	needsUpdateDependencies uint32 // positive if a mutator modified the dependencies
 
 	dependenciesReady bool // set to true on a successful ResolveDependencies
 	buildActionsReady bool // set to true on a successful PrepareBuildActions
@@ -241,6 +241,19 @@ func (c *Context) ContainsIncludeTag(name string) bool {
 	return c.includeTags.Contains(name)
 }
 
+// iterateAllVariants returns an iter.Seq that iterates over every variant of every module.
+func (c *Context) iterateAllVariants() iter.Seq[*moduleInfo] {
+	return func(yield func(*moduleInfo) bool) {
+		for _, group := range c.moduleGroups {
+			for _, module := range group.modules {
+				if !yield(module) {
+					return
+				}
+			}
+		}
+	}
+}
+
 // An Error describes a problem that was encountered that is related to a
 // particular location in a Blueprints file.
 type BlueprintError struct {
@@ -331,7 +344,7 @@ type moduleInfo struct {
 
 	// set during ResolveDependencies
 	missingDeps   []string
-	newDirectDeps []depInfo
+	newDirectDeps []*moduleInfo
 
 	// set during updateDependencies
 	reverseDeps []*moduleInfo
@@ -527,7 +540,6 @@ type mutatorInfo struct {
 	bottomUpMutator   BottomUpMutator
 	name              string
 	index             int
-	parallel          bool
 	transitionMutator *transitionMutatorImpl
 
 	usesRename              bool
@@ -566,7 +578,7 @@ func newContext() *Context {
 func NewContext() *Context {
 	ctx := newContext()
 
-	ctx.RegisterBottomUpMutator("blueprint_deps", blueprintDepsMutator).Parallel()
+	ctx.RegisterBottomUpMutator("blueprint_deps", blueprintDepsMutator)
 
 	return ctx
 }
@@ -841,11 +853,6 @@ func (c *Context) HasMutatorFinished(mutatorName string) bool {
 }
 
 type MutatorHandle interface {
-	// Parallel sets the mutator to visit modules in parallel while maintaining ordering.  Calling any
-	// method on the mutator context is thread-safe, but the mutator must handle synchronization
-	// for any modifications to global state or any modules outside the one it was invoked on.
-	Parallel() MutatorHandle
-
 	// UsesRename marks the mutator as using the BottomUpMutatorContext.Rename method, which prevents
 	// coalescing adjacent mutators into a single mutator pass.
 	UsesRename() MutatorHandle
@@ -871,11 +878,6 @@ type MutatorHandle interface {
 	MutatesGlobalState() MutatorHandle
 
 	setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle
-}
-
-func (mutator *mutatorInfo) Parallel() MutatorHandle {
-	mutator.parallel = true
-	return mutator
 }
 
 func (mutator *mutatorInfo) UsesRename() MutatorHandle {
@@ -1671,7 +1673,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 	origModule.obsoletedByNewVariants = true
 	origModule.splitModules = newModules
 
-	atomic.AddUint32(&c.depsModified, 1)
+	atomic.AddUint32(&c.needsUpdateDependencies, 1)
 
 	return newModules, errs
 }
@@ -1872,7 +1874,6 @@ func coalesceMutators(mutators []*mutatorInfo) [][]*mutatorInfo {
 	// also return true.
 	coalescable := func(m *mutatorInfo) bool {
 		return m.bottomUpMutator != nil &&
-			m.parallel &&
 			m.transitionMutator == nil &&
 			!m.usesCreateModule &&
 			!m.usesReplaceDependencies &&
@@ -1989,17 +1990,13 @@ func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config
 	}
 
 	if m := c.findExactVariantOrSingle(module, config, possibleDeps, false); m != nil {
-		// A parallel mutator will pause until the newly added dependency has finished running the current mutator,
+		// The mutator will pause until the newly added dependency has finished running the current mutator,
 		// so it is safe to add the new dependency directly to directDeps and forwardDeps where it will be visible
-		// to future calls to VisitDirectDeps.  Non-parallel mutators cannot pause, so they have to store the
-		// new dependency in newDirectDeps, it will be added to directDeps later after the mutator has finished.
-		if mutator.parallel {
-			module.directDeps = append(module.directDeps, depInfo{m, tag})
-			module.forwardDeps = append(module.forwardDeps, m)
-		} else {
-			module.newDirectDeps = append(module.newDirectDeps, depInfo{m, tag})
-		}
-		atomic.AddUint32(&c.depsModified, 1)
+		// to future calls to VisitDirectDeps.  Set newDirectDeps so that at the end of the mutator the reverseDeps
+		// of the dependencies can be updated to point to this module without running a full c.updateDependencies()
+		module.directDeps = append(module.directDeps, depInfo{m, tag})
+		module.forwardDeps = append(module.forwardDeps, m)
+		module.newDirectDeps = append(module.newDirectDeps, m)
 		return m, nil
 	}
 
@@ -2221,17 +2218,13 @@ func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInf
 		}}
 	}
 
-	// A parallel mutator will pause until the newly added dependency has finished running the current mutator,
+	// The mutator will pause until the newly added dependency has finished running the current mutator,
 	// so it is safe to add the new dependency directly to directDeps and forwardDeps where it will be visible
-	// to future calls to VisitDirectDeps.  Non-parallel mutators cannot pause, so they have to store the
-	// new dependency in newDirectDeps, it will be added to directDeps later after the mutator has finished.
-	if mutator.parallel {
-		module.directDeps = append(module.directDeps, depInfo{foundDep, tag})
-		module.forwardDeps = append(module.forwardDeps, foundDep)
-	} else {
-		module.newDirectDeps = append(module.newDirectDeps, depInfo{foundDep, tag})
-	}
-	atomic.AddUint32(&c.depsModified, 1)
+	// to future calls to VisitDirectDeps.  Set newDirectDeps so that at the end of the mutator the reverseDeps
+	// of the dependencies can be updated to point to this module without running a full c.updateDependencies()
+	module.directDeps = append(module.directDeps, depInfo{foundDep, tag})
+	module.forwardDeps = append(module.forwardDeps, foundDep)
+	module.newDirectDeps = append(module.newDirectDeps, foundDep)
 	return foundDep, nil
 }
 
@@ -2280,8 +2273,6 @@ type visitOrderer interface {
 	waitCount(module *moduleInfo) int
 	// returns the list of modules that are waiting for this module
 	propagate(module *moduleInfo) []*moduleInfo
-	// visit modules in order
-	visit(modules []*moduleInfo, visit func(*moduleInfo, chan<- pauseSpec) bool)
 }
 
 type unorderedVisitorImpl struct{}
@@ -2294,14 +2285,6 @@ func (unorderedVisitorImpl) propagate(module *moduleInfo) []*moduleInfo {
 	return nil
 }
 
-func (unorderedVisitorImpl) visit(modules []*moduleInfo, visit func(*moduleInfo, chan<- pauseSpec) bool) {
-	for _, module := range modules {
-		if visit(module, nil) {
-			return
-		}
-	}
-}
-
 type bottomUpVisitorImpl struct{}
 
 func (bottomUpVisitorImpl) waitCount(module *moduleInfo) int {
@@ -2310,14 +2293,6 @@ func (bottomUpVisitorImpl) waitCount(module *moduleInfo) int {
 
 func (bottomUpVisitorImpl) propagate(module *moduleInfo) []*moduleInfo {
 	return module.reverseDeps
-}
-
-func (bottomUpVisitorImpl) visit(modules []*moduleInfo, visit func(*moduleInfo, chan<- pauseSpec) bool) {
-	for _, module := range modules {
-		if visit(module, nil) {
-			return
-		}
-	}
 }
 
 type topDownVisitorImpl struct{}
@@ -2361,7 +2336,7 @@ const parallelVisitLimit = 1000
 // to wait for another dependency to be visited.  If a visit function returns true to cancel
 // while another visitor is paused, the paused visitor will never be resumed and its goroutine
 // will stay paused forever.
-func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
+func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit int,
 	visit func(module *moduleInfo, pause chan<- pauseSpec) bool) []error {
 
 	doneCh := make(chan *moduleInfo)
@@ -2377,7 +2352,7 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 
 	pauseMap := make(map[*moduleInfo][]pauseSpec)
 
-	for _, module := range modules {
+	for module := range moduleIter {
 		module.waitingCount = order.waitCount(module)
 	}
 
@@ -2424,10 +2399,11 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 		}
 	}
 
-	toVisit := len(modules)
+	toVisit := 0
 
 	// Start or backlog any modules that are not waiting for any other modules.
-	for _, module := range modules {
+	for module := range moduleIter {
+		toVisit++
 		if module.waitingCount == 0 {
 			startOrBacklog(module)
 		}
@@ -2540,7 +2516,7 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 			}
 
 			// Iterate over the modules list instead of pauseMap to provide deterministic ordering.
-			for _, module := range modules {
+			for module := range moduleIter {
 				for _, pauseSpec := range pauseMap[module] {
 					cycle := check(pauseSpec.paused, pauseSpec.until)
 					if len(cycle) > 0 {
@@ -2600,8 +2576,6 @@ func (c *Context) updateDependencies() (errs []error) {
 	visited := make(map[*moduleInfo]bool, len(c.moduleInfo)) // modules that were already checked
 	checking := make(map[*moduleInfo]bool)                   // modules actively being checked
 
-	sorted := make([]*moduleInfo, 0, len(c.moduleInfo))
-
 	var check func(group *moduleInfo) []*moduleInfo
 
 	check = func(module *moduleInfo) []*moduleInfo {
@@ -2615,13 +2589,10 @@ func (c *Context) updateDependencies() (errs []error) {
 
 		// Add an implicit dependency ordering on all earlier modules in the same module group
 		selfIndex := slices.Index(module.group.modules, module)
+		slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
 		module.forwardDeps = append(module.forwardDeps, module.group.modules[:selfIndex]...)
 
-	outer:
 		for _, dep := range module.directDeps {
-			if slices.Contains(module.forwardDeps, dep.module) {
-				continue outer
-			}
 			module.forwardDeps = append(module.forwardDeps, dep.module)
 		}
 
@@ -2654,8 +2625,6 @@ func (c *Context) updateDependencies() (errs []error) {
 			dep.reverseDeps = append(dep.reverseDeps, module)
 		}
 
-		sorted = append(sorted, module)
-
 		return nil
 	}
 
@@ -2670,8 +2639,6 @@ func (c *Context) updateDependencies() (errs []error) {
 			}
 		}
 	}
-
-	c.modulesSorted = sorted
 
 	return
 }
@@ -2800,7 +2767,7 @@ func getNinjaStrings(nStrs []*ninjaString, nameTracker *nameTracker) []string {
 
 func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*JsonModule) (bool, int)) map[string]int {
 	outputToWeight := make(map[string]int)
-	for _, m := range c.modulesSorted {
+	for m := range c.iterateAllVariants() {
 		jmWithActions := jsonModuleWithActionsFromModuleInfo(m, c.nameTracker)
 		if ok, weight := predicate(jmWithActions); ok {
 			for _, a := range jmWithActions.Module["Actions"].([]JSONAction) {
@@ -2822,7 +2789,7 @@ func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*JsonModule) (b
 func (c *Context) PrintJSONGraphAndActions(wGraph io.Writer, wActions io.Writer) {
 	modulesToGraph := make([]*JsonModule, 0)
 	modulesToActions := make([]*JsonModule, 0)
-	for _, m := range c.modulesSorted {
+	for m := range c.iterateAllVariants() {
 		jm := jsonModuleFromModuleInfo(m)
 		jmWithActions := jsonModuleWithActionsFromModuleInfo(m, c.nameTracker)
 		for _, d := range m.directDeps {
@@ -3080,7 +3047,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	newVariationsCh := make(chan newVariationPair)
 	done := make(chan bool)
 
-	c.depsModified = 0
+	c.needsUpdateDependencies = 0
 
 	visit := func(module *moduleInfo, pause chan<- pauseSpec) bool {
 		if module.splitModules != nil {
@@ -3171,12 +3138,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		}
 	}()
 
-	var visitErrs []error
-	if mutatorGroup[0].parallel {
-		visitErrs = parallelVisit(c.modulesSorted, direction.orderer(), parallelVisitLimit, visit)
-	} else {
-		direction.orderer().visit(c.modulesSorted, visit)
-	}
+	visitErrs := parallelVisit(c.iterateAllVariants(), direction.orderer(), parallelVisitLimit, visit)
 
 	if len(visitErrs) > 0 {
 		return nil, visitErrs
@@ -3230,8 +3192,11 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				module.createdBy = module.createdBy.splitModules.firstModule()
 			}
 
-			// Add in any new direct dependencies that were added by the mutator and weren't handled inline
-			module.directDeps = append(module.directDeps, module.newDirectDeps...)
+			// Add any new forward dependencies to the reverse dependencies of the dependency to avoid
+			// having to call a full c.updateDependencies().
+			for _, m := range module.newDirectDeps {
+				m.reverseDeps = append(m.reverseDeps, module)
+			}
 			module.newDirectDeps = nil
 		}
 	}
@@ -3250,7 +3215,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	for module, deps := range reverseDeps {
 		sort.Sort(depSorter(deps))
 		module.directDeps = append(module.directDeps, deps...)
-		c.depsModified++
+		c.needsUpdateDependencies++
 	}
 
 	for _, module := range newModules {
@@ -3258,7 +3223,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		if len(errs) > 0 {
 			return nil, errs
 		}
-		atomic.AddUint32(&c.depsModified, 1)
+		c.needsUpdateDependencies++
 	}
 
 	errs = c.handleRenames(rename)
@@ -3271,7 +3236,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		return nil, errs
 	}
 
-	if c.depsModified > 0 {
+	if c.needsUpdateDependencies > 0 {
 		errs = c.updateDependencies()
 		if len(errs) > 0 {
 			return nil, errs
@@ -3300,7 +3265,7 @@ func (c *Context) cloneModules() {
 	ch := make(chan update)
 	doneCh := make(chan bool)
 	go func() {
-		errs := parallelVisit(c.modulesSorted, unorderedVisitorImpl{}, parallelVisitLimit,
+		errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
 			func(m *moduleInfo, pause chan<- pauseSpec) bool {
 				origLogicModule := m.logicModule
 				m.logicModule, m.properties = c.cloneLogicModule(m)
@@ -3375,7 +3340,7 @@ func (c *Context) generateModuleBuildActions(config interface{},
 		}
 	}()
 
-	visitErrs := parallelVisit(c.modulesSorted, bottomUpVisitor, parallelVisitLimit,
+	visitErrs := parallelVisit(c.iterateAllVariants(), bottomUpVisitor, parallelVisitLimit,
 		func(module *moduleInfo, pause chan<- pauseSpec) bool {
 			uniqueName := c.nameInterface.UniqueName(newNamespaceContext(module), module.group.name)
 			sanitizedName := toNinjaName(uniqueName)
@@ -3732,7 +3697,7 @@ func (c *Context) handleReplacements(replacements []replace) []error {
 	}
 
 	if changedDeps {
-		atomic.AddUint32(&c.depsModified, 1)
+		c.needsUpdateDependencies++
 	}
 	return errs
 }
@@ -4262,7 +4227,7 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 	errorCh := make(chan []error)
 	var wg sync.WaitGroup
 	go func() {
-		for _, m := range c.modulesSorted {
+		for m := range c.iterateAllVariants() {
 			toProcess <- m
 		}
 		close(toProcess)
@@ -5035,7 +5000,7 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 	defer c.EndEvent("deduplicate_order_only_deps")
 
 	candidates := sync.Map{} //used as map[key]*candidate
-	parallelVisit(modules, unorderedVisitorImpl{}, parallelVisitLimit,
+	parallelVisit(slices.Values(modules), unorderedVisitorImpl{}, parallelVisitLimit,
 		func(m *moduleInfo, pause chan<- pauseSpec) bool {
 			incremental := m.buildActionCacheKey != nil
 			for _, b := range m.actionDefs.buildDefs {
