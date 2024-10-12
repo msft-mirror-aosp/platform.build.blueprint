@@ -998,10 +998,7 @@ type BottomUpMutatorContext interface {
 	// dependency (some entries may be nil).  Does not affect the ordering of the current mutator
 	// pass, but will be ordered correctly for all future mutator passes.
 	//
-	// If the mutator is parallel (see MutatorHandle.Parallel), this method will pause until the
-	// new dependencies have had the current mutator called on them.  If the mutator is not
-	// parallel this method does not affect the ordering of the current mutator pass, but will
-	// be ordered correctly for all future mutator passes.
+	// This method will pause until the new dependencies have had the current mutator called on them.
 	AddDependency(module Module, tag DependencyTag, name ...string) []Module
 
 	// AddReverseDependency adds a dependency from the destination to the given module.
@@ -1017,10 +1014,8 @@ type BottomUpMutatorContext interface {
 	// each dependency (some entries may be nil).  A variant of the dependency must exist that matches
 	// the all of the non-local variations of the current module, plus the variations argument.
 	//
-	// If the mutator is parallel (see MutatorHandle.Parallel), this method will pause until the
-	// new dependencies have had the current mutator called on them.  If the mutator is not
-	// parallel this method does not affect the ordering of the current mutator pass, but will
-	// be ordered correctly for all future mutator passes.
+	//
+	// This method will pause until the new dependencies have had the current mutator called on them.
 	AddVariationDependencies([]Variation, DependencyTag, ...string) []Module
 
 	// AddReverseVariationDependency adds a dependency from the named module to the current
@@ -1043,10 +1038,8 @@ type BottomUpMutatorContext interface {
 	// Unlike AddVariationDependencies, the variations of the current module are ignored - the
 	// dependency only needs to match the supplied variations.
 	//
-	// If the mutator is parallel (see MutatorHandle.Parallel), this method will pause until the
-	// new dependencies have had the current mutator called on them.  If the mutator is not
-	// parallel this method does not affect the ordering of the current mutator pass, but will
-	// be ordered correctly for all future mutator passes.
+	//
+	// This method will pause until the new dependencies have had the current mutator called on them.
 	AddFarVariationDependencies([]Variation, DependencyTag, ...string) []Module
 
 	// ReplaceDependencies finds all the variants of the module with the specified name, then
