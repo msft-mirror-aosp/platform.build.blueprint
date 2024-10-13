@@ -428,7 +428,7 @@ func TestCreateModule(t *testing.T) {
 		`),
 	})
 
-	ctx.RegisterTopDownMutator("create", createTestMutator)
+	ctx.RegisterBottomUpMutator("create", createTestMutator).UsesCreateModule()
 	ctx.RegisterBottomUpMutator("deps", depsMutator)
 
 	ctx.RegisterModuleType("foo_module", newFooModule)
@@ -474,7 +474,7 @@ func TestCreateModule(t *testing.T) {
 	checkDeps(d, "")
 }
 
-func createTestMutator(ctx TopDownMutatorContext) {
+func createTestMutator(ctx BottomUpMutatorContext) {
 	type props struct {
 		Name string
 		Deps []string
@@ -1726,4 +1726,119 @@ func mapContainsValue[K comparable, V comparable](m map[K][]V, target V) (bool, 
 	}
 	var key K
 	return false, key
+}
+
+func TestDisallowedMutatorMethods(t *testing.T) {
+	testCases := []struct {
+		name              string
+		mutatorHandleFunc func(MutatorHandle)
+		mutatorFunc       func(BottomUpMutatorContext)
+		expectedPanic     string
+	}{
+		{
+			name:              "rename",
+			mutatorHandleFunc: func(handle MutatorHandle) { handle.UsesRename() },
+			mutatorFunc:       func(ctx BottomUpMutatorContext) { ctx.Rename("qux") },
+			expectedPanic:     "method Rename called from mutator that was not marked UsesRename",
+		},
+		{
+			name:              "replace_dependencies",
+			mutatorHandleFunc: func(handle MutatorHandle) { handle.UsesReplaceDependencies() },
+			mutatorFunc:       func(ctx BottomUpMutatorContext) { ctx.ReplaceDependencies("bar") },
+			expectedPanic:     "method ReplaceDependenciesIf called from mutator that was not marked UsesReplaceDependencies",
+		},
+		{
+			name:              "replace_dependencies_if",
+			mutatorHandleFunc: func(handle MutatorHandle) { handle.UsesReplaceDependencies() },
+			mutatorFunc: func(ctx BottomUpMutatorContext) {
+				ctx.ReplaceDependenciesIf("bar", func(from Module, tag DependencyTag, to Module) bool { return false })
+			},
+			expectedPanic: "method ReplaceDependenciesIf called from mutator that was not marked UsesReplaceDependencies",
+		},
+		{
+			name:              "reverse_dependencies",
+			mutatorHandleFunc: func(handle MutatorHandle) { handle.UsesReverseDependencies() },
+			mutatorFunc:       func(ctx BottomUpMutatorContext) { ctx.AddReverseDependency(ctx.Module(), nil, "baz") },
+			expectedPanic:     "method AddReverseDependency called from mutator that was not marked UsesReverseDependencies",
+		},
+		{
+			name:              "create_module",
+			mutatorHandleFunc: func(handle MutatorHandle) { handle.UsesCreateModule() },
+			mutatorFunc: func(ctx BottomUpMutatorContext) {
+				ctx.CreateModule(newFooModule, "create_module",
+					&struct{ Name string }{Name: "quz"})
+			},
+			expectedPanic: "method CreateModule called from mutator that was not marked UsesCreateModule",
+		},
+	}
+
+	runTest := func(mutatorHandleFunc func(MutatorHandle), mutatorFunc func(ctx BottomUpMutatorContext), expectedPanic string) {
+		ctx := NewContext()
+
+		ctx.MockFileSystem(map[string][]byte{
+			"Android.bp": []byte(`
+			foo_module {
+				name: "foo",
+			}
+
+			foo_module {
+				name: "bar",
+				deps: ["foo"],
+			}
+
+			foo_module {
+				name: "baz",
+			}
+		`)})
+
+		ctx.RegisterModuleType("foo_module", newFooModule)
+		ctx.RegisterBottomUpMutator("deps", depsMutator)
+		handle := ctx.RegisterBottomUpMutator("mutator", func(ctx BottomUpMutatorContext) {
+			if ctx.ModuleName() == "foo" {
+				mutatorFunc(ctx)
+			}
+		})
+		mutatorHandleFunc(handle)
+
+		_, errs := ctx.ParseBlueprintsFiles("Android.bp", nil)
+		if len(errs) > 0 {
+			t.Errorf("unexpected parse errors:")
+			for _, err := range errs {
+				t.Errorf("  %s", err)
+			}
+			t.FailNow()
+		}
+
+		_, errs = ctx.ResolveDependencies(nil)
+		if expectedPanic != "" {
+			if len(errs) == 0 {
+				t.Errorf("missing expected error %q", expectedPanic)
+			} else if !strings.Contains(errs[0].Error(), expectedPanic) {
+				t.Errorf("missing expected error %q in %q", expectedPanic, errs[0].Error())
+			}
+		} else if len(errs) > 0 {
+			t.Errorf("unexpected dep errors:")
+			for _, err := range errs {
+				t.Errorf("  %s", err)
+			}
+			t.FailNow()
+		}
+	}
+
+	noopMutatorHandleFunc := func(MutatorHandle) {}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Run("allowed", func(t *testing.T) {
+				// Test that the method doesn't panic when the handle function is called.
+				runTest(testCase.mutatorHandleFunc, testCase.mutatorFunc, "")
+			})
+			t.Run("disallowed", func(t *testing.T) {
+				// Test that the method does panic with the expected error when the
+				// handle function is not called.
+				runTest(noopMutatorHandleFunc, testCase.mutatorFunc, testCase.expectedPanic)
+			})
+		})
+	}
+
 }
