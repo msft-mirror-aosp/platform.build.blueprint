@@ -1956,18 +1956,21 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 // findExactVariantOrSingle searches the moduleGroup for a module with the same variant as module,
 // and returns the matching module, or nil if one is not found.  A group with exactly one module
 // is always considered matching.
-func (c *Context) findExactVariantOrSingle(module *moduleInfo, config any, possible *moduleGroup, reverse bool) *moduleInfo {
-	found, _ := c.findVariant(module, config, possible, nil, false, reverse)
+func (c *Context) findExactVariantOrSingle(module *moduleInfo, config any, possible *moduleGroup, reverse bool) (*moduleInfo, []error) {
+	found, _, errs := c.findVariant(module, config, possible, nil, false, reverse)
+	if errs != nil {
+		return nil, errs
+	}
 	if found == nil {
 		for _, m := range possible.modules {
 			if found != nil {
 				// more than one possible match, give up
-				return nil
+				return nil, nil
 			}
 			found = m
 		}
 	}
-	return found
+	return found, nil
 }
 
 func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config any, tag DependencyTag,
@@ -1989,7 +1992,9 @@ func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config
 		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
-	if m := c.findExactVariantOrSingle(module, config, possibleDeps, false); m != nil {
+	if m, errs := c.findExactVariantOrSingle(module, config, possibleDeps, false); errs != nil {
+		return nil, errs
+	} else if m != nil {
 		// The mutator will pause until the newly added dependency has finished running the current mutator,
 		// so it is safe to add the new dependency directly to directDeps and forwardDeps where it will be visible
 		// to future calls to VisitDirectDeps.  Set newDirectDeps so that at the end of the mutator the reverseDeps
@@ -2031,7 +2036,9 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, requeste
 		}}
 	}
 
-	if m, _ := c.findVariant(module, config, possibleDeps, requestedVariations, false, true); m != nil {
+	if m, _, errs := c.findVariant(module, config, possibleDeps, requestedVariations, false, true); errs != nil {
+		return nil, errs
+	} else if m != nil {
 		return m, nil
 	}
 
@@ -2054,7 +2061,7 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, requeste
 // modify the requested variation.  It finds a variant that existed before the TransitionMutator ran that is
 // a subset of the requested variant to use as the module context for IncomingTransition.
 func (c *Context) applyTransitions(config any, module *moduleInfo, group *moduleGroup, variant variationMap,
-	requestedVariations []Variation) variationMap {
+	requestedVariations []Variation) (variationMap, []error) {
 	for _, transitionMutator := range c.transitionMutators {
 		explicitlyRequested := slices.ContainsFunc(requestedVariations, func(variation Variation) bool {
 			return variation.Mutator == transitionMutator.name
@@ -2070,6 +2077,9 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 					depTag: nil, postMutator: true, config: config},
 			}
 			outgoingVariation = transitionMutator.mutator.OutgoingTransition(ctx, sourceVariation)
+			if len(ctx.errs) > 0 {
+				return variationMap{}, ctx.errs
+			}
 		}
 
 		earlierVariantCreatingMutators := c.variantCreatingMutatorOrder[:transitionMutator.variantCreatingMutatorIndex]
@@ -2111,6 +2121,9 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 			}
 
 			finalVariation := transitionMutator.mutator.IncomingTransition(ctx, outgoingVariation)
+			if len(ctx.errs) > 0 {
+				return variationMap{}, ctx.errs
+			}
 			variant.set(transitionMutator.name, finalVariation)
 		}
 
@@ -2121,11 +2134,11 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 		}
 	}
 
-	return variant
+	return variant, nil
 }
 
 func (c *Context) findVariant(module *moduleInfo, config any,
-	possibleDeps *moduleGroup, requestedVariations []Variation, far bool, reverse bool) (*moduleInfo, variationMap) {
+	possibleDeps *moduleGroup, requestedVariations []Variation, far bool, reverse bool) (*moduleInfo, variationMap, []error) {
 
 	// We can't just append variant.Variant to module.dependencyVariant.variantName and
 	// compare the strings because the result won't be in mutator registration order.
@@ -2139,7 +2152,11 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 	}
 
 	if !reverse {
-		newVariant = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
+		var errs []error
+		newVariant, errs = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
+		if len(errs) > 0 {
+			return nil, variationMap{}, errs
+		}
 	}
 
 	// check returns a bool for whether the requested newVariant matches the given variant from possibleDeps, and a
@@ -2172,7 +2189,7 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 		}
 	}
 
-	return foundDep, newVariant
+	return foundDep, newVariant, nil
 }
 
 func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInfo, config any, variations []Variation,
@@ -2186,7 +2203,10 @@ func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInf
 		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
-	foundDep, newVariant := c.findVariant(module, config, possibleDeps, variations, far, false)
+	foundDep, newVariant, errs := c.findVariant(module, config, possibleDeps, variations, far, false)
+	if errs != nil {
+		return nil, errs
+	}
 
 	if foundDep == nil {
 		if c.allowMissingDependencies {
