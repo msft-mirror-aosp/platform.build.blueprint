@@ -229,16 +229,6 @@ blueprint_go_binary {
 }
 
 blueprint_go_binary {
-    name: "bpmodify",
-    deps: [
-        "blueprint-parser",
-        "blueprint-proptools",
-    ],
-    srcs: ["bpmodify/bpmodify.go"],
-    testSrcs: ["bpmodify/bpmodify_test.go"],
-}
-
-blueprint_go_binary {
     name: "gotestmain",
     srcs: ["gotestmain/gotestmain.go"],
 }
