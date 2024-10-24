@@ -35,6 +35,7 @@ license {
 bootstrap_go_package {
     name: "blueprint",
     deps: [
+        "blueprint-gobtools",
         "blueprint-metrics",
         "blueprint-parser",
         "blueprint-pathtools",
