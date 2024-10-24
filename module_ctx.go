@@ -106,6 +106,24 @@ type Module interface {
 	GenerateBuildActions(ModuleContext)
 }
 
+type ModuleProxy struct {
+	module Module
+}
+
+func CreateModuleProxy(module Module) ModuleProxy {
+	return ModuleProxy{
+		module: module,
+	}
+}
+
+func (m ModuleProxy) Name() string {
+	return m.module.Name()
+}
+
+func (m ModuleProxy) GenerateBuildActions(context ModuleContext) {
+	m.module.GenerateBuildActions(context)
+}
+
 // A DynamicDependerModule is a Module that may add dependencies that do not
 // appear in its "deps" property.  Any Module that implements this interface
 // will have its DynamicDependencies method called by the Context that created
@@ -129,7 +147,7 @@ type EarlyModuleContext interface {
 	Module() Module
 
 	// ModuleName returns the name of the module.  This is generally the value that was returned by Module.Name() when
-	// the module was created, but may have been modified by calls to BaseMutatorContext.Rename.
+	// the module was created, but may have been modified by calls to BottomUpMutatorContext.Rename.
 	ModuleName() string
 
 	// ModuleDir returns the path to the directory that contains the definition of the module.
@@ -200,6 +218,10 @@ type EarlyModuleContext interface {
 
 	// ModuleFactories returns a map of all of the global ModuleFactories by name.
 	ModuleFactories() map[string]ModuleFactory
+
+	// HasMutatorFinished returns true if the given mutator has finished running.
+	// It will panic if given an invalid mutator name.
+	HasMutatorFinished(mutatorName string) bool
 }
 
 type BaseModuleContext interface {
@@ -221,6 +243,8 @@ type BaseModuleContext interface {
 	// The Module passed to the visit function should not be retained outside of the visit function, it may be
 	// invalidated by future mutators.
 	VisitDirectDeps(visit func(Module))
+
+	VisitDirectDepsProxy(visit func(proxy ModuleProxy))
 
 	// VisitDirectDepsIf calls pred for each direct dependency, and if pred returns true calls visit.  If there are
 	// multiple direct dependencies on the same module pred and visit will be called multiple times on that module and
@@ -257,6 +281,8 @@ type BaseModuleContext interface {
 	// The Modules passed to the visit function should not be retained outside of the visit function, they may be
 	// invalidated by future mutators.
 	WalkDeps(visit func(Module, Module) bool)
+
+	WalkDepsProxy(visit func(ModuleProxy, ModuleProxy) bool)
 
 	// PrimaryModule returns the first variant of the current module.  Variants of a module are always visited in
 	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
@@ -362,11 +388,7 @@ type BaseModuleContext interface {
 
 	EarlyGetMissingDependencies() []string
 
-	GetIncrementalEnabled() bool
-
-	GetIncrementalAnalysis() bool
-
-	OtherModuleProviderInitialValueHashes(module Module) []uint64
+	EqualModules(m1, m2 Module) bool
 
 	base() *baseModuleContext
 }
@@ -396,10 +418,6 @@ type ModuleContext interface {
 	// but do not exist.  It can be used with Context.SetAllowMissingDependencies to allow the primary builder to
 	// handle missing dependencies on its own instead of having Blueprint treat them as an error.
 	GetMissingDependencies() []string
-
-	CacheBuildActions(key *BuildActionCacheKey, im *Incremental)
-
-	RestoreBuildActions(key *BuildActionCacheKey) bool
 }
 
 var _ BaseModuleContext = (*baseModuleContext)(nil)
@@ -504,6 +522,10 @@ func (d *baseModuleContext) Namespace() Namespace {
 	return d.context.nameInterface.GetNamespace(newNamespaceContext(d.module))
 }
 
+func (d *baseModuleContext) HasMutatorFinished(mutatorName string) bool {
+	return d.context.HasMutatorFinished(mutatorName)
+}
+
 var _ ModuleContext = (*moduleContext)(nil)
 
 type moduleContext struct {
@@ -511,11 +533,14 @@ type moduleContext struct {
 	scope              *localScope
 	actionDefs         localBuildActions
 	handledMissingDeps bool
-	buildParams        []BuildParams
+}
+
+func (m *baseModuleContext) EqualModules(m1, m2 Module) bool {
+	return getWrappedModule(m1) == getWrappedModule(m2)
 }
 
 func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return module.Name()
 }
 
@@ -547,9 +572,16 @@ func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 	})
 }
 
+func getWrappedModule(module Module) Module {
+	if mp, isProxy := module.(ModuleProxy); isProxy {
+		return mp.module
+	}
+	return module
+}
+
 func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) DependencyTag {
 	// fast path for calling OtherModuleDependencyTag from inside VisitDirectDeps
-	if m.visitingDep.module != nil && logicModule == m.visitingDep.module.logicModule {
+	if m.visitingDep.module != nil && getWrappedModule(logicModule) == m.visitingDep.module.logicModule {
 		return m.visitingDep.tag
 	}
 
@@ -558,7 +590,7 @@ func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) Depende
 	}
 
 	for _, dep := range m.visitingParent.directDeps {
-		if dep.module.logicModule == logicModule {
+		if dep.module.logicModule == getWrappedModule(logicModule) {
 			return dep.tag
 		}
 	}
@@ -572,7 +604,7 @@ func (m *baseModuleContext) ModuleFromName(name string) (Module, bool) {
 		if len(moduleGroup.modules) != 1 {
 			panic(fmt.Errorf("Expected exactly one module named %q, but got %d", name, len(moduleGroup.modules)))
 		}
-		moduleInfo := moduleGroup.modules[0].module()
+		moduleInfo := moduleGroup.modules[0]
 		if moduleInfo != nil {
 			return moduleInfo.logicModule, true
 		} else {
@@ -616,7 +648,7 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 }
 
 func (m *baseModuleContext) OtherModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return m.context.provider(module, provider.provider())
 }
 
@@ -628,26 +660,14 @@ func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface
 	m.context.setProvider(m.module, provider.provider(), value)
 }
 
-func (m *baseModuleContext) GetIncrementalEnabled() bool {
-	return m.context.GetIncrementalEnabled()
-}
-
-func (m *baseModuleContext) GetIncrementalAnalysis() bool {
-	return m.context.GetIncrementalAnalysis()
-}
-
-func (m *baseModuleContext) OtherModuleProviderInitialValueHashes(module Module) []uint64 {
-	return m.context.moduleInfo[module].providerInitialValueHashes
-}
-
-func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey, im *Incremental) {
+func (m *moduleContext) cacheModuleBuildActions(key *BuildActionCacheKey) {
 	var providers []CachedProvider
-	for _, pKey := range (*im).BuildActionProviderKeys() {
-		if pKey.provider().mutator == "" {
+	for i, p := range m.module.providers {
+		if p != nil && providerRegistry[i].mutator == "" {
 			providers = append(providers,
 				CachedProvider{
-					Id:    pKey.provider(),
-					Value: &m.module.providers[pKey.provider().id],
+					Id:    providerRegistry[i],
+					Value: &p,
 				})
 		}
 	}
@@ -661,39 +681,63 @@ func (m *moduleContext) CacheBuildActions(key *BuildActionCacheKey, im *Incremen
 		Pos:       &relPos,
 	}
 
-	var orderOnlyStrings *[]string
-	if m.module.incrementalRestored {
-		orderOnlyStrings = m.module.orderOnlyStrings
-	} else {
-		orderOnlyStrings = new([]string)
-		for _, b := range m.actionDefs.buildDefs {
-			if len(b.OrderOnly) == 0 && len(b.OrderOnlyStrings) > 0 {
-				*orderOnlyStrings = append(*orderOnlyStrings, b.OrderOnlyStrings...)
-			}
-		}
-	}
-
-	if orderOnlyStrings != nil && len(*orderOnlyStrings) > 0 {
-		data.OrderOnlyStrings = orderOnlyStrings
-	}
-
-	m.context.CacheBuildActions(key, &data)
+	m.context.updateBuildActionsCache(key, &data)
 }
 
-func (m *moduleContext) RestoreBuildActions(key *BuildActionCacheKey) bool {
-	data := m.context.GetBuildActionCache(key)
-	relPos := m.module.pos
-	relPos.Filename = m.module.relBlueprintsFile
-	if data != nil && data.Pos != nil && relPos == *data.Pos {
-		for _, provider := range data.Providers {
-			m.context.setProvider(m.module, provider.Id, *provider.Value)
+func (m *moduleContext) restoreModuleBuildActions() (bool, *BuildActionCacheKey) {
+	// Whether the incremental flag is set and the module type supports
+	// incremental, this will decide weather to cache the data for the module.
+	incrementalEnabled := false
+	// Whether the above conditions are true and we can try to restore from
+	// the cache for this module, i.e., no env, product variables and Soong
+	// code changes.
+	incrementalAnalysis := false
+	var cacheKey *BuildActionCacheKey = nil
+	if m.context.GetIncrementalEnabled() {
+		if im, ok := m.module.logicModule.(Incremental); ok {
+			incrementalEnabled = im.IncrementalSupported()
+			incrementalAnalysis = m.context.GetIncrementalAnalysis() && incrementalEnabled
 		}
-		m.module.incrementalRestored = true
-		m.module.buildActionCacheKey = key
-		m.module.orderOnlyStrings = data.OrderOnlyStrings
-		return true
 	}
-	return false
+	if incrementalEnabled {
+		hash, err := proptools.CalculateHash(m.module.properties)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate properties hash"))
+		}
+		cacheInput := new(BuildActionCacheInput)
+		cacheInput.PropertiesHash = hash
+		m.VisitDirectDeps(func(module Module) {
+			cacheInput.ProvidersHash =
+				append(cacheInput.ProvidersHash, m.context.moduleInfo[module].providerInitialValueHashes)
+		})
+		hash, err = proptools.CalculateHash(&cacheInput)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
+		}
+		cacheKey = &BuildActionCacheKey{
+			Id:        m.ModuleCacheKey(),
+			InputHash: hash,
+		}
+		m.module.buildActionCacheKey = cacheKey
+	}
+
+	restored := false
+	if incrementalAnalysis && cacheKey != nil {
+		// Try to restore from cache if there is a cache hit
+		data := m.context.getBuildActionsFromCache(cacheKey)
+		relPos := m.module.pos
+		relPos.Filename = m.module.relBlueprintsFile
+		if data != nil && data.Pos != nil && relPos == *data.Pos {
+			for _, provider := range data.Providers {
+				m.context.setProvider(m.module, provider.Id, *provider.Value)
+			}
+			m.module.incrementalRestored = true
+			m.module.orderOnlyStrings = data.OrderOnlyStrings
+			restored = true
+		}
+	}
+
+	return restored, cacheKey
 }
 
 func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
@@ -737,6 +781,25 @@ func (m *baseModuleContext) VisitDirectDeps(visit func(Module)) {
 	for _, dep := range m.module.directDeps {
 		m.visitingDep = dep
 		visit(dep.module.logicModule)
+	}
+
+	m.visitingParent = nil
+	m.visitingDep = depInfo{}
+}
+
+func (m *baseModuleContext) VisitDirectDepsProxy(visit func(proxy ModuleProxy)) {
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitDirectDeps(%s, %s) for dependency %s",
+				m.module, funcName(visit), m.visitingDep.module))
+		}
+	}()
+
+	m.visitingParent = m.module
+
+	for _, dep := range m.module.directDeps {
+		m.visitingDep = dep
+		visit(ModuleProxy{dep.module.logicModule})
 	}
 
 	m.visitingParent = nil
@@ -815,6 +878,17 @@ func (m *baseModuleContext) WalkDeps(visit func(child, parent Module) bool) {
 	m.visitingDep = depInfo{}
 }
 
+func (m *baseModuleContext) WalkDepsProxy(visit func(child, parent ModuleProxy) bool) {
+	m.context.walkDeps(m.module, true, func(dep depInfo, parent *moduleInfo) bool {
+		m.visitingParent = parent
+		m.visitingDep = dep
+		return visit(ModuleProxy{dep.module.logicModule}, ModuleProxy{parent.logicModule})
+	}, nil)
+
+	m.visitingParent = nil
+	m.visitingDep = depInfo{}
+}
+
 func (m *baseModuleContext) PrimaryModule() Module {
 	return m.module.group.modules.firstModule().logicModule
 }
@@ -885,11 +959,6 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 		panic(err)
 	}
 
-	if m.GetIncrementalEnabled() {
-		if im, ok := m.module.logicModule.(Incremental); ok && im.IncrementalSupported() {
-			m.buildParams = append(m.buildParams, params)
-		}
-	}
 	m.actionDefs.buildDefs = append(m.actionDefs.buildDefs, def)
 }
 
@@ -912,91 +981,53 @@ type mutatorContext struct {
 	reverseDeps      []reverseDep
 	rename           []rename
 	replace          []replace
-	newVariations    modulesOrAliases // new variants of existing modules
-	newModules       []*moduleInfo    // brand new modules
+	newVariations    moduleList    // new variants of existing modules
+	newModules       []*moduleInfo // brand new modules
 	defaultVariation *string
 	pauseCh          chan<- pauseSpec
 }
 
-type BaseMutatorContext interface {
-	BaseModuleContext
-
-	// Rename all variants of a module.  The new name is not visible to calls to ModuleName,
-	// AddDependency or OtherModuleName until after this mutator pass is complete.
-	Rename(name string)
-
-	// MutatorName returns the name that this mutator was registered with.
-	MutatorName() string
-}
-
 type TopDownMutatorContext interface {
-	BaseMutatorContext
-
-	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
-	// the specified property structs to it as if the properties were set in a blueprint file.
-	CreateModule(ModuleFactory, string, ...interface{}) Module
+	BaseModuleContext
 }
 
 type BottomUpMutatorContext interface {
-	BaseMutatorContext
+	BaseModuleContext
 
 	// AddDependency adds a dependency to the given module.  It returns a slice of modules for each
 	// dependency (some entries may be nil).  Does not affect the ordering of the current mutator
 	// pass, but will be ordered correctly for all future mutator passes.
 	//
-	// If the mutator is parallel (see MutatorHandle.Parallel), this method will pause until the
-	// new dependencies have had the current mutator called on them.  If the mutator is not
-	// parallel this method does not affect the ordering of the current mutator pass, but will
-	// be ordered correctly for all future mutator passes.
+	// This method will pause until the new dependencies have had the current mutator called on them.
 	AddDependency(module Module, tag DependencyTag, name ...string) []Module
 
 	// AddReverseDependency adds a dependency from the destination to the given module.
 	// Does not affect the ordering of the current mutator pass, but will be ordered
 	// correctly for all future mutator passes.  All reverse dependencies for a destination module are
 	// collected until the end of the mutator pass, sorted by name, and then appended to the destination
-	// module's dependency list.
+	// module's dependency list.  May only  be called by mutators that were marked with
+	// UsesReverseDependencies during registration.
 	AddReverseDependency(module Module, tag DependencyTag, name string)
-
-	// CreateVariations splits  a module into multiple variants, one for each name in the variationNames
-	// parameter.  It returns a list of new modules in the same order as the variationNames
-	// list.
-	//
-	// If any of the dependencies of the module being operated on were already split
-	// by calling CreateVariations with the same name, the dependency will automatically
-	// be updated to point the matching variant.
-	//
-	// If a module is split, and then a module depending on the first module is not split
-	// when the Mutator is later called on it, the dependency of the depending module will
-	// automatically be updated to point to the first variant.
-	CreateVariations(variationNames ...string) []Module
-
-	// CreateLocalVariations splits a module into multiple variants, one for each name in the variationNames
-	// parameter.  It returns a list of new modules in the same order as the variantNames
-	// list.
-	//
-	// Local variations do not affect automatic dependency resolution - dependencies added
-	// to the split module via deps or DynamicDependerModule must exactly match a variant
-	// that contains all the non-local variations.
-	CreateLocalVariations(variationNames ...string) []Module
-
-	// SetDependencyVariation sets all dangling dependencies on the current module to point to the variation
-	// with given name. This function ignores the default variation set by SetDefaultDependencyVariation.
-	SetDependencyVariation(string)
-
-	// SetDefaultDependencyVariation sets the default variation when a dangling reference is detected
-	// during the subsequent calls on Create*Variations* functions. To reset, set it to nil.
-	SetDefaultDependencyVariation(*string)
 
 	// AddVariationDependencies adds deps as dependencies of the current module, but uses the variations
 	// argument to select which variant of the dependency to use.  It returns a slice of modules for
 	// each dependency (some entries may be nil).  A variant of the dependency must exist that matches
 	// the all of the non-local variations of the current module, plus the variations argument.
 	//
-	// If the mutator is parallel (see MutatorHandle.Parallel), this method will pause until the
-	// new dependencies have had the current mutator called on them.  If the mutator is not
-	// parallel this method does not affect the ordering of the current mutator pass, but will
-	// be ordered correctly for all future mutator passes.
+	//
+	// This method will pause until the new dependencies have had the current mutator called on them.
 	AddVariationDependencies([]Variation, DependencyTag, ...string) []Module
+
+	// AddReverseVariationDependency adds a dependency from the named module to the current
+	// module. The given variations will be added to the current module's varations, and then the
+	// result will be used to find the correct variation of the depending module, which must exist.
+	//
+	// Does not affect the ordering of the current mutator pass, but will be ordered
+	// correctly for all future mutator passes.  All reverse dependencies for a destination module are
+	// collected until the end of the mutator pass, sorted by name, and then appended to the destination
+	// module's dependency list.  May only  be called by mutators that were marked with
+	// UsesReverseDependencies during registration.
+	AddReverseVariationDependency([]Variation, DependencyTag, string)
 
 	// AddFarVariationDependencies adds deps as dependencies of the current module, but uses the
 	// variations argument to select which variant of the dependency to use.  It returns a slice of
@@ -1007,58 +1038,36 @@ type BottomUpMutatorContext interface {
 	// Unlike AddVariationDependencies, the variations of the current module are ignored - the
 	// dependency only needs to match the supplied variations.
 	//
-	// If the mutator is parallel (see MutatorHandle.Parallel), this method will pause until the
-	// new dependencies have had the current mutator called on them.  If the mutator is not
-	// parallel this method does not affect the ordering of the current mutator pass, but will
-	// be ordered correctly for all future mutator passes.
+	//
+	// This method will pause until the new dependencies have had the current mutator called on them.
 	AddFarVariationDependencies([]Variation, DependencyTag, ...string) []Module
-
-	// AddInterVariantDependency adds a dependency between two variants of the same module.  Variants are always
-	// ordered in the same order as they were listed in CreateVariations, and AddInterVariantDependency does not change
-	// that ordering, but it associates a DependencyTag with the dependency and makes it visible to VisitDirectDeps,
-	// WalkDeps, etc.
-	AddInterVariantDependency(tag DependencyTag, from, to Module)
 
 	// ReplaceDependencies finds all the variants of the module with the specified name, then
 	// replaces all dependencies onto those variants with the current variant of this module.
-	// Replacements don't take effect until after the mutator pass is finished.
+	// Replacements don't take effect until after the mutator pass is finished.  May only
+	// be called by mutators that were marked with UsesReplaceDependencies during registration.
 	ReplaceDependencies(string)
 
 	// ReplaceDependenciesIf finds all the variants of the module with the specified name, then
 	// replaces all dependencies onto those variants with the current variant of this module
 	// as long as the supplied predicate returns true.
-	// Replacements don't take effect until after the mutator pass is finished.
+	// Replacements don't take effect until after the mutator pass is finished.  May only
+	// be called by mutators that were marked with UsesReplaceDependencies during registration.
 	ReplaceDependenciesIf(string, ReplaceDependencyPredicate)
 
-	// AliasVariation takes a variationName that was passed to CreateVariations for this module,
-	// and creates an alias from the current variant (before the mutator has run) to the new
-	// variant.  The alias will be valid until the next time a mutator calls CreateVariations or
-	// CreateLocalVariations on this module without also calling AliasVariation.  The alias can
-	// be used to add dependencies on the newly created variant using the variant map from
-	// before CreateVariations was run.
-	AliasVariation(variationName string)
+	// Rename all variants of a module.  The new name is not visible to calls to ModuleName,
+	// AddDependency or OtherModuleName until after this mutator pass is complete.  May only be called
+	// by mutators that were marked with UsesRename during registration.
+	Rename(name string)
 
-	// CreateAliasVariation takes a toVariationName that was passed to CreateVariations for this
-	// module, and creates an alias from a new fromVariationName variant the toVariationName
-	// variant.  The alias will be valid until the next time a mutator calls CreateVariations or
-	// CreateLocalVariations on this module without also calling AliasVariation.  The alias can
-	// be used to add dependencies on the toVariationName variant using the fromVariationName
-	// variant.
-	CreateAliasVariation(fromVariationName, toVariationName string)
-
-	// SetVariationProvider sets the value for a provider for the given newly created variant of
-	// the current module, i.e. one of the Modules returned by CreateVariations..  It panics if
-	// not called during the appropriate mutator or GenerateBuildActions pass for the provider,
-	// if the value is not of the appropriate type, or if the module is not a newly created
-	// variant of the current module.  The value should not be modified after being passed to
-	// SetVariationProvider.
-	SetVariationProvider(module Module, provider AnyProviderKey, value interface{})
+	// CreateModule creates a new module by calling the factory method for the specified moduleType, and applies
+	// the specified property structs to it as if the properties were set in a blueprint file.  May only
+	// be called by mutators that were marked with UsesCreateModule during registration.
+	CreateModule(ModuleFactory, string, ...interface{}) Module
 }
 
-// A Mutator function is called for each Module, and can use
-// MutatorContext.CreateVariations to split a Module into multiple Modules,
-// modifying properties on the new modules to differentiate them.  It is called
-// after parsing all Blueprint files, but before generating any build rules,
+// A Mutator function is called for each Module, and can modify properties on the modules.
+// It is called after parsing all Blueprint files, but before generating any build rules,
 // and is always called on dependencies before being called on the depending module.
 //
 // The Mutator function should only modify members of properties structs, and not
@@ -1069,8 +1078,7 @@ type BottomUpMutator func(mctx BottomUpMutatorContext)
 
 // DependencyTag is an interface to an arbitrary object that embeds BaseDependencyTag.  It can be
 // used to transfer information on a dependency between the mutator that called AddDependency
-// and the GenerateBuildActions method.  Variants created by CreateVariations have a copy of the
-// interface (pointing to the same concrete object) from their original module.
+// and the GenerateBuildActions method.
 type DependencyTag interface {
 	dependencyTag(DependencyTag)
 }
@@ -1083,43 +1091,19 @@ func (BaseDependencyTag) dependencyTag(DependencyTag) {
 
 var _ DependencyTag = BaseDependencyTag{}
 
-func (mctx *mutatorContext) MutatorName() string {
-	return mctx.mutator.name
-}
-
-func (mctx *mutatorContext) CreateVariations(variationNames ...string) []Module {
-	depChooser := chooseDepInherit(mctx.mutator.name, mctx.defaultVariation)
-	return mctx.createVariations(variationNames, depChooser, false)
-}
-
 func (mctx *mutatorContext) createVariationsWithTransition(variationNames []string, outgoingTransitions [][]string) []Module {
-	return mctx.createVariations(variationNames, chooseDepByIndexes(mctx.mutator.name, outgoingTransitions), false)
+	return mctx.createVariations(variationNames, chooseDepByIndexes(mctx.mutator.name, outgoingTransitions))
 }
 
-func (mctx *mutatorContext) CreateLocalVariations(variationNames ...string) []Module {
-	depChooser := chooseDepInherit(mctx.mutator.name, mctx.defaultVariation)
-	return mctx.createVariations(variationNames, depChooser, true)
-}
-
-func (mctx *mutatorContext) SetVariationProvider(module Module, provider AnyProviderKey, value interface{}) {
-	for _, variant := range mctx.newVariations {
-		if m := variant.module(); m != nil && m.logicModule == module {
-			mctx.context.setProvider(m, provider.provider(), value)
-			return
-		}
-	}
-	panic(fmt.Errorf("module %q is not a newly created variant of %q", module, mctx.module))
-}
-
-func (mctx *mutatorContext) createVariations(variationNames []string, depChooser depChooser, local bool) []Module {
+func (mctx *mutatorContext) createVariations(variationNames []string, depChooser depChooser) []Module {
 	var ret []Module
-	modules, errs := mctx.context.createVariations(mctx.module, mctx.mutator, depChooser, variationNames, local)
+	modules, errs := mctx.context.createVariations(mctx.module, mctx.mutator, depChooser, variationNames)
 	if len(errs) > 0 {
 		mctx.errs = append(mctx.errs, errs...)
 	}
 
 	for _, module := range modules {
-		ret = append(ret, module.module().logicModule)
+		ret = append(ret, module.logicModule)
 	}
 
 	if mctx.newVariations != nil {
@@ -1134,75 +1118,6 @@ func (mctx *mutatorContext) createVariations(variationNames []string, depChooser
 	return ret
 }
 
-func (mctx *mutatorContext) AliasVariation(variationName string) {
-	for _, moduleOrAlias := range mctx.module.splitModules {
-		if alias := moduleOrAlias.alias(); alias != nil {
-			if alias.variant.variations.equal(mctx.module.variant.variations) {
-				panic(fmt.Errorf("AliasVariation already called"))
-			}
-		}
-	}
-
-	for _, variant := range mctx.newVariations {
-		if variant.moduleOrAliasVariant().variations.get(mctx.mutator.name) == variationName {
-			alias := &moduleAlias{
-				variant: mctx.module.variant,
-				target:  variant.moduleOrAliasTarget(),
-			}
-			// Prepend the alias so that AddFarVariationDependencies subset match matches
-			// the alias before matching the first variation.
-			mctx.module.splitModules = append(modulesOrAliases{alias}, mctx.module.splitModules...)
-			return
-		}
-	}
-
-	var foundVariations []string
-	for _, variant := range mctx.newVariations {
-		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations.get(mctx.mutator.name))
-	}
-	panic(fmt.Errorf("no %q variation in module variations %q", variationName, foundVariations))
-}
-
-func (mctx *mutatorContext) CreateAliasVariation(aliasVariationName, targetVariationName string) {
-	newVariant := newVariant(mctx.module, mctx.mutator.name, aliasVariationName, false)
-
-	for _, moduleOrAlias := range mctx.module.splitModules {
-		if moduleOrAlias.moduleOrAliasVariant().variations.equal(newVariant.variations) {
-			if alias := moduleOrAlias.alias(); alias != nil {
-				panic(fmt.Errorf("can't alias %q to %q, already aliased to %q", aliasVariationName, targetVariationName, alias.target.variant.name))
-			} else {
-				panic(fmt.Errorf("can't alias %q to %q, there is already a variant with that name", aliasVariationName, targetVariationName))
-			}
-		}
-	}
-
-	for _, variant := range mctx.newVariations {
-		if variant.moduleOrAliasVariant().variations.get(mctx.mutator.name) == targetVariationName {
-			// Append the alias here so that it comes after any aliases created by AliasVariation.
-			mctx.module.splitModules = append(mctx.module.splitModules, &moduleAlias{
-				variant: newVariant,
-				target:  variant.moduleOrAliasTarget(),
-			})
-			return
-		}
-	}
-
-	var foundVariations []string
-	for _, variant := range mctx.newVariations {
-		foundVariations = append(foundVariations, variant.moduleOrAliasVariant().variations.get(mctx.mutator.name))
-	}
-	panic(fmt.Errorf("no %q variation in module variations %q", targetVariationName, foundVariations))
-}
-
-func (mctx *mutatorContext) SetDependencyVariation(variationName string) {
-	mctx.context.convertDepsToVariation(mctx.module, 0, chooseDepExplicit(
-		mctx.mutator.name, variationName, nil))
-}
-
-func (mctx *mutatorContext) SetDefaultDependencyVariation(variationName *string) {
-	mctx.defaultVariation = variationName
-}
-
 func (mctx *mutatorContext) Module() Module {
 	return mctx.module.logicModule
 }
@@ -1211,7 +1126,7 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
 		modInfo := mctx.context.moduleInfo[module]
-		depInfo, errs := mctx.context.addDependency(modInfo, mctx.config, tag, dep)
+		depInfo, errs := mctx.context.addDependency(modInfo, mctx.mutator, mctx.config, tag, dep)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1225,13 +1140,22 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 }
 
 func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTag, destName string) {
+	if !mctx.mutator.usesReverseDependencies {
+		panic(fmt.Errorf("method AddReverseDependency called from mutator that was not marked UsesReverseDependencies"))
+	}
+
 	if _, ok := tag.(BaseDependencyTag); ok {
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
 
-	destModule, errs := mctx.context.findReverseDependency(mctx.context.moduleInfo[module], mctx.config, destName)
+	destModule, errs := mctx.context.findReverseDependency(mctx.context.moduleInfo[module], mctx.config, nil, destName)
 	if len(errs) > 0 {
 		mctx.errs = append(mctx.errs, errs...)
+		return
+	}
+
+	if destModule == nil {
+		// allowMissingDependencies is true and the module wasn't found
 		return
 	}
 
@@ -1241,12 +1165,38 @@ func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTa
 	})
 }
 
+func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation, tag DependencyTag, destName string) {
+	if !mctx.mutator.usesReverseDependencies {
+		panic(fmt.Errorf("method AddReverseVariationDependency called from mutator that was not marked UsesReverseDependencies"))
+	}
+
+	if _, ok := tag.(BaseDependencyTag); ok {
+		panic("BaseDependencyTag is not allowed to be used directly!")
+	}
+
+	destModule, errs := mctx.context.findReverseDependency(mctx.module, mctx.config, variations, destName)
+	if len(errs) > 0 {
+		mctx.errs = append(mctx.errs, errs...)
+		return
+	}
+
+	if destModule == nil {
+		// allowMissingDependencies is true and the module wasn't found
+		return
+	}
+
+	mctx.reverseDeps = append(mctx.reverseDeps, reverseDep{
+		destModule,
+		depInfo{mctx.module, tag},
+	})
+}
+
 func (mctx *mutatorContext) AddVariationDependencies(variations []Variation, tag DependencyTag,
 	deps ...string) []Module {
 
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
-		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.config, variations, tag, dep, false)
+		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.mutator, mctx.config, variations, tag, dep, false)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1264,7 +1214,7 @@ func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, 
 
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
-		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.config, variations, tag, dep, true)
+		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.mutator, mctx.config, variations, tag, dep, true)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
@@ -1277,10 +1227,6 @@ func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, 
 	return depInfos
 }
 
-func (mctx *mutatorContext) AddInterVariantDependency(tag DependencyTag, from, to Module) {
-	mctx.context.addInterVariantDependency(mctx.module, tag, from, to)
-}
-
 func (mctx *mutatorContext) ReplaceDependencies(name string) {
 	mctx.ReplaceDependenciesIf(name, nil)
 }
@@ -1288,6 +1234,10 @@ func (mctx *mutatorContext) ReplaceDependencies(name string) {
 type ReplaceDependencyPredicate func(from Module, tag DependencyTag, to Module) bool
 
 func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate ReplaceDependencyPredicate) {
+	if !mctx.mutator.usesReplaceDependencies {
+		panic(fmt.Errorf("method ReplaceDependenciesIf called from mutator that was not marked UsesReplaceDependencies"))
+	}
+
 	targets := mctx.context.moduleVariantsThatDependOn(name, mctx.module)
 
 	if len(targets) == 0 {
@@ -1304,10 +1254,17 @@ func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate Replace
 }
 
 func (mctx *mutatorContext) Rename(name string) {
+	if !mctx.mutator.usesRename {
+		panic(fmt.Errorf("method Rename called from mutator that was not marked UsesRename"))
+	}
 	mctx.rename = append(mctx.rename, rename{mctx.module.group, name})
 }
 
 func (mctx *mutatorContext) CreateModule(factory ModuleFactory, typeName string, props ...interface{}) Module {
+	if !mctx.mutator.usesCreateModule {
+		panic(fmt.Errorf("method CreateModule called from mutator that was not marked UsesCreateModule"))
+	}
+
 	module := newModule(factory)
 
 	module.relBlueprintsFile = mctx.module.relBlueprintsFile
@@ -1370,15 +1327,20 @@ type LoadHookContext interface {
 	// the specified property structs to it as if the properties were set in a blueprint file.
 	CreateModule(ModuleFactory, string, ...interface{}) Module
 
+	// CreateModuleInDirectory creates a new module in the specified directory by calling the
+	// factory method for the specified moduleType, and applies the specified property structs
+	// to it as if the properties were set in a blueprint file.
+	CreateModuleInDirectory(ModuleFactory, string, string, ...interface{}) Module
+
 	// RegisterScopedModuleType creates a new module type that is scoped to the current Blueprints
 	// file.
 	RegisterScopedModuleType(name string, factory ModuleFactory)
 }
 
-func (l *loadHookContext) CreateModule(factory ModuleFactory, typeName string, props ...interface{}) Module {
+func (l *loadHookContext) createModule(factory ModuleFactory, typeName, moduleDir string, props ...interface{}) Module {
 	module := newModule(factory)
 
-	module.relBlueprintsFile = l.module.relBlueprintsFile
+	module.relBlueprintsFile = moduleDir
 	module.pos = l.module.pos
 	module.propertyPos = l.module.propertyPos
 	module.createdBy = l.module
@@ -1394,6 +1356,19 @@ func (l *loadHookContext) CreateModule(factory ModuleFactory, typeName string, p
 	l.newModules = append(l.newModules, module)
 
 	return module.logicModule
+}
+
+func (l *loadHookContext) CreateModule(factory ModuleFactory, typeName string, props ...interface{}) Module {
+	return l.createModule(factory, typeName, l.module.relBlueprintsFile, props...)
+}
+
+func (l *loadHookContext) CreateModuleInDirectory(factory ModuleFactory, typeName, moduleDir string, props ...interface{}) Module {
+	if moduleDir != filepath.Clean(moduleDir) {
+		panic(fmt.Errorf("Cannot create a module in %s", moduleDir))
+	}
+
+	filePath := filepath.Join(moduleDir, "Android.bp")
+	return l.createModule(factory, typeName, filePath, props...)
 }
 
 func (l *loadHookContext) RegisterScopedModuleType(name string, factory ModuleFactory) {
