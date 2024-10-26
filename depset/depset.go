@@ -20,6 +20,7 @@ import (
 	"slices"
 	"unique"
 
+	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/uniquelist"
 )
 
@@ -117,6 +118,14 @@ func (d *DepSet[T]) FromGob(data *depSetGob[T]) {
 		direct:     uniquelist.Make(data.Direct),
 		transitive: uniquelist.Make(data.Transitive),
 	})
+}
+
+func (d *DepSet[T]) GobEncode() ([]byte, error) {
+	return gobtools.CustomGobEncode[depSetGob[T]](d)
+}
+
+func (d *DepSet[T]) GobDecode(data []byte) error {
+	return gobtools.CustomGobDecode[depSetGob[T]](data, d)
 }
 
 // New returns an immutable DepSet with the given order, direct and transitive contents.
