@@ -15,6 +15,7 @@
 package blueprint
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -625,7 +626,10 @@ func (m *baseModuleContext) OtherModuleDependencyVariantExists(variations []Vari
 	if possibleDeps == nil {
 		return false
 	}
-	found, _ := m.context.findVariant(m.module, m.config, possibleDeps, variations, false, false)
+	found, _, errs := m.context.findVariant(m.module, m.config, possibleDeps, variations, false, false)
+	if errs != nil {
+		panic(errors.Join(errs...))
+	}
 	return found != nil
 }
 
@@ -634,7 +638,10 @@ func (m *baseModuleContext) OtherModuleFarDependencyVariantExists(variations []V
 	if possibleDeps == nil {
 		return false
 	}
-	found, _ := m.context.findVariant(m.module, m.config, possibleDeps, variations, true, false)
+	found, _, errs := m.context.findVariant(m.module, m.config, possibleDeps, variations, true, false)
+	if errs != nil {
+		panic(errors.Join(errs...))
+	}
 	return found != nil
 }
 
@@ -643,7 +650,10 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 	if possibleDeps == nil {
 		return false
 	}
-	found, _ := m.context.findVariant(m.module, m.config, possibleDeps, nil, false, true)
+	found, _, errs := m.context.findVariant(m.module, m.config, possibleDeps, nil, false, true)
+	if errs != nil {
+		panic(errors.Join(errs...))
+	}
 	return found != nil
 }
 
