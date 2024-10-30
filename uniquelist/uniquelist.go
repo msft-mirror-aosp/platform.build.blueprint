@@ -85,7 +85,7 @@ func (s UniqueList[T]) iterNodes() iter.Seq[[]T] {
 // the results.
 func (s UniqueList[T]) AppendTo(slice []T) []T {
 	// TODO: should this grow by more than s.Len() to amortize reallocation costs?
-	slices.Grow(slice, s.Len())
+	slice = slices.Grow(slice, s.Len())
 	for chunk := range s.iterNodes() {
 		slice = append(slice, chunk...)
 	}
