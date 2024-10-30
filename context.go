@@ -2609,7 +2609,7 @@ func (c *Context) updateDependencies() (errs []error) {
 
 		// Add an implicit dependency ordering on all earlier modules in the same module group
 		selfIndex := slices.Index(module.group.modules, module)
-		slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
+		module.forwardDeps = slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
 		module.forwardDeps = append(module.forwardDeps, module.group.modules[:selfIndex]...)
 
 		for _, dep := range module.directDeps {
