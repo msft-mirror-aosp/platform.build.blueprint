@@ -17,6 +17,7 @@ package uniquelist
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -108,4 +109,94 @@ func TestUniqueList(t *testing.T) {
 			}
 		})
 	}
+}
+
+func BenchmarkMake(b *testing.B) {
+	b.Run("unique_ints", func(b *testing.B) {
+		b.ReportAllocs()
+		results := make([]UniqueList[int], b.N)
+		for i := range b.N {
+			results[i] = Make([]int{i})
+		}
+	})
+	b.Run("same_ints", func(b *testing.B) {
+		b.ReportAllocs()
+		results := make([]UniqueList[int], b.N)
+		for i := range b.N {
+			results[i] = Make([]int{0})
+		}
+	})
+	b.Run("unique_1000_ints", func(b *testing.B) {
+		b.ReportAllocs()
+		results := make([]UniqueList[int], b.N)
+		for i := range b.N {
+			b.StopTimer()
+			l := make([]int, 1000)
+			for j := range 1000 {
+				l[j] = i*1000 + j
+			}
+			b.StartTimer()
+			results[i] = Make(l)
+		}
+	})
+	b.Run("same_1000_ints", func(b *testing.B) {
+		b.ReportAllocs()
+		results := make([]UniqueList[int], b.N)
+		l := make([]int, 1000)
+		for i := range b.N {
+			results[i] = Make(l)
+		}
+	})
+	b.Run("unique_strings", func(b *testing.B) {
+		b.ReportAllocs()
+		results := make([]UniqueList[string], b.N)
+		for i := 0; i < b.N; i++ {
+			results[i] = Make([]string{strconv.Itoa(i)})
+		}
+	})
+	b.Run("same_strings", func(b *testing.B) {
+		b.ReportAllocs()
+		results := make([]UniqueList[string], b.N)
+		for i := 0; i < b.N; i++ {
+			results[i] = Make([]string{"foo"})
+		}
+	})
+	b.Run("unique_1000_strings", func(b *testing.B) {
+		b.ReportAllocs()
+		results := make([]UniqueList[string], b.N)
+		for i := range b.N {
+			b.StopTimer()
+			l := make([]string, 1000)
+			for j := range 1000 {
+				l[j] = strconv.Itoa(i*1000 + j)
+			}
+			b.StartTimer()
+			results[i] = Make(l)
+		}
+	})
+	b.Run("same_1000_strings", func(b *testing.B) {
+		b.ReportAllocs()
+		results := make([]UniqueList[string], b.N)
+		l := slices.Repeat([]string{"foo"}, 1000)
+		for i := range b.N {
+			results[i] = Make(l)
+		}
+	})
+}
+
+func BenchmarkToSlice(b *testing.B) {
+	b.Run("one", func(b *testing.B) {
+		b.ReportAllocs()
+		handle := Make([]int{1})
+		for _ = range b.N {
+			handle.ToSlice()
+		}
+	})
+	b.Run("1000", func(b *testing.B) {
+		b.ReportAllocs()
+		handle := Make(slices.Repeat([]int{1}, 1000))
+		for _ = range b.N {
+			handle.ToSlice()
+		}
+	})
 }
