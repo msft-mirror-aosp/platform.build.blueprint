@@ -52,6 +52,14 @@ func RegisterGoModuleTypes(ctx *blueprint.Context) {
 	ctx.RegisterModuleType("blueprint_go_binary", newGoBinaryModuleFactory())
 }
 
+// GoModuleTypesAreWrapped is called by Soong before calling RunBlueprint to provide its own wrapped
+// implementations of bootstrap_go_package and blueprint_go_bianry.
+func GoModuleTypesAreWrapped() {
+	goModuleTypesAreWrapped = true
+}
+
+var goModuleTypesAreWrapped = false
+
 // RunBlueprint emits `args.OutFile` (a Ninja file) and returns the list of
 // its dependencies. These can be written to a `${args.OutFile}.d` file
 // so that it is correctly rebuilt when needed in case Blueprint is itself
@@ -100,20 +108,22 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}
 	ctx.EndEvent("list_modules")
 
-	ctx.RegisterBottomUpMutator("bootstrap_plugin_deps", pluginDeps)
+	ctx.RegisterBottomUpMutator("bootstrap_deps", BootstrapDeps).UsesReverseDependencies()
 	ctx.RegisterSingletonType("bootstrap", newSingletonFactory(), false)
-	RegisterGoModuleTypes(ctx)
+	if !goModuleTypesAreWrapped {
+		RegisterGoModuleTypes(ctx)
+	}
 
 	ctx.BeginEvent("parse_bp")
 	if blueprintFiles, errs := ctx.ParseFileList(".", filesToParse, config); len(errs) > 0 {
-		return nil, fatalErrors(errs)
+		return nil, colorizeErrs(errs)
 	} else {
 		ctx.EndEvent("parse_bp")
 		ninjaDeps = append(ninjaDeps, blueprintFiles...)
 	}
 
 	if resolvedDeps, errs := ctx.ResolveDependencies(config); len(errs) > 0 {
-		return nil, fatalErrors(errs)
+		return nil, colorizeErrs(errs)
 	} else {
 		ninjaDeps = append(ninjaDeps, resolvedDeps...)
 	}
@@ -124,7 +134,7 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 
 	if ctx.BeforePrepareBuildActionsHook != nil {
 		if err := ctx.BeforePrepareBuildActionsHook(); err != nil {
-			return nil, fatalErrors([]error{err})
+			return nil, colorizeErrs([]error{err})
 		}
 	}
 
@@ -132,12 +142,12 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 		var err error = nil
 		err = ctx.RestoreAllBuildActions(config.(BootstrapConfig).SoongOutDir())
 		if err != nil {
-			return nil, fatalErrors([]error{err})
+			return nil, colorizeErrs([]error{err})
 		}
 	}
 
 	if buildActionsDeps, errs := ctx.PrepareBuildActions(config); len(errs) > 0 {
-		return nil, fatalErrors(errs)
+		return nil, colorizeErrs(errs)
 	} else {
 		ninjaDeps = append(ninjaDeps, buildActionsDeps...)
 	}
@@ -151,13 +161,9 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}
 
 	providersValidationChan := make(chan []error, 1)
-	if ctx.GetVerifyProvidersAreUnchanged() {
-		go func() {
-			providersValidationChan <- ctx.VerifyProvidersWereUnchanged()
-		}()
-	} else {
-		providersValidationChan <- nil
-	}
+	go func() {
+		providersValidationChan <- ctx.VerifyProvidersWereUnchanged()
+	}()
 
 	var out blueprint.StringWriterWriter
 	var f *os.File
@@ -220,20 +226,21 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	return ninjaDeps, nil
 }
 
-func fatalErrors(errs []error) error {
+func colorizeErrs(errs []error) error {
 	red := "\x1b[31m"
 	unred := "\x1b[0m"
 
+	var colorizedErrs []error
 	for _, err := range errs {
 		switch err := err.(type) {
 		case *blueprint.BlueprintError,
 			*blueprint.ModuleError,
 			*blueprint.PropertyError:
-			fmt.Printf("%serror:%s %s\n", red, unred, err.Error())
+			colorizedErrs = append(colorizedErrs, fmt.Errorf("%serror:%s %w", red, unred, err))
 		default:
-			fmt.Printf("%sinternal error:%s %s\n", red, unred, err)
+			colorizedErrs = append(colorizedErrs, fmt.Errorf("%sinternal error:%s %s", red, unred, err))
 		}
 	}
 
-	return errors.New("fatal errors encountered")
+	return errors.Join(colorizedErrs...)
 }
