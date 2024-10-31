@@ -916,11 +916,7 @@ func (m *baseModuleContext) AddNinjaFileDeps(deps ...string) {
 }
 
 func (m *baseModuleContext) ModuleFactories() map[string]ModuleFactory {
-	ret := make(map[string]ModuleFactory)
-	for k, v := range m.context.moduleFactories {
-		ret[k] = v
-	}
-	return ret
+	return m.context.ModuleTypeFactories()
 }
 
 func (m *baseModuleContext) base() *baseModuleContext {
