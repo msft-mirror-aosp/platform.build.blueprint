@@ -4032,11 +4032,7 @@ func (c *Context) ModuleTypePropertyStructs() map[string][]interface{} {
 }
 
 func (c *Context) ModuleTypeFactories() map[string]ModuleFactory {
-	ret := make(map[string]ModuleFactory)
-	for k, v := range c.moduleFactories {
-		ret[k] = v
-	}
-	return ret
+	return maps.Clone(c.moduleFactories)
 }
 
 func (c *Context) ModuleName(logicModule Module) string {
