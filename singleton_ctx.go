@@ -161,6 +161,10 @@ type SingletonContext interface {
 	// ModuleVariantsFromName returns the list of module variants named `name` in the same namespace as `referer`.
 	// Allows generating build actions for `referer` based on the metadata for `name` deferred until the singleton context.
 	ModuleVariantsFromName(referer Module, name string) []Module
+
+	// HasMutatorFinished returns true if the given mutator has finished running.
+	// It will panic if given an invalid mutator name.
+	HasMutatorFinished(mutatorName string) bool
 }
 
 var _ SingletonContext = (*singletonContext)(nil)
@@ -392,11 +396,12 @@ func (s *singletonContext) ModuleVariantsFromName(referer Module, name string) [
 		return nil
 	}
 	result := make([]Module, 0, len(moduleGroup.modules))
-	for _, module := range moduleGroup.modules {
-		moduleInfo := module.module()
-		if moduleInfo != nil {
-			result = append(result, moduleInfo.logicModule)
-		}
+	for _, moduleInfo := range moduleGroup.modules {
+		result = append(result, moduleInfo.logicModule)
 	}
 	return result
+}
+
+func (s *singletonContext) HasMutatorFinished(mutatorName string) bool {
+	return s.context.HasMutatorFinished(mutatorName)
 }
