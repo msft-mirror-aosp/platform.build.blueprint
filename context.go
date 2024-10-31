@@ -1995,7 +1995,7 @@ func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config
 	var m *moduleInfo
 	var errs []error
 	// TODO(b/372091092): Completely remove the 1-variant fallback
-	if strings.HasPrefix(module.relBlueprintsFile, "vendor/") || strings.HasPrefix(module.relBlueprintsFile, "art/") {
+	if strings.HasPrefix(module.relBlueprintsFile, "art/") {
 		m, errs = c.findExactVariantOrSingle(module, config, possibleDeps, false)
 	} else {
 		m, _, errs = c.findVariant(module, config, possibleDeps, nil, false, false)
