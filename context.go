@@ -1992,7 +1992,16 @@ func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config
 		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
-	if m, errs := c.findExactVariantOrSingle(module, config, possibleDeps, false); errs != nil {
+	var m *moduleInfo
+	var errs []error
+	// TODO(b/372091092): Completely remove the 1-variant fallback
+	if strings.HasPrefix(module.relBlueprintsFile, "vendor/") || strings.HasPrefix(module.relBlueprintsFile, "art/") {
+		m, errs = c.findExactVariantOrSingle(module, config, possibleDeps, false)
+	} else {
+		m, _, errs = c.findVariant(module, config, possibleDeps, nil, false, false)
+	}
+
+	if errs != nil {
 		return nil, errs
 	} else if m != nil {
 		// The mutator will pause until the newly added dependency has finished running the current mutator,
@@ -2609,7 +2618,7 @@ func (c *Context) updateDependencies() (errs []error) {
 
 		// Add an implicit dependency ordering on all earlier modules in the same module group
 		selfIndex := slices.Index(module.group.modules, module)
-		slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
+		module.forwardDeps = slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
 		module.forwardDeps = append(module.forwardDeps, module.group.modules[:selfIndex]...)
 
 		for _, dep := range module.directDeps {
