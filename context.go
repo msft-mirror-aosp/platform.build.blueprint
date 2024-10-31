@@ -1992,7 +1992,16 @@ func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config
 		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
-	if m, errs := c.findExactVariantOrSingle(module, config, possibleDeps, false); errs != nil {
+	var m *moduleInfo
+	var errs []error
+	// TODO(b/372091092): Completely remove the 1-variant fallback
+	if strings.HasPrefix(module.relBlueprintsFile, "art/") {
+		m, errs = c.findExactVariantOrSingle(module, config, possibleDeps, false)
+	} else {
+		m, _, errs = c.findVariant(module, config, possibleDeps, nil, false, false)
+	}
+
+	if errs != nil {
 		return nil, errs
 	} else if m != nil {
 		// The mutator will pause until the newly added dependency has finished running the current mutator,
@@ -4023,11 +4032,7 @@ func (c *Context) ModuleTypePropertyStructs() map[string][]interface{} {
 }
 
 func (c *Context) ModuleTypeFactories() map[string]ModuleFactory {
-	ret := make(map[string]ModuleFactory)
-	for k, v := range c.moduleFactories {
-		ret[k] = v
-	}
-	return ret
+	return maps.Clone(c.moduleFactories)
 }
 
 func (c *Context) ModuleName(logicModule Module) string {
