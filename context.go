@@ -1953,52 +1953,6 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 	}
 }
 
-func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config any, tag DependencyTag,
-	depName string) (*moduleInfo, []error) {
-
-	if _, ok := tag.(BaseDependencyTag); ok {
-		panic("BaseDependencyTag is not allowed to be used directly!")
-	}
-
-	if depName == module.Name() {
-		return nil, []error{&BlueprintError{
-			Err: fmt.Errorf("%q depends on itself", depName),
-			Pos: module.pos,
-		}}
-	}
-
-	possibleDeps := c.moduleGroupFromName(depName, module.namespace())
-	if possibleDeps == nil {
-		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
-	}
-
-	if m, _, errs := c.findVariant(module, config, possibleDeps, nil, false, false); errs != nil {
-		return nil, errs
-	} else if m != nil {
-		// The mutator will pause until the newly added dependency has finished running the current mutator,
-		// so it is safe to add the new dependency directly to directDeps and forwardDeps where it will be visible
-		// to future calls to VisitDirectDeps.  Set newDirectDeps so that at the end of the mutator the reverseDeps
-		// of the dependencies can be updated to point to this module without running a full c.updateDependencies()
-		module.directDeps = append(module.directDeps, depInfo{m, tag})
-		module.forwardDeps = append(module.forwardDeps, m)
-		module.newDirectDeps = append(module.newDirectDeps, m)
-		return m, nil
-	}
-
-	if c.allowMissingDependencies {
-		// Allow missing variants.
-		return nil, c.discoveredMissingDependencies(module, depName, module.variant.variations)
-	}
-
-	return nil, []error{&BlueprintError{
-		Err: fmt.Errorf("dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
-			depName, module.Name(),
-			c.prettyPrintVariant(module.variant.variations),
-			c.prettyPrintGroupVariants(possibleDeps)),
-		Pos: module.pos,
-	}}
-}
-
 func (c *Context) findReverseDependency(module *moduleInfo, config any, requestedVariations []Variation, destName string) (*moduleInfo, []error) {
 	if destName == module.Name() {
 		return nil, []error{&BlueprintError{
