@@ -1132,7 +1132,7 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
 		modInfo := mctx.context.moduleInfo[module]
-		depInfo, errs := mctx.context.addDependency(modInfo, mctx.mutator, mctx.config, tag, dep)
+		depInfo, errs := mctx.context.addVariationDependency(modInfo, mctx.mutator, mctx.config, nil, tag, dep, false)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
