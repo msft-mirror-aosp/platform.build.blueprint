@@ -1953,26 +1953,6 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 	}
 }
 
-// findExactVariantOrSingle searches the moduleGroup for a module with the same variant as module,
-// and returns the matching module, or nil if one is not found.  A group with exactly one module
-// is always considered matching.
-func (c *Context) findExactVariantOrSingle(module *moduleInfo, config any, possible *moduleGroup, reverse bool) (*moduleInfo, []error) {
-	found, _, errs := c.findVariant(module, config, possible, nil, false, reverse)
-	if errs != nil {
-		return nil, errs
-	}
-	if found == nil {
-		for _, m := range possible.modules {
-			if found != nil {
-				// more than one possible match, give up
-				return nil, nil
-			}
-			found = m
-		}
-	}
-	return found, nil
-}
-
 func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config any, tag DependencyTag,
 	depName string) (*moduleInfo, []error) {
 
@@ -1992,7 +1972,7 @@ func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config
 		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
-	if m, errs := c.findExactVariantOrSingle(module, config, possibleDeps, false); errs != nil {
+	if m, _, errs := c.findVariant(module, config, possibleDeps, nil, false, false); errs != nil {
 		return nil, errs
 	} else if m != nil {
 		// The mutator will pause until the newly added dependency has finished running the current mutator,
@@ -2609,7 +2589,7 @@ func (c *Context) updateDependencies() (errs []error) {
 
 		// Add an implicit dependency ordering on all earlier modules in the same module group
 		selfIndex := slices.Index(module.group.modules, module)
-		slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
+		module.forwardDeps = slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
 		module.forwardDeps = append(module.forwardDeps, module.group.modules[:selfIndex]...)
 
 		for _, dep := range module.directDeps {
@@ -4023,11 +4003,7 @@ func (c *Context) ModuleTypePropertyStructs() map[string][]interface{} {
 }
 
 func (c *Context) ModuleTypeFactories() map[string]ModuleFactory {
-	ret := make(map[string]ModuleFactory)
-	for k, v := range c.moduleFactories {
-		ret[k] = v
-	}
-	return ret
+	return maps.Clone(c.moduleFactories)
 }
 
 func (c *Context) ModuleName(logicModule Module) string {
