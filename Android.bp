@@ -1,5 +1,9 @@
 package {
     default_applicable_licenses: ["build_blueprint_license"],
+    default_visibility: [
+        "//build/blueprint:__subpackages__",
+        "//build/soong:__subpackages__",
+    ],
 }
 
 // Added automatically by a large-scale-change that took the approach of
@@ -31,6 +35,7 @@ license {
 bootstrap_go_package {
     name: "blueprint",
     deps: [
+        "blueprint-gobtools",
         "blueprint-metrics",
         "blueprint-parser",
         "blueprint-pathtools",
@@ -68,6 +73,10 @@ bootstrap_go_package {
         "transition_test.go",
         "visit_test.go",
     ],
+    visibility: [
+        // used by plugins
+        "//visibility:public",
+    ],
 }
 
 bootstrap_go_package {
@@ -86,12 +95,24 @@ bootstrap_go_package {
         "parser/printer_test.go",
         "parser/sort_test.go",
     ],
+    visibility: [
+        "//build/blueprint:__subpackages__",
+        "//build/soong:__subpackages__",
+        "//development/vndk/tools/elfcheck",
+        "//tools/security/fuzzing/fuzzer_parser",
+        "//vendor:__subpackages__",
+    ],
 }
 
 bootstrap_go_package {
     name: "blueprint-deptools",
     pkgPath: "github.com/google/blueprint/deptools",
     srcs: ["deptools/depfile.go"],
+    visibility: [
+        "//build/blueprint:__subpackages__",
+        "//build/make/tools/compliance",
+        "//build/soong:__subpackages__",
+    ],
 }
 
 bootstrap_go_package {
@@ -110,6 +131,10 @@ bootstrap_go_package {
         "pathtools/glob_test.go",
         "pathtools/lists_test.go",
     ],
+    visibility: [
+        // used by plugins
+        "//visibility:public",
+    ],
 }
 
 bootstrap_go_package {
@@ -127,6 +152,7 @@ bootstrap_go_package {
         "proptools/filter.go",
         "proptools/hash_provider.go",
         "proptools/proptools.go",
+        "proptools/repack.go",
         "proptools/tag.go",
         "proptools/typeequal.go",
         "proptools/unpack.go",
@@ -139,9 +165,14 @@ bootstrap_go_package {
         "proptools/extend_test.go",
         "proptools/filter_test.go",
         "proptools/hash_provider_test.go",
+        "proptools/repack_test.go",
         "proptools/tag_test.go",
         "proptools/typeequal_test.go",
         "proptools/unpack_test.go",
+    ],
+    visibility: [
+        // used by plugins
+        "//visibility:public",
     ],
 }
 
@@ -193,16 +224,10 @@ blueprint_go_binary {
     name: "bpfmt",
     deps: ["blueprint-parser"],
     srcs: ["bpfmt/bpfmt.go"],
-}
-
-blueprint_go_binary {
-    name: "bpmodify",
-    deps: [
-        "blueprint-parser",
-        "blueprint-proptools",
+    visibility: [
+        "//development/tools/cargo_embargo",
+        "//tools/external_updater",
     ],
-    srcs: ["bpmodify/bpmodify.go"],
-    testSrcs: ["bpmodify/bpmodify_test.go"],
 }
 
 blueprint_go_binary {
