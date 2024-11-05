@@ -26,6 +26,7 @@ import (
 	"hash/fnv"
 	"io"
 	"io/ioutil"
+	"iter"
 	"maps"
 	"math"
 	"os"
@@ -35,6 +36,7 @@ import (
 	"runtime/pprof"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -94,7 +96,6 @@ type Context struct {
 	nameInterface       NameInterface
 	moduleGroups        []*moduleGroup
 	moduleInfo          map[Module]*moduleInfo
-	modulesSorted       []*moduleInfo
 	singletonInfo       []*singletonInfo
 	mutatorInfo         []*mutatorInfo
 	variantMutatorNames []string
@@ -103,7 +104,7 @@ type Context struct {
 
 	transitionMutators []*transitionMutatorImpl
 
-	depsModified uint32 // positive if a mutator modified the dependencies
+	needsUpdateDependencies uint32 // positive if a mutator modified the dependencies
 
 	dependenciesReady bool // set to true on a successful ResolveDependencies
 	buildActionsReady bool // set to true on a successful PrepareBuildActions
@@ -146,10 +147,8 @@ type Context struct {
 	// not be registered in this Context.
 	providerMutators []*mutatorInfo
 
-	// The currently running mutator
-	startedMutator *mutatorInfo
-	// True for any mutators that have already run over all modules
-	finishedMutators map[*mutatorInfo]bool
+	// True for the index of any mutators that have already run over all modules
+	finishedMutators []bool
 
 	// If true, RunBlueprint will skip cloning modules at the end of RunBlueprint.
 	// Cloning modules intentionally invalidates some Module values after
@@ -242,6 +241,19 @@ func (c *Context) ContainsIncludeTag(name string) bool {
 	return c.includeTags.Contains(name)
 }
 
+// iterateAllVariants returns an iter.Seq that iterates over every variant of every module.
+func (c *Context) iterateAllVariants() iter.Seq[*moduleInfo] {
+	return func(yield func(*moduleInfo) bool) {
+		for _, group := range c.moduleGroups {
+			for _, module := range group.modules {
+				if !yield(module) {
+					return
+				}
+			}
+		}
+	}
+}
+
 // An Error describes a problem that was encountered that is related to a
 // particular location in a Blueprints file.
 type BlueprintError struct {
@@ -332,7 +344,7 @@ type moduleInfo struct {
 
 	// set during ResolveDependencies
 	missingDeps   []string
-	newDirectDeps []depInfo
+	newDirectDeps []*moduleInfo
 
 	// set during updateDependencies
 	reverseDeps []*moduleInfo
@@ -361,8 +373,8 @@ type moduleInfo struct {
 	providers                  []interface{}
 	providerInitialValueHashes []uint64
 
-	startedMutator  *mutatorInfo
-	finishedMutator *mutatorInfo
+	startedMutator  int
+	finishedMutator int
 
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
@@ -527,8 +539,15 @@ type mutatorInfo struct {
 	topDownMutator    TopDownMutator
 	bottomUpMutator   BottomUpMutator
 	name              string
-	parallel          bool
+	index             int
 	transitionMutator *transitionMutatorImpl
+
+	usesRename              bool
+	usesReverseDependencies bool
+	usesReplaceDependencies bool
+	usesCreateModule        bool
+	mutatesDependencies     bool
+	mutatesGlobalState      bool
 }
 
 func newContext() *Context {
@@ -541,7 +560,6 @@ func newContext() *Context {
 		moduleInfo:              make(map[Module]*moduleInfo),
 		globs:                   make(map[globKey]pathtools.GlobResult),
 		fs:                      pathtools.OsFs,
-		finishedMutators:        make(map[*mutatorInfo]bool),
 		includeTags:             &IncludeTags{},
 		sourceRootDirs:          &SourceRootDirs{},
 		outDir:                  nil,
@@ -786,6 +804,7 @@ func (c *Context) RegisterTopDownMutator(name string, mutator TopDownMutator) Mu
 	info := &mutatorInfo{
 		topDownMutator: mutator,
 		name:           name,
+		index:          len(c.mutatorInfo),
 	}
 
 	c.mutatorInfo = append(c.mutatorInfo, info)
@@ -813,6 +832,7 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 	info := &mutatorInfo{
 		bottomUpMutator: mutator,
 		name:            name,
+		index:           len(c.mutatorInfo),
 	}
 	c.mutatorInfo = append(c.mutatorInfo, info)
 
@@ -826,24 +846,67 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 func (c *Context) HasMutatorFinished(mutatorName string) bool {
 	for _, mutator := range c.mutatorInfo {
 		if mutator.name == mutatorName {
-			finished, ok := c.finishedMutators[mutator]
-			return ok && finished
+			return len(c.finishedMutators) > mutator.index && c.finishedMutators[mutator.index]
 		}
 	}
 	panic(fmt.Sprintf("unknown mutator %q", mutatorName))
 }
 
 type MutatorHandle interface {
-	// Set the mutator to visit modules in parallel while maintaining ordering.  Calling any
-	// method on the mutator context is thread-safe, but the mutator must handle synchronization
-	// for any modifications to global state or any modules outside the one it was invoked on.
-	Parallel() MutatorHandle
+	// UsesRename marks the mutator as using the BottomUpMutatorContext.Rename method, which prevents
+	// coalescing adjacent mutators into a single mutator pass.
+	UsesRename() MutatorHandle
+
+	// UsesReverseDependencies marks the mutator as using the BottomUpMutatorContext.AddReverseDependency
+	// method, which prevents coalescing adjacent mutators into a single mutator pass.
+	UsesReverseDependencies() MutatorHandle
+
+	// UsesReplaceDependencies marks the mutator as using the BottomUpMutatorContext.ReplaceDependencies
+	// method, which prevents coalescing adjacent mutators into a single mutator pass.
+	UsesReplaceDependencies() MutatorHandle
+
+	// UsesCreateModule marks the mutator as using the BottomUpMutatorContext.CreateModule method,
+	// which prevents coalescing adjacent mutators into a single mutator pass.
+	UsesCreateModule() MutatorHandle
+
+	// MutatesDependencies marks the mutator as modifying properties in dependencies, which prevents
+	// coalescing adjacent mutators into a single mutator pass.
+	MutatesDependencies() MutatorHandle
+
+	// MutatesGlobalState marks the mutator as modifying global state, which prevents coalescing
+	// adjacent mutators into a single mutator pass.
+	MutatesGlobalState() MutatorHandle
 
 	setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle
 }
 
-func (mutator *mutatorInfo) Parallel() MutatorHandle {
-	mutator.parallel = true
+func (mutator *mutatorInfo) UsesRename() MutatorHandle {
+	mutator.usesRename = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) UsesReverseDependencies() MutatorHandle {
+	mutator.usesReverseDependencies = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) UsesReplaceDependencies() MutatorHandle {
+	mutator.usesReplaceDependencies = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) UsesCreateModule() MutatorHandle {
+	mutator.usesCreateModule = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) MutatesDependencies() MutatorHandle {
+	mutator.mutatesDependencies = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) MutatesGlobalState() MutatorHandle {
+	mutator.mutatesGlobalState = true
 	return mutator
 }
 
@@ -1560,6 +1623,10 @@ func newVariant(module *moduleInfo, mutatorName string, variationName string) va
 func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 	depChooser depChooser, variationNames []string) (moduleList, []error) {
 
+	if mutator.transitionMutator == nil {
+		panic(fmt.Errorf("method createVariations called from mutator that was not a TransitionMutator"))
+	}
+
 	if len(variationNames) == 0 {
 		panic(fmt.Errorf("mutator %q passed zero-length variation list for module %q",
 			mutator.name, origModule.Name()))
@@ -1606,7 +1673,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 	origModule.obsoletedByNewVariants = true
 	origModule.splitModules = newModules
 
-	atomic.AddUint32(&c.depsModified, 1)
+	atomic.AddUint32(&c.needsUpdateDependencies, 1)
 
 	return newModules, errs
 }
@@ -1796,6 +1863,39 @@ func (c *Context) ResolveDependencies(config interface{}) (deps []string, errs [
 	return c.resolveDependencies(c.Context, config)
 }
 
+// coalesceMutators takes the list of mutators and returns a list of lists of mutators,
+// where sublist is a compatible group of mutators that can be run with relaxed
+// intra-mutator ordering.
+func coalesceMutators(mutators []*mutatorInfo) [][]*mutatorInfo {
+	var coalescedMutators [][]*mutatorInfo
+	var last *mutatorInfo
+
+	// Returns true if the mutator can be coalesced with other mutators that
+	// also return true.
+	coalescable := func(m *mutatorInfo) bool {
+		return m.bottomUpMutator != nil &&
+			m.transitionMutator == nil &&
+			!m.usesCreateModule &&
+			!m.usesReplaceDependencies &&
+			!m.usesReverseDependencies &&
+			!m.usesRename &&
+			!m.mutatesGlobalState &&
+			!m.mutatesDependencies
+	}
+
+	for _, mutator := range mutators {
+		if last != nil && coalescable(last) && coalescable(mutator) {
+			lastGroup := &coalescedMutators[len(coalescedMutators)-1]
+			*lastGroup = append(*lastGroup, mutator)
+		} else {
+			coalescedMutators = append(coalescedMutators, []*mutatorInfo{mutator})
+			last = mutator
+		}
+	}
+
+	return coalescedMutators
+}
+
 func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (deps []string, errs []error) {
 	pprof.Do(ctx, pprof.Labels("blueprint", "ResolveDependencies"), func(ctx context.Context) {
 		c.initProviders()
@@ -1805,7 +1905,9 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 			return
 		}
 
-		deps, errs = c.runMutators(ctx, config)
+		mutatorGroups := coalesceMutators(c.mutatorInfo)
+
+		deps, errs = c.runMutators(ctx, config, mutatorGroups)
 		if len(errs) > 0 {
 			return
 		}
@@ -1851,60 +1953,6 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 	}
 }
 
-// findExactVariantOrSingle searches the moduleGroup for a module with the same variant as module,
-// and returns the matching module, or nil if one is not found.  A group with exactly one module
-// is always considered matching.
-func (c *Context) findExactVariantOrSingle(module *moduleInfo, config any, possible *moduleGroup, reverse bool) *moduleInfo {
-	found, _ := c.findVariant(module, config, possible, nil, false, reverse)
-	if found == nil {
-		for _, m := range possible.modules {
-			if found != nil {
-				// more than one possible match, give up
-				return nil
-			}
-			found = m
-		}
-	}
-	return found
-}
-
-func (c *Context) addDependency(module *moduleInfo, config any, tag DependencyTag, depName string) (*moduleInfo, []error) {
-	if _, ok := tag.(BaseDependencyTag); ok {
-		panic("BaseDependencyTag is not allowed to be used directly!")
-	}
-
-	if depName == module.Name() {
-		return nil, []error{&BlueprintError{
-			Err: fmt.Errorf("%q depends on itself", depName),
-			Pos: module.pos,
-		}}
-	}
-
-	possibleDeps := c.moduleGroupFromName(depName, module.namespace())
-	if possibleDeps == nil {
-		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
-	}
-
-	if m := c.findExactVariantOrSingle(module, config, possibleDeps, false); m != nil {
-		module.newDirectDeps = append(module.newDirectDeps, depInfo{m, tag})
-		atomic.AddUint32(&c.depsModified, 1)
-		return m, nil
-	}
-
-	if c.allowMissingDependencies {
-		// Allow missing variants.
-		return nil, c.discoveredMissingDependencies(module, depName, module.variant.variations)
-	}
-
-	return nil, []error{&BlueprintError{
-		Err: fmt.Errorf("dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
-			depName, module.Name(),
-			c.prettyPrintVariant(module.variant.variations),
-			c.prettyPrintGroupVariants(possibleDeps)),
-		Pos: module.pos,
-	}}
-}
-
 func (c *Context) findReverseDependency(module *moduleInfo, config any, requestedVariations []Variation, destName string) (*moduleInfo, []error) {
 	if destName == module.Name() {
 		return nil, []error{&BlueprintError{
@@ -1922,7 +1970,9 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, requeste
 		}}
 	}
 
-	if m, _ := c.findVariant(module, config, possibleDeps, requestedVariations, false, true); m != nil {
+	if m, _, errs := c.findVariant(module, config, possibleDeps, requestedVariations, false, true); errs != nil {
+		return nil, errs
+	} else if m != nil {
 		return m, nil
 	}
 
@@ -1945,7 +1995,7 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, requeste
 // modify the requested variation.  It finds a variant that existed before the TransitionMutator ran that is
 // a subset of the requested variant to use as the module context for IncomingTransition.
 func (c *Context) applyTransitions(config any, module *moduleInfo, group *moduleGroup, variant variationMap,
-	requestedVariations []Variation) variationMap {
+	requestedVariations []Variation) (variationMap, []error) {
 	for _, transitionMutator := range c.transitionMutators {
 		explicitlyRequested := slices.ContainsFunc(requestedVariations, func(variation Variation) bool {
 			return variation.Mutator == transitionMutator.name
@@ -1961,6 +2011,9 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 					depTag: nil, postMutator: true, config: config},
 			}
 			outgoingVariation = transitionMutator.mutator.OutgoingTransition(ctx, sourceVariation)
+			if len(ctx.errs) > 0 {
+				return variationMap{}, ctx.errs
+			}
 		}
 
 		earlierVariantCreatingMutators := c.variantCreatingMutatorOrder[:transitionMutator.variantCreatingMutatorIndex]
@@ -2002,6 +2055,9 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 			}
 
 			finalVariation := transitionMutator.mutator.IncomingTransition(ctx, outgoingVariation)
+			if len(ctx.errs) > 0 {
+				return variationMap{}, ctx.errs
+			}
 			variant.set(transitionMutator.name, finalVariation)
 		}
 
@@ -2012,11 +2068,11 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 		}
 	}
 
-	return variant
+	return variant, nil
 }
 
 func (c *Context) findVariant(module *moduleInfo, config any,
-	possibleDeps *moduleGroup, requestedVariations []Variation, far bool, reverse bool) (*moduleInfo, variationMap) {
+	possibleDeps *moduleGroup, requestedVariations []Variation, far bool, reverse bool) (*moduleInfo, variationMap, []error) {
 
 	// We can't just append variant.Variant to module.dependencyVariant.variantName and
 	// compare the strings because the result won't be in mutator registration order.
@@ -2030,7 +2086,11 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 	}
 
 	if !reverse {
-		newVariant = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
+		var errs []error
+		newVariant, errs = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations)
+		if len(errs) > 0 {
+			return nil, variationMap{}, errs
+		}
 	}
 
 	// check returns a bool for whether the requested newVariant matches the given variant from possibleDeps, and a
@@ -2063,10 +2123,10 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 		}
 	}
 
-	return foundDep, newVariant
+	return foundDep, newVariant, nil
 }
 
-func (c *Context) addVariationDependency(module *moduleInfo, config any, variations []Variation,
+func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInfo, config any, variations []Variation,
 	tag DependencyTag, depName string, far bool) (*moduleInfo, []error) {
 	if _, ok := tag.(BaseDependencyTag); ok {
 		panic("BaseDependencyTag is not allowed to be used directly!")
@@ -2077,7 +2137,10 @@ func (c *Context) addVariationDependency(module *moduleInfo, config any, variati
 		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
-	foundDep, newVariant := c.findVariant(module, config, possibleDeps, variations, far, false)
+	foundDep, newVariant, errs := c.findVariant(module, config, possibleDeps, variations, far, false)
+	if errs != nil {
+		return nil, errs
+	}
 
 	if foundDep == nil {
 		if c.allowMissingDependencies {
@@ -2108,8 +2171,14 @@ func (c *Context) addVariationDependency(module *moduleInfo, config any, variati
 			Pos: module.pos,
 		}}
 	}
-	module.newDirectDeps = append(module.newDirectDeps, depInfo{foundDep, tag})
-	atomic.AddUint32(&c.depsModified, 1)
+
+	// The mutator will pause until the newly added dependency has finished running the current mutator,
+	// so it is safe to add the new dependency directly to directDeps and forwardDeps where it will be visible
+	// to future calls to VisitDirectDeps.  Set newDirectDeps so that at the end of the mutator the reverseDeps
+	// of the dependencies can be updated to point to this module without running a full c.updateDependencies()
+	module.directDeps = append(module.directDeps, depInfo{foundDep, tag})
+	module.forwardDeps = append(module.forwardDeps, foundDep)
+	module.newDirectDeps = append(module.newDirectDeps, foundDep)
 	return foundDep, nil
 }
 
@@ -2158,8 +2227,6 @@ type visitOrderer interface {
 	waitCount(module *moduleInfo) int
 	// returns the list of modules that are waiting for this module
 	propagate(module *moduleInfo) []*moduleInfo
-	// visit modules in order
-	visit(modules []*moduleInfo, visit func(*moduleInfo, chan<- pauseSpec) bool)
 }
 
 type unorderedVisitorImpl struct{}
@@ -2172,14 +2239,6 @@ func (unorderedVisitorImpl) propagate(module *moduleInfo) []*moduleInfo {
 	return nil
 }
 
-func (unorderedVisitorImpl) visit(modules []*moduleInfo, visit func(*moduleInfo, chan<- pauseSpec) bool) {
-	for _, module := range modules {
-		if visit(module, nil) {
-			return
-		}
-	}
-}
-
 type bottomUpVisitorImpl struct{}
 
 func (bottomUpVisitorImpl) waitCount(module *moduleInfo) int {
@@ -2188,14 +2247,6 @@ func (bottomUpVisitorImpl) waitCount(module *moduleInfo) int {
 
 func (bottomUpVisitorImpl) propagate(module *moduleInfo) []*moduleInfo {
 	return module.reverseDeps
-}
-
-func (bottomUpVisitorImpl) visit(modules []*moduleInfo, visit func(*moduleInfo, chan<- pauseSpec) bool) {
-	for _, module := range modules {
-		if visit(module, nil) {
-			return
-		}
-	}
 }
 
 type topDownVisitorImpl struct{}
@@ -2239,7 +2290,7 @@ const parallelVisitLimit = 1000
 // to wait for another dependency to be visited.  If a visit function returns true to cancel
 // while another visitor is paused, the paused visitor will never be resumed and its goroutine
 // will stay paused forever.
-func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
+func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit int,
 	visit func(module *moduleInfo, pause chan<- pauseSpec) bool) []error {
 
 	doneCh := make(chan *moduleInfo)
@@ -2255,7 +2306,7 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 
 	pauseMap := make(map[*moduleInfo][]pauseSpec)
 
-	for _, module := range modules {
+	for module := range moduleIter {
 		module.waitingCount = order.waitCount(module)
 	}
 
@@ -2302,10 +2353,11 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 		}
 	}
 
-	toVisit := len(modules)
+	toVisit := 0
 
 	// Start or backlog any modules that are not waiting for any other modules.
-	for _, module := range modules {
+	for module := range moduleIter {
+		toVisit++
 		if module.waitingCount == 0 {
 			startOrBacklog(module)
 		}
@@ -2418,7 +2470,7 @@ func parallelVisit(modules []*moduleInfo, order visitOrderer, limit int,
 			}
 
 			// Iterate over the modules list instead of pauseMap to provide deterministic ordering.
-			for _, module := range modules {
+			for module := range moduleIter {
 				for _, pauseSpec := range pauseMap[module] {
 					cycle := check(pauseSpec.paused, pauseSpec.until)
 					if len(cycle) > 0 {
@@ -2475,10 +2527,8 @@ func cycleError(cycle []*moduleInfo) (errs []error) {
 // as well as after any mutator pass has called addDependency
 func (c *Context) updateDependencies() (errs []error) {
 	c.cachedDepsModified = true
-	visited := make(map[*moduleInfo]bool)  // modules that were already checked
-	checking := make(map[*moduleInfo]bool) // modules actively being checked
-
-	sorted := make([]*moduleInfo, 0, len(c.moduleInfo))
+	visited := make(map[*moduleInfo]bool, len(c.moduleInfo)) // modules that were already checked
+	checking := make(map[*moduleInfo]bool)                   // modules actively being checked
 
 	var check func(group *moduleInfo) []*moduleInfo
 
@@ -2492,21 +2542,11 @@ func (c *Context) updateDependencies() (errs []error) {
 		module.forwardDeps = module.forwardDeps[:0]
 
 		// Add an implicit dependency ordering on all earlier modules in the same module group
-		for _, dep := range module.group.modules {
-			if dep == module {
-				break
-			}
-			module.forwardDeps = append(module.forwardDeps, dep)
-		}
+		selfIndex := slices.Index(module.group.modules, module)
+		module.forwardDeps = slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
+		module.forwardDeps = append(module.forwardDeps, module.group.modules[:selfIndex]...)
 
-	outer:
 		for _, dep := range module.directDeps {
-			// use a loop to check for duplicates, average number of directDeps measured to be 9.5.
-			for _, exists := range module.forwardDeps {
-				if dep.module == exists {
-					continue outer
-				}
-			}
 			module.forwardDeps = append(module.forwardDeps, dep.module)
 		}
 
@@ -2539,8 +2579,6 @@ func (c *Context) updateDependencies() (errs []error) {
 			dep.reverseDeps = append(dep.reverseDeps, module)
 		}
 
-		sorted = append(sorted, module)
-
 		return nil
 	}
 
@@ -2555,8 +2593,6 @@ func (c *Context) updateDependencies() (errs []error) {
 			}
 		}
 	}
-
-	c.modulesSorted = sorted
 
 	return
 }
@@ -2685,7 +2721,7 @@ func getNinjaStrings(nStrs []*ninjaString, nameTracker *nameTracker) []string {
 
 func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*JsonModule) (bool, int)) map[string]int {
 	outputToWeight := make(map[string]int)
-	for _, m := range c.modulesSorted {
+	for m := range c.iterateAllVariants() {
 		jmWithActions := jsonModuleWithActionsFromModuleInfo(m, c.nameTracker)
 		if ok, weight := predicate(jmWithActions); ok {
 			for _, a := range jmWithActions.Module["Actions"].([]JSONAction) {
@@ -2707,7 +2743,7 @@ func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*JsonModule) (b
 func (c *Context) PrintJSONGraphAndActions(wGraph io.Writer, wActions io.Writer) {
 	modulesToGraph := make([]*JsonModule, 0)
 	modulesToActions := make([]*JsonModule, 0)
-	for _, m := range c.modulesSorted {
+	for m := range c.iterateAllVariants() {
 		jm := jsonModuleFromModuleInfo(m)
 		jmWithActions := jsonModuleWithActionsFromModuleInfo(m, c.nameTracker)
 		for _, d := range m.directDeps {
@@ -2847,19 +2883,25 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 	return deps, nil
 }
 
-func (c *Context) runMutators(ctx context.Context, config interface{}) (deps []string, errs []error) {
+func (c *Context) runMutators(ctx context.Context, config interface{}, mutatorGroups [][]*mutatorInfo) (deps []string, errs []error) {
+	c.finishedMutators = make([]bool, len(c.mutatorInfo))
+
 	pprof.Do(ctx, pprof.Labels("blueprint", "runMutators"), func(ctx context.Context) {
-		for _, mutator := range c.mutatorInfo {
-			pprof.Do(ctx, pprof.Labels("mutator", mutator.name), func(context.Context) {
-				c.BeginEvent(mutator.name)
-				defer c.EndEvent(mutator.name)
+		for _, mutatorGroup := range mutatorGroups {
+			name := mutatorGroup[0].name
+			if len(mutatorGroup) > 1 {
+				name += "_plus_" + strconv.Itoa(len(mutatorGroup)-1)
+			}
+			pprof.Do(ctx, pprof.Labels("mutator", name), func(context.Context) {
+				c.BeginEvent(name)
+				defer c.EndEvent(name)
 				var newDeps []string
-				if mutator.topDownMutator != nil {
-					newDeps, errs = c.runMutator(config, mutator, topDownMutator)
-				} else if mutator.bottomUpMutator != nil {
-					newDeps, errs = c.runMutator(config, mutator, bottomUpMutator)
+				if mutatorGroup[0].topDownMutator != nil {
+					newDeps, errs = c.runMutator(config, mutatorGroup, topDownMutator)
+				} else if mutatorGroup[0].bottomUpMutator != nil {
+					newDeps, errs = c.runMutator(config, mutatorGroup, bottomUpMutator)
 				} else {
-					panic("no mutator set on " + mutator.name)
+					panic("no mutator set on " + mutatorGroup[0].name)
 				}
 				if len(errs) > 0 {
 					return
@@ -2880,15 +2922,20 @@ func (c *Context) runMutators(ctx context.Context, config interface{}) (deps []s
 }
 
 type mutatorDirection interface {
-	run(mutator *mutatorInfo, ctx *mutatorContext)
+	run(mutator []*mutatorInfo, ctx *mutatorContext)
 	orderer() visitOrderer
 	fmt.Stringer
 }
 
 type bottomUpMutatorImpl struct{}
 
-func (bottomUpMutatorImpl) run(mutator *mutatorInfo, ctx *mutatorContext) {
-	mutator.bottomUpMutator(ctx)
+func (bottomUpMutatorImpl) run(mutatorGroup []*mutatorInfo, ctx *mutatorContext) {
+	for _, mutator := range mutatorGroup {
+		ctx.mutator = mutator
+		ctx.module.startedMutator = mutator.index
+		mutator.bottomUpMutator(ctx)
+		ctx.module.finishedMutator = mutator.index
+	}
 }
 
 func (bottomUpMutatorImpl) orderer() visitOrderer {
@@ -2901,8 +2948,11 @@ func (bottomUpMutatorImpl) String() string {
 
 type topDownMutatorImpl struct{}
 
-func (topDownMutatorImpl) run(mutator *mutatorInfo, ctx *mutatorContext) {
-	mutator.topDownMutator(ctx)
+func (topDownMutatorImpl) run(mutatorGroup []*mutatorInfo, ctx *mutatorContext) {
+	if len(mutatorGroup) > 1 {
+		panic(fmt.Errorf("top down mutator group %s must only have 1 mutator, found %d", mutatorGroup[0].name, len(mutatorGroup)))
+	}
+	mutatorGroup[0].topDownMutator(ctx)
 }
 
 func (topDownMutatorImpl) orderer() visitOrderer {
@@ -2923,13 +2973,10 @@ type reverseDep struct {
 	dep    depInfo
 }
 
-func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
+func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	direction mutatorDirection) (deps []string, errs []error) {
 
-	newModuleInfo := make(map[Module]*moduleInfo)
-	for k, v := range c.moduleInfo {
-		newModuleInfo[k] = v
-	}
+	newModuleInfo := maps.Clone(c.moduleInfo)
 
 	type globalStateChange struct {
 		reverse    []reverseDep
@@ -2954,7 +3001,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 	newVariationsCh := make(chan newVariationPair)
 	done := make(chan bool)
 
-	c.depsModified = 0
+	c.needsUpdateDependencies = 0
 
 	visit := func(module *moduleInfo, pause chan<- pauseSpec) bool {
 		if module.splitModules != nil {
@@ -2967,18 +3014,18 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 				config:  config,
 				module:  module,
 			},
-			mutator: mutator,
+			mutator: mutatorGroup[0],
 			pauseCh: pause,
 		}
 
 		origLogicModule := module.logicModule
 
-		module.startedMutator = mutator
+		module.startedMutator = mutatorGroup[0].index
 
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					in := fmt.Sprintf("%s %q for %s", direction, mutator.name, module)
+					in := fmt.Sprintf("%s %q for %s", direction, mutatorGroup[0].name, module)
 					if err, ok := r.(panicError); ok {
 						err.addIn(in)
 						mctx.error(err)
@@ -2987,10 +3034,10 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 					}
 				}
 			}()
-			direction.run(mutator, mctx)
+			direction.run(mutatorGroup, mctx)
 		}()
 
-		module.finishedMutator = mutator
+		module.finishedMutator = mutatorGroup[len(mutatorGroup)-1].index
 
 		if len(mctx.errs) > 0 {
 			errsCh <- mctx.errs
@@ -3045,20 +3092,15 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		}
 	}()
 
-	c.startedMutator = mutator
-
-	var visitErrs []error
-	if mutator.parallel {
-		visitErrs = parallelVisit(c.modulesSorted, direction.orderer(), parallelVisitLimit, visit)
-	} else {
-		direction.orderer().visit(c.modulesSorted, visit)
-	}
+	visitErrs := parallelVisit(c.iterateAllVariants(), direction.orderer(), parallelVisitLimit, visit)
 
 	if len(visitErrs) > 0 {
 		return nil, visitErrs
 	}
 
-	c.finishedMutators[mutator] = true
+	for _, mutator := range mutatorGroup {
+		c.finishedMutators[mutator.index] = true
+	}
 
 	done <- true
 
@@ -3072,7 +3114,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 
 	c.moduleInfo = newModuleInfo
 
-	isTransitionMutator := mutator.transitionMutator != nil
+	isTransitionMutator := mutatorGroup[0].transitionMutator != nil
 
 	var transitionMutatorInputVariants map[*moduleGroup][]*moduleInfo
 	if isTransitionMutator {
@@ -3104,27 +3146,30 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 				module.createdBy = module.createdBy.splitModules.firstModule()
 			}
 
-			// Add in any new direct dependencies that were added by the mutator
-			module.directDeps = append(module.directDeps, module.newDirectDeps...)
+			// Add any new forward dependencies to the reverse dependencies of the dependency to avoid
+			// having to call a full c.updateDependencies().
+			for _, m := range module.newDirectDeps {
+				m.reverseDeps = append(m.reverseDeps, module)
+			}
 			module.newDirectDeps = nil
 		}
 	}
 
 	if isTransitionMutator {
-		mutator.transitionMutator.inputVariants = transitionMutatorInputVariants
-		mutator.transitionMutator.variantCreatingMutatorIndex = len(c.variantCreatingMutatorOrder)
-		c.transitionMutators = append(c.transitionMutators, mutator.transitionMutator)
+		mutatorGroup[0].transitionMutator.inputVariants = transitionMutatorInputVariants
+		mutatorGroup[0].transitionMutator.variantCreatingMutatorIndex = len(c.variantCreatingMutatorOrder)
+		c.transitionMutators = append(c.transitionMutators, mutatorGroup[0].transitionMutator)
 	}
 
 	if createdVariations {
-		c.variantCreatingMutatorOrder = append(c.variantCreatingMutatorOrder, mutator.name)
+		c.variantCreatingMutatorOrder = append(c.variantCreatingMutatorOrder, mutatorGroup[0].name)
 	}
 
 	// Add in any new reverse dependencies that were added by the mutator
 	for module, deps := range reverseDeps {
 		sort.Sort(depSorter(deps))
 		module.directDeps = append(module.directDeps, deps...)
-		c.depsModified++
+		c.needsUpdateDependencies++
 	}
 
 	for _, module := range newModules {
@@ -3132,7 +3177,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		if len(errs) > 0 {
 			return nil, errs
 		}
-		atomic.AddUint32(&c.depsModified, 1)
+		c.needsUpdateDependencies++
 	}
 
 	errs = c.handleRenames(rename)
@@ -3145,7 +3190,7 @@ func (c *Context) runMutator(config interface{}, mutator *mutatorInfo,
 		return nil, errs
 	}
 
-	if c.depsModified > 0 {
+	if c.needsUpdateDependencies > 0 {
 		errs = c.updateDependencies()
 		if len(errs) > 0 {
 			return nil, errs
@@ -3174,7 +3219,7 @@ func (c *Context) cloneModules() {
 	ch := make(chan update)
 	doneCh := make(chan bool)
 	go func() {
-		errs := parallelVisit(c.modulesSorted, unorderedVisitorImpl{}, parallelVisitLimit,
+		errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
 			func(m *moduleInfo, pause chan<- pauseSpec) bool {
 				origLogicModule := m.logicModule
 				m.logicModule, m.properties = c.cloneLogicModule(m)
@@ -3249,7 +3294,7 @@ func (c *Context) generateModuleBuildActions(config interface{},
 		}
 	}()
 
-	visitErrs := parallelVisit(c.modulesSorted, bottomUpVisitor, parallelVisitLimit,
+	visitErrs := parallelVisit(c.iterateAllVariants(), bottomUpVisitor, parallelVisitLimit,
 		func(module *moduleInfo, pause chan<- pauseSpec) bool {
 			uniqueName := c.nameInterface.UniqueName(newNamespaceContext(module), module.group.name)
 			sanitizedName := toNinjaName(uniqueName)
@@ -3606,7 +3651,7 @@ func (c *Context) handleReplacements(replacements []replace) []error {
 	}
 
 	if changedDeps {
-		atomic.AddUint32(&c.depsModified, 1)
+		c.needsUpdateDependencies++
 	}
 	return errs
 }
@@ -3912,11 +3957,7 @@ func (c *Context) ModuleTypePropertyStructs() map[string][]interface{} {
 }
 
 func (c *Context) ModuleTypeFactories() map[string]ModuleFactory {
-	ret := make(map[string]ModuleFactory)
-	for k, v := range c.moduleFactories {
-		ret[k] = v
-	}
-	return ret
+	return maps.Clone(c.moduleFactories)
 }
 
 func (c *Context) ModuleName(logicModule Module) string {
@@ -4136,7 +4177,7 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 	errorCh := make(chan []error)
 	var wg sync.WaitGroup
 	go func() {
-		for _, m := range c.modulesSorted {
+		for m := range c.iterateAllVariants() {
 			toProcess <- m
 		}
 		close(toProcess)
@@ -4693,6 +4734,9 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 		return err
 	}
 	for _, module := range modules {
+		if len(module.actionDefs.variables)+len(module.actionDefs.rules)+len(module.actionDefs.buildDefs) == 0 {
+			continue
+		}
 		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
 		if !module.incrementalRestored {
 			err := func() error {
@@ -4909,7 +4953,7 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 	defer c.EndEvent("deduplicate_order_only_deps")
 
 	candidates := sync.Map{} //used as map[key]*candidate
-	parallelVisit(modules, unorderedVisitorImpl{}, parallelVisitLimit,
+	parallelVisit(slices.Values(modules), unorderedVisitorImpl{}, parallelVisitLimit,
 		func(m *moduleInfo, pause chan<- pauseSpec) bool {
 			incremental := m.buildActionCacheKey != nil
 			for _, b := range m.actionDefs.buildDefs {
