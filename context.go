@@ -1953,81 +1953,6 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 	}
 }
 
-// findExactVariantOrSingle searches the moduleGroup for a module with the same variant as module,
-// and returns the matching module, or nil if one is not found.  A group with exactly one module
-// is always considered matching.
-func (c *Context) findExactVariantOrSingle(module *moduleInfo, config any, possible *moduleGroup, reverse bool) (*moduleInfo, []error) {
-	found, _, errs := c.findVariant(module, config, possible, nil, false, reverse)
-	if errs != nil {
-		return nil, errs
-	}
-	if found == nil {
-		for _, m := range possible.modules {
-			if found != nil {
-				// more than one possible match, give up
-				return nil, nil
-			}
-			found = m
-		}
-	}
-	return found, nil
-}
-
-func (c *Context) addDependency(module *moduleInfo, mutator *mutatorInfo, config any, tag DependencyTag,
-	depName string) (*moduleInfo, []error) {
-
-	if _, ok := tag.(BaseDependencyTag); ok {
-		panic("BaseDependencyTag is not allowed to be used directly!")
-	}
-
-	if depName == module.Name() {
-		return nil, []error{&BlueprintError{
-			Err: fmt.Errorf("%q depends on itself", depName),
-			Pos: module.pos,
-		}}
-	}
-
-	possibleDeps := c.moduleGroupFromName(depName, module.namespace())
-	if possibleDeps == nil {
-		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
-	}
-
-	var m *moduleInfo
-	var errs []error
-	// TODO(b/372091092): Completely remove the 1-variant fallback
-	if strings.HasPrefix(module.relBlueprintsFile, "vendor/") || strings.HasPrefix(module.relBlueprintsFile, "art/") {
-		m, errs = c.findExactVariantOrSingle(module, config, possibleDeps, false)
-	} else {
-		m, _, errs = c.findVariant(module, config, possibleDeps, nil, false, false)
-	}
-
-	if errs != nil {
-		return nil, errs
-	} else if m != nil {
-		// The mutator will pause until the newly added dependency has finished running the current mutator,
-		// so it is safe to add the new dependency directly to directDeps and forwardDeps where it will be visible
-		// to future calls to VisitDirectDeps.  Set newDirectDeps so that at the end of the mutator the reverseDeps
-		// of the dependencies can be updated to point to this module without running a full c.updateDependencies()
-		module.directDeps = append(module.directDeps, depInfo{m, tag})
-		module.forwardDeps = append(module.forwardDeps, m)
-		module.newDirectDeps = append(module.newDirectDeps, m)
-		return m, nil
-	}
-
-	if c.allowMissingDependencies {
-		// Allow missing variants.
-		return nil, c.discoveredMissingDependencies(module, depName, module.variant.variations)
-	}
-
-	return nil, []error{&BlueprintError{
-		Err: fmt.Errorf("dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
-			depName, module.Name(),
-			c.prettyPrintVariant(module.variant.variations),
-			c.prettyPrintGroupVariants(possibleDeps)),
-		Pos: module.pos,
-	}}
-}
-
 func (c *Context) findReverseDependency(module *moduleInfo, config any, requestedVariations []Variation, destName string) (*moduleInfo, []error) {
 	if destName == module.Name() {
 		return nil, []error{&BlueprintError{
@@ -4032,11 +3957,7 @@ func (c *Context) ModuleTypePropertyStructs() map[string][]interface{} {
 }
 
 func (c *Context) ModuleTypeFactories() map[string]ModuleFactory {
-	ret := make(map[string]ModuleFactory)
-	for k, v := range c.moduleFactories {
-		ret[k] = v
-	}
-	return ret
+	return maps.Clone(c.moduleFactories)
 }
 
 func (c *Context) ModuleName(logicModule Module) string {
