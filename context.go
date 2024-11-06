@@ -548,6 +548,7 @@ type mutatorInfo struct {
 	usesCreateModule        bool
 	mutatesDependencies     bool
 	mutatesGlobalState      bool
+	neverFar                bool
 }
 
 func newContext() *Context {
@@ -878,6 +879,7 @@ type MutatorHandle interface {
 	MutatesGlobalState() MutatorHandle
 
 	setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle
+	setNeverFar() MutatorHandle
 }
 
 func (mutator *mutatorInfo) UsesRename() MutatorHandle {
@@ -912,6 +914,11 @@ func (mutator *mutatorInfo) MutatesGlobalState() MutatorHandle {
 
 func (mutator *mutatorInfo) setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle {
 	mutator.transitionMutator = impl
+	return mutator
+}
+
+func (mutator *mutatorInfo) setNeverFar() MutatorHandle {
+	mutator.neverFar = true
 	return mutator
 }
 
@@ -2080,6 +2087,12 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 	var newVariant variationMap
 	if !far {
 		newVariant = module.variant.variations.clone()
+	} else {
+		for _, mutator := range c.mutatorInfo {
+			if mutator.neverFar {
+				newVariant.set(mutator.name, module.variant.variations.get(mutator.name))
+			}
+		}
 	}
 	for _, v := range requestedVariations {
 		newVariant.set(v.Mutator, v.Variation)
