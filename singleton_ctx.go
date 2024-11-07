@@ -99,6 +99,9 @@ type SingletonContext interface {
 	// VisitAllModules calls visit for each defined variant of each module in an unspecified order.
 	VisitAllModules(visit func(Module))
 
+	// VisitAllModuleProxies calls visit for each defined variant of each module in an unspecified order.
+	VisitAllModuleProxies(visit func(proxy ModuleProxy))
+
 	// VisitAllModules calls pred for each defined variant of each module in an unspecified order, and if pred returns
 	// true calls visit.
 	VisitAllModulesIf(pred func(Module) bool, visit func(Module))
@@ -133,6 +136,9 @@ type SingletonContext interface {
 
 	// VisitAllModuleVariants calls visit for each variant of the given module.
 	VisitAllModuleVariants(module Module, visit func(Module))
+
+	// VisitAllModuleVariantProxies calls visit for each variant of the given module.
+	VisitAllModuleVariantProxies(module Module, visit func(proxy ModuleProxy))
 
 	// PrimaryModule returns the first variant of the given module.  This can be used to perform
 	//	// singleton actions that are only done once for all variants of a module.
@@ -207,7 +213,7 @@ func (s *singletonContext) ModuleType(logicModule Module) string {
 }
 
 func (s *singletonContext) ModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
-	return s.context.ModuleProvider(logicModule, provider)
+	return s.context.ModuleProvider(getWrappedModule(logicModule), provider)
 }
 
 func (s *singletonContext) BlueprintFile(logicModule Module) string {
@@ -331,6 +337,10 @@ func (s *singletonContext) VisitAllModules(visit func(Module)) {
 	})
 }
 
+func (s *singletonContext) VisitAllModuleProxies(visit func(proxy ModuleProxy)) {
+	s.VisitAllModules(visitProxyAdaptor(visit))
+}
+
 func (s *singletonContext) VisitAllModulesIf(pred func(Module) bool,
 	visit func(Module)) {
 
@@ -369,6 +379,10 @@ func (s *singletonContext) VisitAllModuleVariants(module Module, visit func(Modu
 	s.context.VisitAllModuleVariants(module, visit)
 }
 
+func (s *singletonContext) VisitAllModuleVariantProxies(module Module, visit func(proxy ModuleProxy)) {
+	s.context.VisitAllModuleVariants(module, visitProxyAdaptor(visit))
+}
+
 func (s *singletonContext) AddNinjaFileDeps(deps ...string) {
 	s.ninjaFileDeps = append(s.ninjaFileDeps, deps...)
 }
@@ -404,4 +418,12 @@ func (s *singletonContext) ModuleVariantsFromName(referer Module, name string) [
 
 func (s *singletonContext) HasMutatorFinished(mutatorName string) bool {
 	return s.context.HasMutatorFinished(mutatorName)
+}
+
+func visitProxyAdaptor(visit func(proxy ModuleProxy)) func(module Module) {
+	return func(module Module) {
+		visit(ModuleProxy{
+			module: module,
+		})
+	}
 }
