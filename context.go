@@ -4150,8 +4150,8 @@ func (c *Context) PrimaryModule(module Module) Module {
 	return c.moduleInfo[module].group.modules.firstModule().logicModule
 }
 
-func (c *Context) FinalModule(module Module) Module {
-	return c.moduleInfo[module].group.modules.lastModule().logicModule
+func (c *Context) IsFinalModule(module Module) bool {
+	return c.moduleInfo[module].group.modules.lastModule().logicModule == module
 }
 
 func (c *Context) VisitAllModuleVariants(module Module,
