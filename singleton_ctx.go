@@ -144,9 +144,9 @@ type SingletonContext interface {
 	//	// singleton actions that are only done once for all variants of a module.
 	PrimaryModule(module Module) Module
 
-	// FinalModule returns the last variant of the given module.  This can be used to perform
+	// IsFinalModule returns if the given module is the last variant. This can be used to perform
 	// singleton actions that are only done once for all variants of a module.
-	FinalModule(module Module) Module
+	IsFinalModule(module Module) bool
 
 	// AddNinjaFileDeps adds dependencies on the specified files to the rule that creates the ninja manifest.  The
 	// primary builder will be rerun whenever the specified files are modified.
@@ -371,8 +371,8 @@ func (s *singletonContext) PrimaryModule(module Module) Module {
 	return s.context.PrimaryModule(module)
 }
 
-func (s *singletonContext) FinalModule(module Module) Module {
-	return s.context.FinalModule(module)
+func (s *singletonContext) IsFinalModule(module Module) bool {
+	return s.context.IsFinalModule(module)
 }
 
 func (s *singletonContext) VisitAllModuleVariants(module Module, visit func(Module)) {
