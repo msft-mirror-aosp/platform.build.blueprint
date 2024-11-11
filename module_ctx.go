@@ -317,11 +317,6 @@ type BaseModuleContext interface {
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleDir(m Module) string
 
-	// OtherModuleSubDir returns the unique subdirectory name of another Module.  See ModuleContext.ModuleSubDir for
-	// more information.
-	// It is intended for use inside the visit functions of Visit* and WalkDeps.
-	OtherModuleSubDir(m Module) string
-
 	// OtherModuleType returns the type of another Module.  See BaseModuleContext.ModuleType for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleType(m Module) string
@@ -560,20 +555,15 @@ func (m *baseModuleContext) OtherModuleDir(logicModule Module) string {
 	return filepath.Dir(module.relBlueprintsFile)
 }
 
-func (m *baseModuleContext) OtherModuleSubDir(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
-	return module.variant.name
-}
-
 func (m *baseModuleContext) OtherModuleType(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return module.typeName
 }
 
 func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 	args ...interface{}) {
 
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	m.errs = append(m.errs, &ModuleError{
 		BlueprintError: BlueprintError{
 			Err: fmt.Errorf(format, args...),
