@@ -548,6 +548,7 @@ type mutatorInfo struct {
 	usesCreateModule        bool
 	mutatesDependencies     bool
 	mutatesGlobalState      bool
+	neverFar                bool
 }
 
 func newContext() *Context {
@@ -878,6 +879,7 @@ type MutatorHandle interface {
 	MutatesGlobalState() MutatorHandle
 
 	setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle
+	setNeverFar() MutatorHandle
 }
 
 func (mutator *mutatorInfo) UsesRename() MutatorHandle {
@@ -912,6 +914,11 @@ func (mutator *mutatorInfo) MutatesGlobalState() MutatorHandle {
 
 func (mutator *mutatorInfo) setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle {
 	mutator.transitionMutator = impl
+	return mutator
+}
+
+func (mutator *mutatorInfo) setNeverFar() MutatorHandle {
+	mutator.neverFar = true
 	return mutator
 }
 
@@ -2080,6 +2087,12 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 	var newVariant variationMap
 	if !far {
 		newVariant = module.variant.variations.clone()
+	} else {
+		for _, mutator := range c.mutatorInfo {
+			if mutator.neverFar {
+				newVariant.set(mutator.name, module.variant.variations.get(mutator.name))
+			}
+		}
 	}
 	for _, v := range requestedVariations {
 		newVariant.set(v.Mutator, v.Variation)
@@ -3993,10 +4006,8 @@ func (c *Context) BlueprintFile(logicModule Module) string {
 	return module.relBlueprintsFile
 }
 
-func (c *Context) ModuleErrorf(logicModule Module, format string,
+func (c *Context) moduleErrorf(module *moduleInfo, format string,
 	args ...interface{}) error {
-
-	module := c.moduleInfo[logicModule]
 	if module == nil {
 		// This can happen if ModuleErrorf is called from a load hook
 		return &BlueprintError{
@@ -4011,6 +4022,11 @@ func (c *Context) ModuleErrorf(logicModule Module, format string,
 		},
 		module: module,
 	}
+}
+
+func (c *Context) ModuleErrorf(logicModule Module, format string,
+	args ...interface{}) error {
+	return c.moduleErrorf(c.moduleInfo[logicModule], format, args...)
 }
 
 func (c *Context) PropertyErrorf(logicModule Module, property string, format string,
@@ -4137,8 +4153,8 @@ func (c *Context) PrimaryModule(module Module) Module {
 	return c.moduleInfo[module].group.modules.firstModule().logicModule
 }
 
-func (c *Context) FinalModule(module Module) Module {
-	return c.moduleInfo[module].group.modules.lastModule().logicModule
+func (c *Context) IsFinalModule(module Module) bool {
+	return c.moduleInfo[module].group.modules.lastModule().logicModule == module
 }
 
 func (c *Context) VisitAllModuleVariants(module Module,
