@@ -556,7 +556,7 @@ func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
 }
 
 func (m *baseModuleContext) OtherModuleDir(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return filepath.Dir(module.relBlueprintsFile)
 }
 
