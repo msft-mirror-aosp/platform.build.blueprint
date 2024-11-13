@@ -501,7 +501,7 @@ func (d *baseModuleContext) Errorf(pos scanner.Position,
 func (d *baseModuleContext) ModuleErrorf(format string,
 	args ...interface{}) {
 
-	d.error(d.context.ModuleErrorf(d.module.logicModule, format, args...))
+	d.error(d.context.moduleErrorf(d.module, format, args...))
 }
 
 func (d *baseModuleContext) PropertyErrorf(property, format string,
@@ -556,7 +556,7 @@ func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
 }
 
 func (m *baseModuleContext) OtherModuleDir(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return filepath.Dir(module.relBlueprintsFile)
 }
 
