@@ -4006,10 +4006,8 @@ func (c *Context) BlueprintFile(logicModule Module) string {
 	return module.relBlueprintsFile
 }
 
-func (c *Context) ModuleErrorf(logicModule Module, format string,
+func (c *Context) moduleErrorf(module *moduleInfo, format string,
 	args ...interface{}) error {
-
-	module := c.moduleInfo[logicModule]
 	if module == nil {
 		// This can happen if ModuleErrorf is called from a load hook
 		return &BlueprintError{
@@ -4024,6 +4022,11 @@ func (c *Context) ModuleErrorf(logicModule Module, format string,
 		},
 		module: module,
 	}
+}
+
+func (c *Context) ModuleErrorf(logicModule Module, format string,
+	args ...interface{}) error {
+	return c.moduleErrorf(c.moduleInfo[logicModule], format, args...)
 }
 
 func (c *Context) PropertyErrorf(logicModule Module, property string, format string,
@@ -4150,8 +4153,8 @@ func (c *Context) PrimaryModule(module Module) Module {
 	return c.moduleInfo[module].group.modules.firstModule().logicModule
 }
 
-func (c *Context) FinalModule(module Module) Module {
-	return c.moduleInfo[module].group.modules.lastModule().logicModule
+func (c *Context) IsFinalModule(module Module) bool {
+	return c.moduleInfo[module].group.modules.lastModule().logicModule == module
 }
 
 func (c *Context) VisitAllModuleVariants(module Module,
