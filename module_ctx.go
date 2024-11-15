@@ -309,6 +309,12 @@ type BaseModuleContext interface {
 	// data modified by the current mutator.
 	VisitAllModuleVariants(visit func(Module))
 
+	// VisitAllModuleVariantProxies calls visit for each variant of the current module.  Variants of a module are always
+	// visited in order by mutators and GenerateBuildActions, so the data created by the current mutator can be read
+	// from all variants if the current module is the last one.  Otherwise, care must be taken to not access any
+	// data modified by the current mutator.
+	VisitAllModuleVariantProxies(visit func(proxy ModuleProxy))
+
 	// OtherModuleName returns the name of another Module.  See BaseModuleContext.ModuleName for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleName(m Module) string
@@ -913,6 +919,10 @@ func (m *baseModuleContext) IsFinalModule(module Module) bool {
 
 func (m *baseModuleContext) VisitAllModuleVariants(visit func(Module)) {
 	m.context.visitAllModuleVariants(m.module, visit)
+}
+
+func (m *baseModuleContext) VisitAllModuleVariantProxies(visit func(proxy ModuleProxy)) {
+	m.context.visitAllModuleVariants(m.module, visitProxyAdaptor(visit))
 }
 
 func (m *baseModuleContext) AddNinjaFileDeps(deps ...string) {
