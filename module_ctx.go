@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"text/scanner"
@@ -297,11 +298,23 @@ type BaseModuleContext interface {
 	// singleton actions that are only done once for all variants of a module.
 	FinalModule() Module
 
+	// IsFinalModule returns if the current module is the last variant.  Variants of a module are always visited in
+	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
+	// variants using VisitAllModuleVariants if the current module is the last one.  This can be used to perform
+	// singleton actions that are only done once for all variants of a module.
+	IsFinalModule(module Module) bool
+
 	// VisitAllModuleVariants calls visit for each variant of the current module.  Variants of a module are always
 	// visited in order by mutators and GenerateBuildActions, so the data created by the current mutator can be read
-	// from all variants if the current module == FinalModule().  Otherwise, care must be taken to not access any
+	// from all variants if the current module is the last one.  Otherwise, care must be taken to not access any
 	// data modified by the current mutator.
 	VisitAllModuleVariants(visit func(Module))
+
+	// VisitAllModuleVariantProxies calls visit for each variant of the current module.  Variants of a module are always
+	// visited in order by mutators and GenerateBuildActions, so the data created by the current mutator can be read
+	// from all variants if the current module is the last one.  Otherwise, care must be taken to not access any
+	// data modified by the current mutator.
+	VisitAllModuleVariantProxies(visit func(proxy ModuleProxy))
 
 	// OtherModuleName returns the name of another Module.  See BaseModuleContext.ModuleName for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
@@ -310,11 +323,6 @@ type BaseModuleContext interface {
 	// OtherModuleDir returns the directory of another Module.  See BaseModuleContext.ModuleDir for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleDir(m Module) string
-
-	// OtherModuleSubDir returns the unique subdirectory name of another Module.  See ModuleContext.ModuleSubDir for
-	// more information.
-	// It is intended for use inside the visit functions of Visit* and WalkDeps.
-	OtherModuleSubDir(m Module) string
 
 	// OtherModuleType returns the type of another Module.  See BaseModuleContext.ModuleType for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
@@ -495,7 +503,7 @@ func (d *baseModuleContext) Errorf(pos scanner.Position,
 func (d *baseModuleContext) ModuleErrorf(format string,
 	args ...interface{}) {
 
-	d.error(d.context.ModuleErrorf(d.module.logicModule, format, args...))
+	d.error(d.context.moduleErrorf(d.module, format, args...))
 }
 
 func (d *baseModuleContext) PropertyErrorf(property, format string,
@@ -550,24 +558,19 @@ func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
 }
 
 func (m *baseModuleContext) OtherModuleDir(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return filepath.Dir(module.relBlueprintsFile)
 }
 
-func (m *baseModuleContext) OtherModuleSubDir(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
-	return module.variant.name
-}
-
 func (m *baseModuleContext) OtherModuleType(logicModule Module) string {
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	return module.typeName
 }
 
 func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 	args ...interface{}) {
 
-	module := m.context.moduleInfo[logicModule]
+	module := m.context.moduleInfo[getWrappedModule(logicModule)]
 	m.errs = append(m.errs, &ModuleError{
 		BlueprintError: BlueprintError{
 			Err: fmt.Errorf(format, args...),
@@ -911,8 +914,16 @@ func (m *baseModuleContext) FinalModule() Module {
 	return m.module.group.modules.lastModule().logicModule
 }
 
+func (m *baseModuleContext) IsFinalModule(module Module) bool {
+	return m.module.group.modules.lastModule().logicModule == module
+}
+
 func (m *baseModuleContext) VisitAllModuleVariants(visit func(Module)) {
 	m.context.visitAllModuleVariants(m.module, visit)
+}
+
+func (m *baseModuleContext) VisitAllModuleVariantProxies(visit func(proxy ModuleProxy)) {
+	m.context.visitAllModuleVariants(m.module, visitProxyAdaptor(visit))
 }
 
 func (m *baseModuleContext) AddNinjaFileDeps(deps ...string) {
@@ -1413,6 +1424,14 @@ type loadHookContext struct {
 
 type LoadHook func(ctx LoadHookContext)
 
+// LoadHookWithPriority is a wrapper around LoadHook and allows hooks to be sorted by priority.
+// hooks with higher value of `priority` run last.
+// hooks with equal value of `priority` run in the order they were registered.
+type LoadHookWithPriority struct {
+	priority int
+	loadHook LoadHook
+}
+
 // Load hooks need to be added by module factories, which don't have any parameter to get to the
 // Context, and only produce a Module interface with no base implementation, so the load hooks
 // must be stored in a global map.  The key is a pointer allocated by the module factory, so there
@@ -1422,21 +1441,32 @@ type LoadHook func(ctx LoadHookContext)
 var pendingHooks sync.Map
 
 func AddLoadHook(module Module, hook LoadHook) {
+	// default priority is 0
+	AddLoadHookWithPriority(module, hook, 0)
+}
+
+// AddLoadhHookWithPriority adds a load hook with a specified priority.
+// Hooks with higher priority run last.
+// Hooks with equal priority run in the order they were registered.
+func AddLoadHookWithPriority(module Module, hook LoadHook, priority int) {
 	// Only one goroutine can be processing a given module, so no additional locking is required
 	// for the slice stored in the sync.Map.
 	v, exists := pendingHooks.Load(module)
 	if !exists {
-		v, _ = pendingHooks.LoadOrStore(module, new([]LoadHook))
+		v, _ = pendingHooks.LoadOrStore(module, new([]LoadHookWithPriority))
 	}
-	hooks := v.(*[]LoadHook)
-	*hooks = append(*hooks, hook)
+	hooks := v.(*[]LoadHookWithPriority)
+	*hooks = append(*hooks, LoadHookWithPriority{priority, hook})
 }
 
 func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
 	scopedModuleFactories *map[string]ModuleFactory) (newModules []*moduleInfo, deps []string, errs []error) {
 
 	if v, exists := pendingHooks.Load(module.logicModule); exists {
-		hooks := v.(*[]LoadHook)
+		hooks := v.(*[]LoadHookWithPriority)
+		// Sort the hooks by priority.
+		// Use SliceStable so that hooks with equal priority run in the order they were registered.
+		sort.SliceStable(*hooks, func(i, j int) bool { return (*hooks)[i].priority < (*hooks)[j].priority })
 
 		for _, hook := range *hooks {
 			mctx := &loadHookContext{
@@ -1447,7 +1477,7 @@ func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
 				},
 				scopedModuleFactories: scopedModuleFactories,
 			}
-			hook(mctx)
+			hook.loadHook(mctx)
 			newModules = append(newModules, mctx.newModules...)
 			deps = append(deps, mctx.ninjaFileDeps...)
 			errs = append(errs, mctx.errs...)
