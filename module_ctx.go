@@ -519,7 +519,7 @@ func (d *baseModuleContext) PropertyErrorf(property, format string,
 func (d *baseModuleContext) OtherModulePropertyErrorf(logicModule Module, property string, format string,
 	args ...interface{}) {
 
-	d.error(d.context.PropertyErrorf(logicModule, property, format, args...))
+	d.error(d.context.PropertyErrorf(getWrappedModule(logicModule), property, format, args...))
 }
 
 func (d *baseModuleContext) Failed() bool {
