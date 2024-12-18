@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"fmt"
+	"maps"
 	"path/filepath"
 	"reflect"
 
@@ -16,16 +17,16 @@ func ModuleTypeDocs(ctx *blueprint.Context, factories map[string]reflect.Value) 
 	// Find the module that's marked as the "primary builder", which means it's
 	// creating the binary that we'll use to generate the non-bootstrap
 	// build.ninja file.
-	var primaryBuilders []*GoBinary
-	ctx.VisitAllModulesIf(isBootstrapBinaryModule,
-		func(module blueprint.Module) {
-			binaryModule := module.(*GoBinary)
-			if binaryModule.properties.PrimaryBuilder {
-				primaryBuilders = append(primaryBuilders, binaryModule)
+	var primaryBuilders []blueprint.Module
+	ctx.VisitAllModules(func(module blueprint.Module) {
+		if ctx.PrimaryModule(module) == module {
+			if _, ok := blueprint.SingletonModuleProvider(ctx, module, PrimaryBuilderProvider); ok {
+				primaryBuilders = append(primaryBuilders, module)
 			}
-		})
+		}
+	})
 
-	var primaryBuilder *GoBinary
+	var primaryBuilder blueprint.Module
 	switch len(primaryBuilders) {
 	case 0:
 		return nil, fmt.Errorf("no primary builder module present")
@@ -39,19 +40,13 @@ func ModuleTypeDocs(ctx *blueprint.Context, factories map[string]reflect.Value) 
 
 	pkgFiles := make(map[string][]string)
 	ctx.VisitDepsDepthFirst(primaryBuilder, func(module blueprint.Module) {
-		switch m := module.(type) {
-		case (*GoPackage):
-			pkgFiles[m.properties.PkgPath] = pathtools.PrefixPaths(m.properties.Srcs,
-				filepath.Join(ctx.SrcDir(), ctx.ModuleDir(m)))
-		default:
-			panic(fmt.Errorf("unknown dependency type %T", module))
+		if info, ok := blueprint.SingletonModuleProvider(ctx, module, DocsPackageProvider); ok {
+			pkgFiles[info.PkgPath] = pathtools.PrefixPaths(info.Srcs,
+				filepath.Join(ctx.SrcDir(), ctx.ModuleDir(module)))
 		}
 	})
 
-	mergedFactories := make(map[string]reflect.Value)
-	for moduleType, factory := range factories {
-		mergedFactories[moduleType] = factory
-	}
+	mergedFactories := maps.Clone(factories)
 
 	for moduleType, factory := range ctx.ModuleTypeFactories() {
 		if _, exists := mergedFactories[moduleType]; !exists {
