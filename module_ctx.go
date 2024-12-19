@@ -237,10 +237,7 @@ type BaseModuleContext interface {
 	// none exists.  It panics if the dependency does not have the specified tag.
 	GetDirectDepWithTag(name string, tag DependencyTag) Module
 
-	// GetDirectDep returns the Module and DependencyTag for the  direct dependency with the specified
-	// name, or nil if none exists.  If there are multiple dependencies on the same module it returns
-	// the first DependencyTag.
-	GetDirectDep(name string) (Module, DependencyTag)
+	GetDirectDepProxyWithTag(name string, tag DependencyTag) *ModuleProxy
 
 	// VisitDirectDeps calls visit for each direct dependency.  If there are multiple direct dependencies on the same
 	// module visit will be called multiple times on that module and OtherModuleDependencyTag will return a different
@@ -761,16 +758,6 @@ func (m *moduleContext) restoreModuleBuildActions() (bool, *BuildActionCacheKey)
 	return restored, cacheKey
 }
 
-func (m *baseModuleContext) GetDirectDep(name string) (Module, DependencyTag) {
-	for _, dep := range m.module.directDeps {
-		if dep.module.Name() == name {
-			return dep.module.logicModule, dep.tag
-		}
-	}
-
-	return nil, nil
-}
-
 func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) Module {
 	var deps []depInfo
 	for _, dep := range m.module.directDeps {
@@ -784,6 +771,15 @@ func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) 
 
 	if len(deps) != 0 {
 		panic(fmt.Errorf("Unable to find dependency %q with requested tag %#v. Found: %#v", deps[0].module, tag, deps))
+	}
+
+	return nil
+}
+
+func (m *baseModuleContext) GetDirectDepProxyWithTag(name string, tag DependencyTag) *ModuleProxy {
+	module := m.GetDirectDepWithTag(name, tag)
+	if module != nil {
+		return &ModuleProxy{module}
 	}
 
 	return nil
