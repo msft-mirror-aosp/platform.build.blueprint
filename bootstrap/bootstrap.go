@@ -198,6 +198,7 @@ func writeFileRule(ctx blueprint.ModuleContext, outputFile string, content strin
 			Rule:        writeFile,
 			Outputs:     []string{outputFile},
 			Description: "write " + outputFile,
+			Optional:    true,
 			Args: map[string]string{
 				"content": content,
 			},
@@ -215,6 +216,7 @@ func writeFileRule(ctx blueprint.ModuleContext, outputFile string, content strin
 			Rule:        cat,
 			Inputs:      chunks,
 			Outputs:     []string{outputFile},
+			Optional:    true,
 			Description: "Merging to " + outputFile,
 		})
 		return
@@ -371,7 +373,6 @@ func (g *GoPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 
 	buildGoPackage(ctx, pkgRoot, g.properties.PkgPath, archiveFile,
 		srcs, genSrcs, g.properties.EmbedSrcs)
-	blueprint.SetProvider(ctx, blueprint.SrcsFileProviderKey, blueprint.SrcsFileProviderData{SrcPaths: srcs})
 	blueprint.SetProvider(ctx, PackageProvider, &PackageInfo{
 		PkgPath:       g.properties.PkgPath,
 		PkgRoot:       pkgRoot,
@@ -537,7 +538,6 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		})
 	}
 
-	blueprint.SetProvider(ctx, blueprint.SrcsFileProviderKey, blueprint.SrcsFileProviderData{SrcPaths: srcs})
 	blueprint.SetProvider(ctx, BinaryProvider, &BinaryInfo{
 		IntermediatePath: g.outputFile,
 		InstallPath:      g.installPath,
