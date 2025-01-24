@@ -50,9 +50,8 @@ func (s UniqueList[T]) Iter() iter.Seq[T] {
 
 	return func(yield func(T) bool) {
 		cur := s.handle
-		var impl node[T]
 		for cur != zeroSlice {
-			impl = cur.Value()
+			impl := cur.Value()
 			for _, v := range impl.elements[:min(nodeSize, impl.len)] {
 				if !yield(v) {
 					return
@@ -71,9 +70,8 @@ func (s UniqueList[T]) iterNodes() iter.Seq[[]T] {
 
 	return func(yield func([]T) bool) {
 		cur := s.handle
-		var impl node[T]
 		for cur != zeroSlice {
-			impl = cur.Value()
+			impl := cur.Value()
 			l := min(impl.len, len(impl.elements))
 			if !yield(impl.elements[:l]) {
 				return
