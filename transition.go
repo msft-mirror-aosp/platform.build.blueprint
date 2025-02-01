@@ -108,6 +108,14 @@ type IncomingTransitionContext interface {
 	// is being computed
 	Module() Module
 
+	// ModuleName returns the name of the module.  This is generally the value that was returned by Module.Name() when
+	// the module was created, but may have been modified by calls to BottomUpMutatorContext.Rename.
+	ModuleName() string
+
+	// DepTag() Returns the dependency tag through which this dependency is
+	// reached
+	DepTag() DependencyTag
+
 	// Config returns the config object that was passed to
 	// Context.PrepareBuildActions.
 	Config() interface{}
@@ -137,6 +145,10 @@ type OutgoingTransitionContext interface {
 	// Module returns the source of the dependency edge for which the transition
 	// is being computed
 	Module() Module
+
+	// ModuleName returns the name of the module.  This is generally the value that was returned by Module.Name() when
+	// the module was created, but may have been modified by calls to BottomUpMutatorContext.Rename.
+	ModuleName() string
 
 	// DepTag() Returns the dependency tag through which this dependency is
 	// reached
@@ -269,6 +281,10 @@ func (c *outgoingTransitionContextImpl) Module() Module {
 	return c.source.logicModule
 }
 
+func (c *outgoingTransitionContextImpl) ModuleName() string {
+	return c.source.group.name
+}
+
 func (c *outgoingTransitionContextImpl) Provider(provider AnyProviderKey) (any, bool) {
 	return c.context.provider(c.source, provider.provider())
 }
@@ -279,6 +295,10 @@ type incomingTransitionContextImpl struct {
 
 func (c *incomingTransitionContextImpl) Module() Module {
 	return c.dep.logicModule
+}
+
+func (c *incomingTransitionContextImpl) ModuleName() string {
+	return c.dep.group.name
 }
 
 func (c *incomingTransitionContextImpl) Provider(provider AnyProviderKey) (any, bool) {

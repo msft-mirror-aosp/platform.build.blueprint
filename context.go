@@ -2081,9 +2081,9 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 	if !far {
 		newVariant = module.variant.variations.clone()
 	} else {
-		for _, mutator := range c.mutatorInfo {
-			if mutator.transitionMutator != nil && mutator.transitionMutator.neverFar {
-				newVariant.set(mutator.name, module.variant.variations.get(mutator.name))
+		for _, transitionMutator := range c.transitionMutators {
+			if transitionMutator.neverFar {
+				newVariant.set(transitionMutator.name, module.variant.variations.get(transitionMutator.name))
 			}
 		}
 	}
