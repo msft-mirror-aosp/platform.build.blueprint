@@ -166,6 +166,7 @@ type transitionMutatorImpl struct {
 	mutator       TransitionMutator
 	index         int
 	inputVariants map[*moduleGroup][]*moduleInfo
+	neverFar      bool
 }
 
 // Adds each argument in items to l if it's not already there.
@@ -351,12 +352,13 @@ type TransitionMutatorHandle interface {
 
 type transitionMutatorHandle struct {
 	inner MutatorHandle
+	impl  *transitionMutatorImpl
 }
 
 var _ TransitionMutatorHandle = (*transitionMutatorHandle)(nil)
 
 func (h *transitionMutatorHandle) NeverFar() TransitionMutatorHandle {
-	h.inner.setNeverFar()
+	h.impl.neverFar = true
 	return h
 }
 
@@ -371,7 +373,7 @@ func (c *Context) RegisterTransitionMutator(name string, mutator TransitionMutat
 	c.transitionMutators = append(c.transitionMutators, impl)
 	c.transitionMutatorNames = append(c.transitionMutatorNames, name)
 
-	return &transitionMutatorHandle{inner: bottomUpHandle}
+	return &transitionMutatorHandle{inner: bottomUpHandle, impl: impl}
 }
 
 // This function is called for every dependency edge to determine which
