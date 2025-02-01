@@ -100,9 +100,9 @@ type Context struct {
 	mutatorInfo         []*mutatorInfo
 	variantMutatorNames []string
 
-	variantCreatingMutatorOrder []string
-
-	transitionMutators []*transitionMutatorImpl
+	completedTransitionMutators int
+	transitionMutators          []*transitionMutatorImpl
+	transitionMutatorNames      []string
 
 	needsUpdateDependencies uint32 // positive if a mutator modified the dependencies
 
@@ -2003,7 +2003,7 @@ func (c *Context) findReverseDependency(module *moduleInfo, config any, requeste
 // a subset of the requested variant to use as the module context for IncomingTransition.
 func (c *Context) applyTransitions(config any, module *moduleInfo, group *moduleGroup, variant variationMap,
 	requestedVariations []Variation) (variationMap, []error) {
-	for _, transitionMutator := range c.transitionMutators {
+	for _, transitionMutator := range c.transitionMutators[:c.completedTransitionMutators] {
 		explicitlyRequested := slices.ContainsFunc(requestedVariations, func(variation Variation) bool {
 			return variation.Mutator == transitionMutator.name
 		})
@@ -2023,7 +2023,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 			}
 		}
 
-		earlierVariantCreatingMutators := c.variantCreatingMutatorOrder[:transitionMutator.variantCreatingMutatorIndex]
+		earlierVariantCreatingMutators := c.transitionMutatorNames[:transitionMutator.index]
 		filteredVariant := variant.cloneMatching(earlierVariantCreatingMutators)
 
 		check := func(inputVariant variationMap) bool {
@@ -3074,7 +3074,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		return false
 	}
 
-	createdVariations := false
 	var obsoleteLogicModules []Module
 
 	// Process errs and reverseDeps in a single goroutine
@@ -3098,7 +3097,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				for _, module := range newVariations.newVariations {
 					newModuleInfo[module.logicModule] = module
 				}
-				createdVariations = true
 			case <-done:
 				return
 			}
@@ -3127,10 +3125,10 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 	c.moduleInfo = newModuleInfo
 
-	isTransitionMutator := mutatorGroup[0].transitionMutator != nil
+	transitionMutator := mutatorGroup[0].transitionMutator
 
 	var transitionMutatorInputVariants map[*moduleGroup][]*moduleInfo
-	if isTransitionMutator {
+	if transitionMutator != nil {
 		transitionMutatorInputVariants = make(map[*moduleGroup][]*moduleInfo)
 	}
 
@@ -3140,7 +3138,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 			// Update module group to contain newly split variants
 			if module.splitModules != nil {
-				if isTransitionMutator {
+				if transitionMutator != nil {
 					// For transition mutators, save the pre-split variant for reusing later in applyTransitions.
 					transitionMutatorInputVariants[group] = append(transitionMutatorInputVariants[group], module)
 				}
@@ -3168,14 +3166,9 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		}
 	}
 
-	if isTransitionMutator {
-		mutatorGroup[0].transitionMutator.inputVariants = transitionMutatorInputVariants
-		mutatorGroup[0].transitionMutator.variantCreatingMutatorIndex = len(c.variantCreatingMutatorOrder)
-		c.transitionMutators = append(c.transitionMutators, mutatorGroup[0].transitionMutator)
-	}
-
-	if createdVariations {
-		c.variantCreatingMutatorOrder = append(c.variantCreatingMutatorOrder, mutatorGroup[0].name)
+	if transitionMutator != nil {
+		transitionMutator.inputVariants = transitionMutatorInputVariants
+		c.completedTransitionMutators = transitionMutator.index + 1
 	}
 
 	// Add in any new reverse dependencies that were added by the mutator
