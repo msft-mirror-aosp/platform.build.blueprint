@@ -162,10 +162,10 @@ type OutgoingTransitionContext interface {
 }
 
 type transitionMutatorImpl struct {
-	name                        string
-	mutator                     TransitionMutator
-	variantCreatingMutatorIndex int
-	inputVariants               map[*moduleGroup][]*moduleInfo
+	name          string
+	mutator       TransitionMutator
+	index         int
+	inputVariants map[*moduleGroup][]*moduleInfo
 }
 
 // Adds each argument in items to l if it's not already there.
@@ -366,6 +366,11 @@ func (c *Context) RegisterTransitionMutator(name string, mutator TransitionMutat
 	c.RegisterTopDownMutator(name+"_propagate", impl.topDownMutator)
 	bottomUpHandle := c.RegisterBottomUpMutator(name, impl.bottomUpMutator).setTransitionMutator(impl)
 	c.RegisterBottomUpMutator(name+"_mutate", impl.mutateMutator)
+
+	impl.index = len(c.transitionMutators)
+	c.transitionMutators = append(c.transitionMutators, impl)
+	c.transitionMutatorNames = append(c.transitionMutatorNames, name)
+
 	return &transitionMutatorHandle{inner: bottomUpHandle}
 }
 
