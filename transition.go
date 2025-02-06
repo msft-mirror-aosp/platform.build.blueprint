@@ -16,8 +16,8 @@ package blueprint
 
 import (
 	"fmt"
+	"maps"
 	"slices"
-	"sort"
 )
 
 // TransitionMutator implements a top-down mechanism where a module tells its
@@ -83,30 +83,46 @@ type TransitionMutator interface {
 	// the module knows its variations just based on information given to it in
 	// the Blueprint file. This method should not mutate the module it is called
 	// on.
-	Split(ctx BaseModuleContext) []string
+	Split(ctx BaseModuleContext) []TransitionInfo
 
 	// OutgoingTransition is called on a module to determine which variation it wants
 	// from its direct dependencies. The dependency itself can override this decision.
 	// This method should not mutate the module itself.
-	OutgoingTransition(ctx OutgoingTransitionContext, sourceVariation string) string
+	OutgoingTransition(ctx OutgoingTransitionContext, sourceTransitionInfo TransitionInfo) TransitionInfo
 
 	// IncomingTransition is called on a module to determine which variation it should
 	// be in based on the variation modules that depend on it want. This gives the module
 	// a final say about its own variations. This method should not mutate the module
 	// itself.
-	IncomingTransition(ctx IncomingTransitionContext, incomingVariation string) string
+	IncomingTransition(ctx IncomingTransitionContext, incomingTransitionInfo TransitionInfo) TransitionInfo
 
 	// Mutate is called after a module was split into multiple variations on each
 	// variation.  It should not split the module any further but adding new dependencies
 	// is fine. Unlike all the other methods on TransitionMutator, this method is
 	// allowed to mutate the module.
-	Mutate(ctx BottomUpMutatorContext, variation string)
+	Mutate(ctx BottomUpMutatorContext, transitionInfo TransitionInfo)
+
+	// TransitionInfoFromVariation is called when adding dependencies with an explicit variation after the
+	// TransitionMutator has already run.  It takes a variation name and returns a TransitionInfo for that
+	// variation.  It may not be possible for some TransitionMutators to generate an appropriate TransitionInfo
+	// if the variation does not contain all the information from the TransitionInfo, in which case the
+	// TransitionMutator can panic in TransitionInfoFromVariation, and adding dependencies with explicit variations
+	// for this TransitionMutator is not supported.
+	TransitionInfoFromVariation(string) TransitionInfo
 }
 
 type IncomingTransitionContext interface {
 	// Module returns the target of the dependency edge for which the transition
 	// is being computed
 	Module() Module
+
+	// ModuleName returns the name of the module.  This is generally the value that was returned by Module.Name() when
+	// the module was created, but may have been modified by calls to BottomUpMutatorContext.Rename.
+	ModuleName() string
+
+	// DepTag() Returns the dependency tag through which this dependency is
+	// reached
+	DepTag() DependencyTag
 
 	// Config returns the config object that was passed to
 	// Context.PrepareBuildActions.
@@ -138,6 +154,10 @@ type OutgoingTransitionContext interface {
 	// is being computed
 	Module() Module
 
+	// ModuleName returns the name of the module.  This is generally the value that was returned by Module.Name() when
+	// the module was created, but may have been modified by calls to BottomUpMutatorContext.Rename.
+	ModuleName() string
+
 	// DepTag() Returns the dependency tag through which this dependency is
 	// reached
 	DepTag() DependencyTag
@@ -161,11 +181,19 @@ type OutgoingTransitionContext interface {
 	PropertyErrorf(property, fmt string, args ...interface{})
 }
 
+type TransitionInfo interface {
+	// Variation returns a string that will be used as the variation name for modules that use this TransitionInfo
+	// as their configuration.  It must return a unique value for each valid TransitionInfo in order to avoid
+	// conflicts, and all identical TransitionInfos must return the same value.
+	Variation() string
+}
+
 type transitionMutatorImpl struct {
-	name                        string
-	mutator                     TransitionMutator
-	variantCreatingMutatorIndex int
-	inputVariants               map[*moduleGroup][]*moduleInfo
+	name          string
+	mutator       TransitionMutator
+	index         int
+	inputVariants map[*moduleGroup][]*moduleInfo
+	neverFar      bool
 }
 
 // Adds each argument in items to l if it's not already there.
@@ -179,9 +207,9 @@ func addToStringListIfNotPresent(l []string, items ...string) []string {
 	return l
 }
 
-func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation string) {
-	m.requiredVariationsLock.Lock()
-	defer m.requiredVariationsLock.Unlock()
+func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation string, transitionInfo TransitionInfo) {
+	m.incomingTransitionInfosLock.Lock()
+	defer m.incomingTransitionInfosLock.Unlock()
 
 	// This is only a consistency check. Leaking the variations of a transition
 	// mutator to another one could well lead to issues that are difficult to
@@ -191,7 +219,17 @@ func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation st
 	}
 
 	m.currentTransitionMutator = t.name
-	m.transitionVariations = addToStringListIfNotPresent(m.transitionVariations, variation)
+	if existing, exists := m.incomingTransitionInfos[variation]; exists {
+		if existing != transitionInfo {
+			panic(fmt.Errorf("TransitionInfo %#v and %#v are different but have same variation %q",
+				existing, transitionInfo, variation))
+		}
+	} else {
+		if m.incomingTransitionInfos == nil {
+			m.incomingTransitionInfos = make(map[string]TransitionInfo)
+		}
+		m.incomingTransitionInfos[variation] = transitionInfo
+	}
 }
 
 func (t *transitionMutatorImpl) topDownMutator(mctx TopDownMutatorContext) {
@@ -208,20 +246,38 @@ func (t *transitionMutatorImpl) topDownMutator(mctx TopDownMutatorContext) {
 	// Sort the module transitions, but keep the mutatorSplits in the order returned
 	// by Split, as the order can be significant when inter-variant dependencies are
 	// used.
-	sort.Strings(module.transitionVariations)
-	module.transitionVariations = addToStringListIfNotPresent(mutatorSplits, module.transitionVariations...)
+	transitionVariations := slices.Sorted(maps.Keys(module.incomingTransitionInfos))
+	transitionInfoMap := module.incomingTransitionInfos
+	module.incomingTransitionInfos = nil
 
-	outgoingTransitionCache := make([][]string, len(module.transitionVariations))
-	for srcVariationIndex, srcVariation := range module.transitionVariations {
+	splitsVariations := make([]string, 0, len(mutatorSplits))
+	for _, splitTransitionInfo := range mutatorSplits {
+		splitVariation := splitTransitionInfo.Variation()
+		splitsVariations = append(splitsVariations, splitVariation)
+		if transitionInfoMap == nil {
+			transitionInfoMap = make(map[string]TransitionInfo, len(mutatorSplits))
+		}
+		transitionInfoMap[splitVariation] = splitTransitionInfo
+	}
+
+	transitionVariations = addToStringListIfNotPresent(splitsVariations, transitionVariations...)
+
+	outgoingTransitionVariationCache := make([][]string, len(transitionVariations))
+	transitionInfos := make([]TransitionInfo, 0, len(transitionVariations))
+	for srcVariationIndex, srcVariation := range transitionVariations {
 		srcVariationTransitionCache := make([]string, len(module.directDeps))
 		for depIndex, dep := range module.directDeps {
-			finalVariation := t.transition(mctx)(mctx.moduleInfo(), srcVariation, dep.module, dep.tag)
-			srcVariationTransitionCache[depIndex] = finalVariation
-			t.addRequiredVariation(dep.module, finalVariation)
+			transitionInfo := t.transition(mctx)(mctx.moduleInfo(), transitionInfoMap[srcVariation], dep.module, dep.tag)
+			variation := transitionInfo.Variation()
+			srcVariationTransitionCache[depIndex] = variation
+			t.addRequiredVariation(dep.module, variation, transitionInfo)
 		}
-		outgoingTransitionCache[srcVariationIndex] = srcVariationTransitionCache
+		outgoingTransitionVariationCache[srcVariationIndex] = srcVariationTransitionCache
+		transitionInfos = append(transitionInfos, transitionInfoMap[srcVariation])
 	}
-	module.outgoingTransitionCache = outgoingTransitionCache
+	module.outgoingTransitionCache = outgoingTransitionVariationCache
+	module.splitTransitionVariations = transitionVariations
+	module.splitTransitionInfos = transitionInfos
 }
 
 type transitionContextImpl struct {
@@ -268,6 +324,10 @@ func (c *outgoingTransitionContextImpl) Module() Module {
 	return c.source.logicModule
 }
 
+func (c *outgoingTransitionContextImpl) ModuleName() string {
+	return c.source.group.name
+}
+
 func (c *outgoingTransitionContextImpl) Provider(provider AnyProviderKey) (any, bool) {
 	return c.context.provider(c.source, provider.provider())
 }
@@ -280,12 +340,16 @@ func (c *incomingTransitionContextImpl) Module() Module {
 	return c.dep.logicModule
 }
 
+func (c *incomingTransitionContextImpl) ModuleName() string {
+	return c.dep.group.name
+}
+
 func (c *incomingTransitionContextImpl) Provider(provider AnyProviderKey) (any, bool) {
 	return c.context.provider(c.dep, provider.provider())
 }
 
 func (t *transitionMutatorImpl) transition(mctx BaseModuleContext) Transition {
-	return func(source *moduleInfo, sourceVariation string, dep *moduleInfo, depTag DependencyTag) string {
+	return func(source *moduleInfo, sourceTransitionInfo TransitionInfo, dep *moduleInfo, depTag DependencyTag) TransitionInfo {
 		tc := transitionContextImpl{
 			context: mctx.base().context,
 			source:  source,
@@ -294,19 +358,19 @@ func (t *transitionMutatorImpl) transition(mctx BaseModuleContext) Transition {
 			config:  mctx.Config(),
 		}
 		outCtx := &outgoingTransitionContextImpl{tc}
-		outgoingVariation := t.mutator.OutgoingTransition(outCtx, sourceVariation)
+		outgoingTransitionInfo := t.mutator.OutgoingTransition(outCtx, sourceTransitionInfo)
 		for _, err := range outCtx.errs {
 			mctx.error(err)
 		}
 		if mctx.Failed() {
-			return outgoingVariation
+			return outgoingTransitionInfo
 		}
 		inCtx := &incomingTransitionContextImpl{tc}
-		finalVariation := t.mutator.IncomingTransition(inCtx, outgoingVariation)
+		finalTransitionInfo := t.mutator.IncomingTransition(inCtx, outgoingTransitionInfo)
 		for _, err := range inCtx.errs {
 			mctx.error(err)
 		}
-		return finalVariation
+		return finalTransitionInfo
 	}
 }
 
@@ -315,9 +379,11 @@ func (t *transitionMutatorImpl) bottomUpMutator(mctx BottomUpMutatorContext) {
 	// Fetch and clean up transition mutator state. No locking needed since the
 	// only time interaction between multiple modules is required is during the
 	// computation of the variations required by a given module.
-	variations := mc.module.transitionVariations
+	variations := mc.module.splitTransitionVariations
+	transitionInfos := mc.module.splitTransitionInfos
 	outgoingTransitionCache := mc.module.outgoingTransitionCache
-	mc.module.transitionVariations = nil
+	mc.module.splitTransitionInfos = nil
+	mc.module.splitTransitionVariations = nil
 	mc.module.outgoingTransitionCache = nil
 	mc.module.currentTransitionMutator = ""
 
@@ -330,15 +396,18 @@ func (t *transitionMutatorImpl) bottomUpMutator(mctx BottomUpMutatorContext) {
 		// Module is not split, just apply the transition
 		mc.context.convertDepsToVariation(mc.module, 0,
 			chooseDepByIndexes(mc.mutator.name, outgoingTransitionCache))
+		mc.context.setModuleTransitionInfo(mc.module, t, transitionInfos[0])
 	} else {
-		mc.createVariationsWithTransition(variations, outgoingTransitionCache)
+		modules := mc.createVariationsWithTransition(variations, outgoingTransitionCache)
+		for i, module := range modules {
+			mc.context.setModuleTransitionInfo(module, t, transitionInfos[i])
+		}
 	}
 }
 
 func (t *transitionMutatorImpl) mutateMutator(mctx BottomUpMutatorContext) {
 	module := mctx.(*mutatorContext).module
-	currentVariation := module.variant.variations.get(t.name)
-	t.mutator.Mutate(mctx, currentVariation)
+	t.mutator.Mutate(mctx, module.transitionInfos[t.index])
 }
 
 type TransitionMutatorHandle interface {
@@ -351,12 +420,13 @@ type TransitionMutatorHandle interface {
 
 type transitionMutatorHandle struct {
 	inner MutatorHandle
+	impl  *transitionMutatorImpl
 }
 
 var _ TransitionMutatorHandle = (*transitionMutatorHandle)(nil)
 
 func (h *transitionMutatorHandle) NeverFar() TransitionMutatorHandle {
-	h.inner.setNeverFar()
+	h.impl.neverFar = true
 	return h
 }
 
@@ -366,10 +436,15 @@ func (c *Context) RegisterTransitionMutator(name string, mutator TransitionMutat
 	c.RegisterTopDownMutator(name+"_propagate", impl.topDownMutator)
 	bottomUpHandle := c.RegisterBottomUpMutator(name, impl.bottomUpMutator).setTransitionMutator(impl)
 	c.RegisterBottomUpMutator(name+"_mutate", impl.mutateMutator)
-	return &transitionMutatorHandle{inner: bottomUpHandle}
+
+	impl.index = len(c.transitionMutators)
+	c.transitionMutators = append(c.transitionMutators, impl)
+	c.transitionMutatorNames = append(c.transitionMutatorNames, name)
+
+	return &transitionMutatorHandle{inner: bottomUpHandle, impl: impl}
 }
 
 // This function is called for every dependency edge to determine which
 // variation of the dependency is needed. Its inputs are the depending module,
 // its variation, the dependency and the dependency tag.
-type Transition func(source *moduleInfo, sourceVariation string, dep *moduleInfo, depTag DependencyTag) string
+type Transition func(source *moduleInfo, sourceTransitionInfo TransitionInfo, dep *moduleInfo, depTag DependencyTag) TransitionInfo
