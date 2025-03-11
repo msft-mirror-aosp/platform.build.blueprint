@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+
+	"github.com/google/blueprint/pool"
 )
 
 // TransitionMutator implements a top-down mechanism where a module tells its
@@ -232,7 +234,7 @@ func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation st
 	}
 }
 
-func (t *transitionMutatorImpl) topDownMutator(mctx TopDownMutatorContext) {
+func (t *transitionMutatorImpl) propagateMutator(mctx BaseModuleContext) {
 	module := mctx.(*mutatorContext).module
 	mutatorSplits := t.mutator.Split(mctx)
 	if mutatorSplits == nil || len(mutatorSplits) == 0 {
@@ -279,6 +281,11 @@ func (t *transitionMutatorImpl) topDownMutator(mctx TopDownMutatorContext) {
 	module.splitTransitionVariations = transitionVariations
 	module.splitTransitionInfos = transitionInfos
 }
+
+var (
+	outgoingTransitionContextPool = pool.New[outgoingTransitionContextImpl]()
+	incomingTransitionContextPool = pool.New[incomingTransitionContextImpl]()
+)
 
 type transitionContextImpl struct {
 	context     *Context
@@ -357,19 +364,25 @@ func (t *transitionMutatorImpl) transition(mctx BaseModuleContext) Transition {
 			depTag:  depTag,
 			config:  mctx.Config(),
 		}
-		outCtx := &outgoingTransitionContextImpl{tc}
+		outCtx := outgoingTransitionContextPool.Get()
+		*outCtx = outgoingTransitionContextImpl{tc}
 		outgoingTransitionInfo := t.mutator.OutgoingTransition(outCtx, sourceTransitionInfo)
 		for _, err := range outCtx.errs {
 			mctx.error(err)
 		}
+		outgoingTransitionContextPool.Put(outCtx)
+		outCtx = nil
 		if mctx.Failed() {
 			return outgoingTransitionInfo
 		}
-		inCtx := &incomingTransitionContextImpl{tc}
+		inCtx := incomingTransitionContextPool.Get()
+		*inCtx = incomingTransitionContextImpl{tc}
 		finalTransitionInfo := t.mutator.IncomingTransition(inCtx, outgoingTransitionInfo)
 		for _, err := range inCtx.errs {
 			mctx.error(err)
 		}
+		incomingTransitionContextPool.Put(inCtx)
+		inCtx = nil
 		return finalTransitionInfo
 	}
 }
@@ -433,7 +446,7 @@ func (h *transitionMutatorHandle) NeverFar() TransitionMutatorHandle {
 func (c *Context) RegisterTransitionMutator(name string, mutator TransitionMutator) TransitionMutatorHandle {
 	impl := &transitionMutatorImpl{name: name, mutator: mutator}
 
-	c.RegisterTopDownMutator(name+"_propagate", impl.topDownMutator)
+	c.registerTransitionPropagateMutator(name+"_propagate", impl.propagateMutator)
 	bottomUpHandle := c.RegisterBottomUpMutator(name, impl.bottomUpMutator).setTransitionMutator(impl)
 	c.RegisterBottomUpMutator(name+"_mutate", impl.mutateMutator)
 
