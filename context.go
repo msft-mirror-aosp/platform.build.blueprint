@@ -372,8 +372,9 @@ type moduleInfo struct {
 	// requested by reverse dependencies.  It is updated by reverse dependencies and protected by
 	// incomingTransitionInfosLock.  It is invalid after the TransitionMutator top down mutator has run on
 	// this module.
-	incomingTransitionInfos     map[string]TransitionInfo
-	incomingTransitionInfosLock sync.Mutex
+	incomingTransitionInfos      map[string]TransitionInfo
+	incomingTransitionInfoHashes map[string]uint64
+	incomingTransitionInfosLock  sync.Mutex
 	// splitTransitionInfos and splitTransitionVariations stores the list of TransitionInfo objects, and their
 	// corresponding variations, returned by Split or requested by reverse dependencies.  They are valid after the
 	// TransitionMutator top down mutator has run on this module, and invalid after the bottom up mutator has run.
