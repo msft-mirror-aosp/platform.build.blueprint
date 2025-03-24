@@ -182,6 +182,7 @@ type Context struct {
 	buildActionsToCacheLock sync.Mutex
 	orderOnlyStringsCache   OrderOnlyStringsCache
 	orderOnlyStrings        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
+	incrementalDebugFile    string
 }
 
 type orderOnlyStringsInfo struct {
@@ -405,9 +406,10 @@ type moduleInfo struct {
 }
 
 type incrementalInfo struct {
-	incrementalRestored bool
-	buildActionCacheKey *BuildActionCacheKey
-	orderOnlyStrings    []string
+	incrementalRestored  bool
+	buildActionCacheKey  *BuildActionCacheKey
+	orderOnlyStrings     []string
+	incrementalDebugInfo []byte
 }
 
 type variant struct {
@@ -742,6 +744,10 @@ func (c *Context) SetIncrementalEnabled(incremental bool) {
 
 func (c *Context) GetIncrementalEnabled() bool {
 	return c.incrementalEnabled
+}
+
+func (c *Context) SetIncrementalDebugFile(file string) {
+	c.incrementalDebugFile = file
 }
 
 func (c *Context) updateBuildActionsCache(key *BuildActionCacheKey, data *BuildActionCachedData) {
@@ -3570,6 +3576,33 @@ func (c *Context) generateModuleBuildActions(config interface{},
 	return deps, errs
 }
 
+func (c *Context) WriteIncrementalDebugInfo(filename string, modules []*moduleInfo) {
+	f, err := os.Create(filename)
+	if err != nil {
+		// We expect this to be writable
+		panic(fmt.Sprintf("couldn't create incremental module debug file %s: %s", filename, err))
+	}
+	defer f.Close()
+
+	needComma := false
+	f.WriteString("{\n\"modules\": [\n")
+
+	for _, module := range modules {
+		if module.incrementalDebugInfo == nil {
+			continue
+		}
+		if needComma {
+			f.WriteString(",\n")
+		} else {
+			needComma = true
+		}
+
+		f.Write(module.incrementalDebugInfo)
+	}
+
+	f.WriteString("\n]\n}")
+}
+
 func (c *Context) generateOneSingletonBuildActions(config interface{},
 	info *singletonInfo, liveGlobals *liveTracker) ([]string, []error) {
 
@@ -4839,6 +4872,10 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			close(errorCh)
 		}()
 
+		if c.incrementalDebugFile != "" {
+			c.WriteIncrementalDebugInfo(c.incrementalDebugFile, incModules)
+		}
+
 		var errors []error
 		for newErrors := range errorCh {
 			errors = append(errors, newErrors)
@@ -5281,21 +5318,24 @@ func debugValue(value reflect.Value) interface{} {
 		value = value.Elem()
 	}
 
-	// Skip private fields, maybe other weird corner cases of go's bizarre type system.
-	if !value.CanInterface() {
-		return nil
-	}
-
 	switch kind := value.Kind(); kind {
-	case reflect.Bool, reflect.String, reflect.Int, reflect.Uint:
-		return value.Interface()
+	case reflect.Bool:
+		return value.Bool()
+	case reflect.String:
+		return value.String()
+	case reflect.Int:
+		return value.Int()
+	case reflect.Uint:
+		return value.Uint()
 	case reflect.Slice:
 		return debugSlice(value)
 	case reflect.Struct:
 		// If we originally received an interface, and there is a String() method, call that.
 		// TODO: figure out why Path doesn't work correctly otherwise (in aconfigPropagatingDeclarationsInfo)
-		if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
-			return s.String()
+		if value.CanInterface() {
+			if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
+				return s.String()
+			}
 		}
 		return debugStruct(value)
 	case reflect.Map:

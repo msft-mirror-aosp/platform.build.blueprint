@@ -15,6 +15,7 @@
 package blueprint
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -718,11 +719,15 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		}
 		cacheInput := new(BuildActionCacheInput)
 		cacheInput.PropertiesHash = hash
+		var deps []Module
 		m.VisitDirectDeps(func(module Module) {
 			cacheInput.ProvidersHash =
 				append(cacheInput.ProvidersHash, m.context.moduleInfo[module].providerInitialValueHashes)
+			if m.context.incrementalDebugFile != "" {
+				deps = append(deps, module)
+			}
 		})
-		hash, err = proptools.CalculateHash(&cacheInput)
+		hash, err = proptools.CalculateHash(cacheInput)
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
 		}
@@ -731,6 +736,9 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 			InputHash: hash,
 		}
 		m.module.buildActionCacheKey = cacheKey
+		if m.context.incrementalDebugFile != "" {
+			m.module.incrementalDebugInfo = incrementalDebugData(m, deps, cacheInput)
+		}
 	}
 
 	restored := false
@@ -777,6 +785,52 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 	}
 
 	return restored
+}
+
+type depProviders struct {
+	Name      string   `json:"dep_name"`
+	Type      string   `json:"dep_type"`
+	Variant   string   `json:"dep_variant"`
+	Providers []string `json:"dep_provider_hash"`
+}
+
+func incrementalDebugData(m *moduleContext, deps []Module, inputHash *BuildActionCacheInput) []byte {
+	info := struct {
+		Name      string         `json:"name"`
+		CacheKey  string         `json:"cache_key"`
+		Type      string         `json:"type"`
+		Variant   string         `json:"variant"`
+		PropHash  uint64         `json:"properties_hash"`
+		Providers []depProviders `json:"providers"`
+	}{
+		Name:     m.module.logicModule.Name(),
+		CacheKey: m.ModuleCacheKey(),
+		Type:     m.module.typeName,
+		Variant:  m.module.variant.name,
+		PropHash: inputHash.PropertiesHash,
+		Providers: func() []depProviders {
+			result := make([]depProviders, 0, len(deps))
+			for _, d := range deps {
+				dep := m.context.moduleInfo[d]
+				dp := depProviders{
+					Name:    dep.Name(),
+					Type:    dep.typeName,
+					Variant: dep.variant.name,
+				}
+				for _, p := range providerRegistry {
+					if dep.providerInitialValueHashes[p.id] == 0 {
+						continue
+					}
+					dp.Providers = append(dp.Providers,
+						fmt.Sprintf("%s:%x", p.typ, dep.providerInitialValueHashes[p.id]))
+				}
+				result = append(result, dp)
+			}
+			return result
+		}(),
+	}
+	buf, _ := json.Marshal(info)
+	return buf
 }
 
 func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) Module {
