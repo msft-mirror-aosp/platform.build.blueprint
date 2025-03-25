@@ -26,6 +26,7 @@ import (
 	"github.com/google/blueprint/parser"
 	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
+	"github.com/google/blueprint/uniquelist"
 )
 
 // A Module handles generating all of the Ninja build actions needed to build a
@@ -695,31 +696,7 @@ func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface
 	m.context.setProvider(m.module, provider.provider(), value)
 }
 
-func (m *moduleContext) cacheModuleBuildActions(key *BuildActionCacheKey) {
-	var providers []CachedProvider
-	for i, p := range m.module.providers {
-		if p != nil && providerRegistry[i].mutator == "" {
-			providers = append(providers,
-				CachedProvider{
-					Id:    providerRegistry[i],
-					Value: &p,
-				})
-		}
-	}
-
-	// These show up in the ninja file, so we need to cache these to ensure we
-	// re-generate ninja file if they changed.
-	relPos := m.module.pos
-	relPos.Filename = m.module.relBlueprintsFile
-	data := BuildActionCachedData{
-		Providers: providers,
-		Pos:       &relPos,
-	}
-
-	m.context.updateBuildActionsCache(key, &data)
-}
-
-func (m *moduleContext) restoreModuleBuildActions() (bool, *BuildActionCacheKey) {
+func (m *moduleContext) restoreModuleBuildActions() bool {
 	// Whether the incremental flag is set and the module type supports
 	// incremental, this will decide weather to cache the data for the module.
 	incrementalEnabled := false
@@ -769,10 +746,37 @@ func (m *moduleContext) restoreModuleBuildActions() (bool, *BuildActionCacheKey)
 			m.module.incrementalRestored = true
 			m.module.orderOnlyStrings = data.OrderOnlyStrings
 			restored = true
+			for _, str := range data.OrderOnlyStrings {
+				if !strings.HasPrefix(str, "dedup-") {
+					continue
+				}
+				orderOnlyStrings, ok := m.context.orderOnlyStringsCache[str]
+				if !ok {
+					panic(fmt.Errorf("no cached value found for order only dep: %s", str))
+				}
+				key := uniquelist.Make(orderOnlyStrings)
+				if info, loaded := m.context.orderOnlyStrings.LoadOrStore(key, &orderOnlyStringsInfo{
+					dedup:       true,
+					incremental: true,
+				}); loaded {
+					for {
+						cpy := *info
+						cpy.dedup = true
+						cpy.incremental = true
+						if m.context.orderOnlyStrings.CompareAndSwap(key, info, &cpy) {
+							break
+						}
+						if info, loaded = m.context.orderOnlyStrings.Load(key); !loaded {
+							// This shouldn't happen
+							panic("order only string was removed unexpectedly")
+						}
+					}
+				}
+			}
 		}
 	}
 
-	return restored, cacheKey
+	return restored
 }
 
 func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) Module {
@@ -1006,6 +1010,25 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 	}
 
 	m.actionDefs.buildDefs = append(m.actionDefs.buildDefs, def)
+	if def.OrderOnlyStrings.Len() > 0 {
+		if info, loaded := m.context.orderOnlyStrings.LoadOrStore(def.OrderOnlyStrings, &orderOnlyStringsInfo{
+			dedup:       false,
+			incremental: m.module.buildActionCacheKey != nil,
+		}); loaded {
+			for {
+				cpy := *info
+				cpy.dedup = true
+				cpy.incremental = cpy.incremental || m.module.buildActionCacheKey != nil
+				if m.context.orderOnlyStrings.CompareAndSwap(def.OrderOnlyStrings, info, &cpy) {
+					break
+				}
+				if info, loaded = m.context.orderOnlyStrings.Load(def.OrderOnlyStrings); !loaded {
+					// This shouldn't happen
+					panic("order only string was removed unexpectedly")
+				}
+			}
+		}
+	}
 }
 
 func (m *moduleContext) GetMissingDependencies() []string {
@@ -1172,8 +1195,8 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 	return depInfos
 }
 
-func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTag, destName string) {
-	if !mctx.mutator.usesReverseDependencies {
+func (m *mutatorContext) AddReverseDependency(module Module, tag DependencyTag, name string) {
+	if !m.mutator.usesReverseDependencies {
 		panic(fmt.Errorf("method AddReverseDependency called from mutator that was not marked UsesReverseDependencies"))
 	}
 
@@ -1181,24 +1204,13 @@ func (mctx *mutatorContext) AddReverseDependency(module Module, tag DependencyTa
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
 
-	destModule, errs := mctx.context.findReverseDependency(mctx.context.moduleInfo[module], mctx.config, nil, destName)
-	if len(errs) > 0 {
-		mctx.errs = append(mctx.errs, errs...)
-		return
+	if module != m.module.logicModule {
+		panic(fmt.Errorf("AddReverseDependency called with module that is not the current module"))
 	}
-
-	if destModule == nil {
-		// allowMissingDependencies is true and the module wasn't found
-		return
-	}
-
-	mctx.reverseDeps = append(mctx.reverseDeps, reverseDep{
-		destModule,
-		depInfo{mctx.context.moduleInfo[module], tag},
-	})
+	m.AddReverseVariationDependency(nil, tag, name)
 }
 
-func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation, tag DependencyTag, destName string) {
+func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation, tag DependencyTag, name string) {
 	if !mctx.mutator.usesReverseDependencies {
 		panic(fmt.Errorf("method AddReverseVariationDependency called from mutator that was not marked UsesReverseDependencies"))
 	}
@@ -1207,19 +1219,40 @@ func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation
 		panic("BaseDependencyTag is not allowed to be used directly!")
 	}
 
-	destModule, errs := mctx.context.findReverseDependency(mctx.module, mctx.config, variations, destName)
-	if len(errs) > 0 {
+	possibleDeps := mctx.context.moduleGroupFromName(name, mctx.module.namespace())
+	if possibleDeps == nil {
+		mctx.errs = append(mctx.errs, &BlueprintError{
+			Err: fmt.Errorf("%q has a reverse dependency on undefined module %q",
+				mctx.module.Name(), name),
+			Pos: mctx.module.pos,
+		})
+		return
+	}
+
+	found, newVariant, errs := mctx.context.findVariant(mctx.module, mctx.config, possibleDeps, variations, false, true)
+	if errs != nil {
 		mctx.errs = append(mctx.errs, errs...)
 		return
 	}
 
-	if destModule == nil {
-		// allowMissingDependencies is true and the module wasn't found
+	if found == nil {
+		if mctx.context.allowMissingDependencies {
+			// Allow missing variants.
+			mctx.errs = append(mctx.errs, mctx.context.discoveredMissingDependencies(mctx.module, name, newVariant)...)
+		} else {
+			mctx.errs = append(mctx.errs, &BlueprintError{
+				Err: fmt.Errorf("reverse dependency %q of %q missing variant:\n  %s\navailable variants:\n  %s",
+					name, mctx.module.Name(),
+					mctx.context.prettyPrintVariant(newVariant),
+					mctx.context.prettyPrintGroupVariants(possibleDeps)),
+				Pos: mctx.module.pos,
+			})
+		}
 		return
 	}
 
 	mctx.reverseDeps = append(mctx.reverseDeps, reverseDep{
-		destModule,
+		found,
 		depInfo{mctx.module, tag},
 	})
 }
@@ -1274,11 +1307,11 @@ func (mctx *mutatorContext) ReplaceDependenciesIf(name string, predicate Replace
 	targets := mctx.context.moduleVariantsThatDependOn(name, mctx.module)
 
 	if len(targets) == 0 {
-		panic(fmt.Errorf("ReplaceDependencies could not find identical variant {%s} for module %s\n"+
-			"available variants:\n  %s",
-			mctx.context.prettyPrintVariant(mctx.module.variant.variations),
+		panic(fmt.Errorf("ReplaceDependenciesIf could not find variant of %s that depends on %s variant %s",
 			name,
-			mctx.context.prettyPrintGroupVariants(mctx.context.moduleGroupFromName(name, mctx.module.namespace()))))
+			mctx.module.group.name,
+			mctx.context.prettyPrintVariant(mctx.module.variant.variations),
+		))
 	}
 
 	for _, target := range targets {
