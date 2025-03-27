@@ -785,10 +785,17 @@ func Test_parallelVisit(t *testing.T) {
 	moduleF := create("F")
 	moduleG := create("G")
 
+	moduleH := create("H")
+	moduleI := create("I")
+	moduleJ := create("J")
+
 	// A depends on B, B depends on C.  Nothing depends on D through G, and they don't depend on
-	// anything.
+	// anything. H depends on I, and I and J depend on each other.
 	addDep(moduleA, moduleB)
 	addDep(moduleB, moduleC)
+	addDep(moduleH, moduleI)
+	addDep(moduleI, moduleJ)
+	addDep(moduleJ, moduleI)
 
 	t.Run("no modules", func(t *testing.T) {
 		errs := parallelVisit(slices.Values([]*moduleInfo(nil)), bottomUpVisitorImpl{}, 1,
@@ -977,6 +984,29 @@ func Test_parallelVisit(t *testing.T) {
 			`encountered dependency cycle`,
 			`module "G" depends on module "F"`,
 			`module "F" depends on module "G"`,
+		}
+		for i := range want {
+			if len(errs) <= i {
+				t.Errorf("missing error %s", want[i])
+			} else if !strings.Contains(errs[i].Error(), want[i]) {
+				t.Errorf("expected error %s, got %s", want[i], errs[i])
+			}
+		}
+		if len(errs) > len(want) {
+			for _, err := range errs[len(want):] {
+				t.Errorf("unexpected error %s", err.Error())
+			}
+		}
+	})
+	t.Run("existing cycle", func(t *testing.T) {
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleH, moduleI, moduleJ}), bottomUpVisitorImpl{}, 3,
+			func(module *moduleInfo, pause pauseFunc) bool {
+				return false
+			})
+		want := []string{
+			`encountered dependency cycle`,
+			`module "J" depends on module "I"`,
+			`module "I" depends on module "J"`,
 		}
 		for i := range want {
 			if len(errs) <= i {

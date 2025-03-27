@@ -2644,69 +2644,87 @@ func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit i
 			panic(fmt.Errorf("parallelVisit finished with %d queued unpaused visitors", len(unpauseQueue)))
 		}
 
-		if len(pauseMap) > 0 {
-			// Probably a deadlock due to a newly added dependency cycle. Start from each module in
-			// the order of the input modules list and perform a depth-first search for the module
-			// it is paused on, ignoring modules that are marked as done.  Note this traverses from
-			// modules to the modules that would have been unblocked when that module finished, i.e
-			// the reverse of the visitOrderer.
+		if visited != toVisit || len(pauseMap) > 0 {
+			// Probably a deadlock due to a dependency cycle. Start from each module in the order
+			// of the input modules list and perform a depth-first search for any module that is
+			// in the walk path twice.  Note this traverses from modules to the modules that would
+			// have been unblocked when that module finished, i.e. the reverse of the visitOrderer.
+			// This search takes into account both the pre-existing dependencies and any newly
+			// added dependencies that are still in the pauseMap.
 
 			// In order to reduce duplicated work, once a module has been checked and determined
 			// not to be part of a cycle add it and everything that depends on it to the checked
 			// map.
-			checked := make(map[*moduleInfo]struct{})
+			checked := make(map[*moduleInfo]bool, toVisit) // modules that were already checked
+			checking := make(map[*moduleInfo]bool)         // modules actively being checked
 
-			var check func(module, end *moduleInfo) []*moduleInfo
-			check = func(module, end *moduleInfo) []*moduleInfo {
-				if module.waitingCount.Load() == -1 {
-					// This module was finished, it can't be part of a loop.
-					return nil
-				}
-				if module == end {
-					// This module is the end of the loop, start rolling up the cycle.
+			var errs []error
+			var check func(group *moduleInfo) []*moduleInfo
+
+			check = func(module *moduleInfo) []*moduleInfo {
+				if checking[module] {
+					// This is a cycle.
 					return []*moduleInfo{module}
 				}
-
-				if _, alreadyChecked := checked[module]; alreadyChecked {
+				if checked[module] {
 					return nil
 				}
 
+				checked[module] = true
+				checking[module] = true
+				defer delete(checking, module)
+
+				var cycle []*moduleInfo
 				for _, dep := range order.propagate(module) {
-					cycle := check(dep, end)
+					cycle = check(dep)
 					if cycle != nil {
-						return append([]*moduleInfo{module}, cycle...)
+						break
 					}
 				}
-				for _, depPauseSpec := range pauseMap[module] {
-					cycle := check(depPauseSpec.paused, end)
+				for _, pauseSpec := range pauseMap[module] {
+					cycle = check(pauseSpec.paused)
 					if cycle != nil {
-						return append([]*moduleInfo{module}, cycle...)
+						break
 					}
 				}
 
-				checked[module] = struct{}{}
+				if cycle != nil {
+					if cycle[0] == module {
+						// We are the "start" of the cycle, so we're responsible
+						// for generating the errors.
+						slices.Reverse(cycle)
+						errs = append(errs, cycleError(cycle)...)
+
+						// We can continue processing this module's children to
+						// find more cycles.  Since all the modules that were
+						// part of the found cycle were marked as visited we
+						// won't run into that cycle again.
+					} else {
+						// We're not the "start" of the cycle, so we just append
+						// our module to the list and return it.
+						return append(cycle, module)
+					}
+				}
+
 				return nil
 			}
 
-			// Iterate over the modules list instead of pauseMap to provide deterministic ordering.
 			for module := range moduleIter {
-				for _, pauseSpec := range pauseMap[module] {
-					cycle := check(pauseSpec.paused, pauseSpec.until)
-					if len(cycle) > 0 {
-						// A cyclic dependency was detected.
-						return cycleError(cycle)
-					}
-				}
+				check(module)
+			}
+
+			if len(errs) > 0 {
+				return errs
 			}
 		}
 
-		// Invariant check: if there was no deadlock and no cancellation every module
+		// Invariant check: if there was no dependency cycle and no cancellation every module
 		// should have been visited, so there is nothing left to be paused on.
 		if len(pauseMap) > 0 {
 			panic(fmt.Errorf("parallelVisit finished with %d paused visitors", len(pauseMap)))
 		}
 
-		// Invariant check: if there was no deadlock and no cancellation every module
+		// Invariant check: if there was no dependency cycle and no cancellation every module
 		// should have been visited.
 		if visited != toVisit {
 			panic(fmt.Errorf("parallelVisit ran %d visitors, expected %d", visited, toVisit))
@@ -2747,20 +2765,14 @@ func cycleError(cycle []*moduleInfo) (errs []error) {
 // as well as after any mutator pass has called addDependency
 func (c *Context) updateDependencies() (errs []error) {
 	c.cachedDepsModified = true
-	visited := make(map[*moduleInfo]bool, len(c.moduleInfo)) // modules that were already checked
-	checking := make(map[*moduleInfo]bool)                   // modules actively being checked
 
-	var check func(group *moduleInfo) []*moduleInfo
-
-	check = func(module *moduleInfo) []*moduleInfo {
-		visited[module] = true
-		checking[module] = true
-		defer delete(checking, module)
-
+	for _, module := range c.moduleInfo {
 		// Reset the forward and reverse deps without reducing their capacity to avoid reallocation.
 		module.reverseDeps = module.reverseDeps[:0]
 		module.forwardDeps = module.forwardDeps[:0]
+	}
 
+	for _, module := range c.moduleInfo {
 		// Add an implicit dependency ordering on all earlier modules in the same module group
 		selfIndex := slices.Index(module.group.modules, module)
 		module.forwardDeps = slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
@@ -2771,46 +2783,7 @@ func (c *Context) updateDependencies() (errs []error) {
 		}
 
 		for _, dep := range module.forwardDeps {
-			if checking[dep] {
-				// This is a cycle.
-				return []*moduleInfo{dep, module}
-			}
-
-			if !visited[dep] {
-				cycle := check(dep)
-				if cycle != nil {
-					if cycle[0] == module {
-						// We are the "start" of the cycle, so we're responsible
-						// for generating the errors.
-						errs = append(errs, cycleError(cycle)...)
-
-						// We can continue processing this module's children to
-						// find more cycles.  Since all the modules that were
-						// part of the found cycle were marked as visited we
-						// won't run into that cycle again.
-					} else {
-						// We're not the "start" of the cycle, so we just append
-						// our module to the list and return it.
-						return append(cycle, module)
-					}
-				}
-			}
-
 			dep.reverseDeps = append(dep.reverseDeps, module)
-		}
-
-		return nil
-	}
-
-	for _, module := range c.moduleInfo {
-		if !visited[module] {
-			cycle := check(module)
-			if cycle != nil {
-				if cycle[len(cycle)-1] != module {
-					panic("inconceivable!")
-				}
-				errs = append(errs, cycleError(cycle)...)
-			}
 		}
 	}
 
