@@ -2293,9 +2293,18 @@ type parallelVisitWorker struct {
 	remaining []*moduleInfo
 	// current is the module that is currently running the visit method.
 	current *moduleInfo
+	// unblocked is the slice of modules that are now runnable after visit returned on a module
+	// in this batch.
+	// TODO: can these modules just be handled in this worker?  Use some heuristic to decide
+	//  whether to handle them or send them back to the orchestrator?
+	unblocked []*moduleInfo
 
 	// visit is the method that is called on each module.
 	visit func(module *moduleInfo, pause pauseFunc) bool
+
+	// order is the interface that describes which modules will be ready next once the current module
+	// has had visit called on it.
+	order visitOrderer
 
 	// queueCh is the input channel that provides batches of modules to call visit on.  It is closed
 	// when there is no more work to do.
@@ -2317,11 +2326,16 @@ type pauseSpec struct {
 type parallelVisitWorkerResponse struct {
 	// done is the slice of modules that have had the visit method called on.
 	done []*moduleInfo
+
 	// returned is the slice of modules that the worker did not call the visit method on,
 	// either because the visit method returned an error, or because the visit method called
 	// the pause function, which may be waiting (directly or transitively) on a module that
 	// is later in the batch.
 	returned []*moduleInfo
+
+	// unblocked is the slice of modules that became ready (i.e. waitingCount is now zero)
+	// after the modules that the worker ran finished.
+	unblocked []*moduleInfo
 
 	// error is set when a visit method returned an error, signalling that parallelVisit should
 	// abort.
@@ -2351,6 +2365,7 @@ func (worker *parallelVisitWorker) run() {
 func (worker *parallelVisitWorker) runQueue(queue []*moduleInfo) bool {
 	worker.queue = queue
 	worker.done = nil
+	worker.unblocked = nil
 	// Use a loop on worker.currentQueueIndex so that the pause method can update it when it sends
 	// the done and remaining modules back to the orchestrator.
 	for worker.currentQueueIndex = 0; worker.currentQueueIndex < len(worker.queue); worker.currentQueueIndex++ {
@@ -2362,17 +2377,28 @@ func (worker *parallelVisitWorker) runQueue(queue []*moduleInfo) bool {
 			// An error occurred.  Send the completed and uncompleted modules back to the orchestrator with
 			// the error flag set.
 			worker.responseCh <- parallelVisitWorkerResponse{
-				done:     worker.done,
-				error:    true,
-				returned: worker.remaining,
+				done:      worker.done,
+				error:     true,
+				returned:  worker.remaining,
+				unblocked: worker.unblocked,
 			}
 			return true
+		}
+
+		// Decrement waitingCount on the next modules in the tree based
+		// on propagation order, and add them to the queue if they are
+		// ready to start.
+		for _, module := range worker.order.propagate(worker.current) {
+			if module.waitingCount.Add(-1) == 0 {
+				worker.unblocked = append(worker.unblocked, module)
+			}
 		}
 	}
 
 	// The batch is complete.  Send the completed modules back to the orchestrator.
 	worker.responseCh <- parallelVisitWorkerResponse{
-		done: worker.done,
+		done:      worker.done,
+		unblocked: worker.unblocked,
 	}
 	worker.queue = nil
 	return false
@@ -2392,8 +2418,9 @@ func (worker *parallelVisitWorker) pause(until *moduleInfo) {
 	// returned to the orchestrator in case the pause is waiting (directly or transitively) for one of
 	// the uncompleted modules.
 	worker.responseCh <- parallelVisitWorkerResponse{
-		done:     worker.done,
-		returned: worker.remaining,
+		done:      worker.done,
+		returned:  worker.remaining,
+		unblocked: worker.unblocked,
 		pause: pauseSpec{
 			paused:  worker.current,
 			until:   until,
@@ -2406,6 +2433,7 @@ func (worker *parallelVisitWorker) pause(until *moduleInfo) {
 	worker.queue = []*moduleInfo{worker.current}
 	worker.currentQueueIndex = 0
 	worker.remaining = nil
+	worker.unblocked = nil
 
 	// Wait for the orchestrator to close the unpause channel to signal that the requested module has
 	// finished.
@@ -2462,6 +2490,7 @@ func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit i
 	newWorker := func() {
 		worker := &parallelVisitWorker{
 			visit:      visit,
+			order:      order,
 			queueCh:    queueCh,
 			responseCh: responseCh,
 		}
@@ -2482,6 +2511,7 @@ func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit i
 			queuedModules++
 		}
 	}
+	queue = slices.Grow(queue, toVisit-len(queue))
 
 	// queueWork is called to send work to any available workers, including spawning new workers if there is work
 	// to do and the number of active workers is below the limit.
@@ -2558,16 +2588,12 @@ func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit i
 				queuedModules += len(unpauses)
 				unpauseQueue = append(unpauseQueue, unpauses...)
 			}
+		}
 
-			// Decrement waitingCount on the next modules in the tree based
-			// on propagation order, and add them to the queue if they are
-			// ready to start.
-			for _, module := range order.propagate(doneModule) {
-				if module.waitingCount.Add(-1) == 0 {
-					queuedModules++
-					queue = append(queue, module)
-				}
-			}
+		if len(response.unblocked) > 0 {
+			// Add any modules that were made ready to the queue.
+			queuedModules += len(response.unblocked)
+			queue = append(queue, response.unblocked...)
 		}
 
 		// Re-queue any returned modules.
