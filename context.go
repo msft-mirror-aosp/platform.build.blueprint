@@ -3320,45 +3320,45 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	var transitionMutatorInputVariants map[*moduleGroup][]*moduleInfo
 	if transitionMutator != nil {
 		transitionMutatorInputVariants = make(map[*moduleGroup][]*moduleInfo)
-	}
 
-	for _, group := range c.moduleGroups {
-		for i := 0; i < len(group.modules); i++ {
-			module := group.modules[i]
+		for _, group := range c.moduleGroups {
+			for i := 0; i < len(group.modules); i++ {
+				module := group.modules[i]
 
-			// Update module group to contain newly split variants
-			if module.splitModules != nil {
-				if transitionMutator != nil {
-					// For transition mutators, save the pre-split variant for reusing later in applyTransitions.
+				// Update module group to contain newly split variants
+				if module.splitModules != nil {
+					// Save the pre-split variant for reusing later in applyTransitions.
 					transitionMutatorInputVariants[group] = append(transitionMutatorInputVariants[group], module)
+					group.modules, i = spliceModules(group.modules, i, module.splitModules)
 				}
-				group.modules, i = spliceModules(group.modules, i, module.splitModules)
-			}
 
-			// Fix up any remaining dependencies on modules that were split into variants
-			// by replacing them with the first variant
-			for j, dep := range module.directDeps {
-				if dep.module.obsoletedByNewVariants {
-					module.directDeps[j].module = dep.module.splitModules.firstModule()
+				// Fix up any remaining dependencies on modules that were split into variants
+				// by replacing them with the first variant
+				for j, dep := range module.directDeps {
+					if dep.module.obsoletedByNewVariants {
+						module.directDeps[j].module = dep.module.splitModules.firstModule()
+					}
+				}
+
+				if module.createdBy != nil && module.createdBy.obsoletedByNewVariants {
+					module.createdBy = module.createdBy.splitModules.firstModule()
 				}
 			}
-
-			if module.createdBy != nil && module.createdBy.obsoletedByNewVariants {
-				module.createdBy = module.createdBy.splitModules.firstModule()
-			}
-
-			// Add any new forward dependencies to the reverse dependencies of the dependency to avoid
-			// having to call a full c.updateDependencies().
-			for _, m := range module.newDirectDeps {
-				m.reverseDeps = append(m.reverseDeps, module)
-			}
-			module.newDirectDeps = nil
 		}
-	}
 
-	if transitionMutator != nil {
 		transitionMutator.inputVariants = transitionMutatorInputVariants
 		c.completedTransitionMutators = transitionMutator.index + 1
+	} else {
+		for _, group := range c.moduleGroups {
+			for _, module := range group.modules {
+				// Add any new forward dependencies to the reverse dependencies of the dependency to avoid
+				// having to call a full c.updateDependencies().
+				for _, m := range module.newDirectDeps {
+					m.reverseDeps = append(m.reverseDeps, module)
+				}
+				module.newDirectDeps = nil
+			}
+		}
 	}
 
 	// Add in any new reverse dependencies that were added by the mutator
