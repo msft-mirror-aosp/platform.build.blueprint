@@ -3365,7 +3365,10 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	for module, deps := range reverseDeps {
 		sort.Sort(depSorter(deps))
 		module.directDeps = append(module.directDeps, deps...)
-		c.needsUpdateDependencies++
+		for _, dep := range deps {
+			module.forwardDeps = append(module.forwardDeps, dep.module)
+			dep.module.reverseDeps = append(dep.module.reverseDeps, module)
+		}
 	}
 
 	for _, module := range newModules {
@@ -3373,7 +3376,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		if len(errs) > 0 {
 			return nil, errs
 		}
-		c.needsUpdateDependencies++
 	}
 
 	errs = c.handleRenames(rename)
