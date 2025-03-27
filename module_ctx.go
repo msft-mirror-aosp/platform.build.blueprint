@@ -1053,7 +1053,7 @@ type mutatorContext struct {
 	newVariations    moduleList    // new variants of existing modules
 	newModules       []*moduleInfo // brand new modules
 	defaultVariation *string
-	pauseCh          chan<- pauseSpec
+	pauseFunc        pauseFunc
 }
 
 type BottomUpMutatorContext interface {
@@ -1356,15 +1356,9 @@ func (mctx *mutatorContext) CreateModule(factory ModuleFactory, typeName string,
 // occur, which will happen when the mutator is not parallelizable.  If the dependency is nil
 // it returns true if pausing is supported or false if it is not.
 func (mctx *mutatorContext) pause(dep *moduleInfo) bool {
-	if mctx.pauseCh != nil {
+	if mctx.pauseFunc != nil {
 		if dep != nil {
-			unpause := make(unpause)
-			mctx.pauseCh <- pauseSpec{
-				paused:  mctx.module,
-				until:   dep,
-				unpause: unpause,
-			}
-			<-unpause
+			mctx.pauseFunc(dep)
 		}
 		return true
 	}
