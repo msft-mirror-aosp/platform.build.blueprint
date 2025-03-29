@@ -49,6 +49,8 @@ import (
 	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/pool"
 	"github.com/google/blueprint/proptools"
+	"github.com/google/blueprint/syncmap"
+	"github.com/google/blueprint/uniquelist"
 )
 
 var ErrBuildActionsNotReady = errors.New("build actions are not ready")
@@ -176,11 +178,16 @@ type Context struct {
 	// latter will depend on the flag above.
 	incrementalEnabled bool
 
-	buildActionsToCache       BuildActionCache
-	buildActionsToCacheLock   sync.Mutex
-	buildActionsFromCache     BuildActionCache
-	orderOnlyStringsFromCache OrderOnlyStringsCache
-	orderOnlyStringsToCache   OrderOnlyStringsCache
+	buildActionsCache       BuildActionCache
+	buildActionsToCacheLock sync.Mutex
+	orderOnlyStringsCache   OrderOnlyStringsCache
+	orderOnlyStrings        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
+}
+
+type orderOnlyStringsInfo struct {
+	dedup       bool
+	incremental bool
+	dedupName   string
 }
 
 // A container for String keys. The keys can be used to gate build graph traversal
@@ -353,7 +360,7 @@ type moduleInfo struct {
 	directDeps  []depInfo
 
 	// used by parallelVisit
-	waitingCount int
+	waitingCount atomic.Int32
 
 	// set during each runMutator
 	splitModules           moduleList
@@ -365,8 +372,9 @@ type moduleInfo struct {
 	// requested by reverse dependencies.  It is updated by reverse dependencies and protected by
 	// incomingTransitionInfosLock.  It is invalid after the TransitionMutator top down mutator has run on
 	// this module.
-	incomingTransitionInfos     map[string]TransitionInfo
-	incomingTransitionInfosLock sync.Mutex
+	incomingTransitionInfos      map[string]TransitionInfo
+	incomingTransitionInfoHashes map[string]uint64
+	incomingTransitionInfosLock  sync.Mutex
 	// splitTransitionInfos and splitTransitionVariations stores the list of TransitionInfo objects, and their
 	// corresponding variations, returned by Split or requested by reverse dependencies.  They are valid after the
 	// TransitionMutator top down mutator has run on this module, and invalid after the bottom up mutator has run.
@@ -446,9 +454,17 @@ func (module *moduleInfo) ModuleCacheKey() string {
 	if variant == "" {
 		variant = "none"
 	}
-	return fmt.Sprintf("%s-%s-%s-%s",
-		strings.ReplaceAll(filepath.Dir(module.relBlueprintsFile), "/", "."),
-		module.Name(), variant, module.typeName)
+	return calculateFileNameHash(fmt.Sprintf("%s-%s-%s-%s",
+		filepath.Dir(module.relBlueprintsFile), module.Name(), variant, module.typeName))
+
+}
+
+func calculateFileNameHash(name string) string {
+	hash, err := proptools.CalculateHash(name)
+	if err != nil {
+		panic(newPanicErrorf(err, "failed to calculate hash for file name: %s", name))
+	}
+	return strconv.FormatUint(hash, 16)
 }
 
 func (c *Context) setModuleTransitionInfo(module *moduleInfo, t *transitionMutatorImpl, info TransitionInfo) {
@@ -574,21 +590,22 @@ type mutatorInfo struct {
 func newContext() *Context {
 	eventHandler := metrics.EventHandler{}
 	return &Context{
-		Context:                 context.Background(),
-		EventHandler:            &eventHandler,
-		moduleFactories:         make(map[string]ModuleFactory),
-		nameInterface:           NewSimpleNameInterface(),
-		moduleInfo:              make(map[Module]*moduleInfo),
-		globs:                   make(map[globKey]pathtools.GlobResult),
-		fs:                      pathtools.OsFs,
-		includeTags:             &IncludeTags{},
-		sourceRootDirs:          &SourceRootDirs{},
-		outDir:                  nil,
-		requiredNinjaMajor:      1,
-		requiredNinjaMinor:      7,
-		requiredNinjaMicro:      0,
-		buildActionsToCache:     make(BuildActionCache),
-		orderOnlyStringsToCache: make(OrderOnlyStringsCache),
+		Context:               context.Background(),
+		EventHandler:          &eventHandler,
+		moduleFactories:       make(map[string]ModuleFactory),
+		nameInterface:         NewSimpleNameInterface(),
+		moduleInfo:            make(map[Module]*moduleInfo),
+		globs:                 make(map[globKey]pathtools.GlobResult),
+		fs:                    pathtools.OsFs,
+		includeTags:           &IncludeTags{},
+		sourceRootDirs:        &SourceRootDirs{},
+		outDir:                nil,
+		requiredNinjaMajor:    1,
+		requiredNinjaMinor:    7,
+		requiredNinjaMicro:    0,
+		buildActionsCache:     make(BuildActionCache),
+		orderOnlyStringsCache: make(OrderOnlyStringsCache),
+		orderOnlyStrings:      syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]{},
 	}
 }
 
@@ -731,20 +748,20 @@ func (c *Context) updateBuildActionsCache(key *BuildActionCacheKey, data *BuildA
 	if key != nil {
 		c.buildActionsToCacheLock.Lock()
 		defer c.buildActionsToCacheLock.Unlock()
-		c.buildActionsToCache[*key] = data
+		c.buildActionsCache[*key] = data
 	}
 }
 
 func (c *Context) getBuildActionsFromCache(key *BuildActionCacheKey) *BuildActionCachedData {
-	if c.buildActionsFromCache != nil && key != nil {
-		return c.buildActionsFromCache[*key]
+	if c.buildActionsCache != nil && key != nil {
+		return c.buildActionsCache[*key]
 	}
 	return nil
 }
 
 func (c *Context) CacheAllBuildActions(soongOutDir string) error {
-	return errors.Join(writeToCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsToCache),
-		writeToCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsToCache))
+	return errors.Join(writeToCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsCache),
+		writeToCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache))
 }
 
 func writeToCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
@@ -760,10 +777,8 @@ func writeToCache[T any](ctx *Context, soongOutDir string, fileName string, data
 }
 
 func (c *Context) RestoreAllBuildActions(soongOutDir string) error {
-	c.buildActionsFromCache = make(BuildActionCache)
-	c.orderOnlyStringsFromCache = make(OrderOnlyStringsCache)
-	return errors.Join(restoreFromCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsFromCache),
-		restoreFromCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsFromCache))
+	return errors.Join(restoreFromCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsCache),
+		restoreFromCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache))
 }
 
 func restoreFromCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
@@ -2256,6 +2271,50 @@ var (
 	topDownVisitor  topDownVisitorImpl
 )
 
+// unpause is a channel that will be closed when the paused module should resume.
+type unpause chan struct{}
+
+// pauseFunc is a function a visitor function can call to pause execution until the visitor
+// function on the given module is completed.
+type pauseFunc func(until *moduleInfo)
+
+// parallelVisitWorker is an individual worker that will call visitor functions on behalf of
+// a call to parallelVisit.  It's run method loops until the input queueCh is closed, receiving
+// batches of modules on which to call visit method, and posting responses to the responseCh
+// channel.
+type parallelVisitWorker struct {
+	// queue is the slice of modules that are currently being processed.
+	queue []*moduleInfo
+	// currentQueueIndex is the index into the queue of the module currently being visited.
+	currentQueueIndex int
+
+	// done is the slice of modules that have had the visit method called on them has returned.
+	done []*moduleInfo
+	// remaining is the slice of modules that have not had the visit method called on them.
+	remaining []*moduleInfo
+	// current is the module that is currently running the visit method.
+	current *moduleInfo
+	// unblocked is the slice of modules that are now runnable after visit returned on a module
+	// in this batch.
+	// TODO: can these modules just be handled in this worker?  Use some heuristic to decide
+	//  whether to handle them or send them back to the orchestrator?
+	unblocked []*moduleInfo
+
+	// visit is the method that is called on each module.
+	visit func(module *moduleInfo, pause pauseFunc) bool
+
+	// order is the interface that describes which modules will be ready next once the current module
+	// has had visit called on it.
+	order visitOrderer
+
+	// queueCh is the input channel that provides batches of modules to call visit on.  It is closed
+	// when there is no more work to do.
+	queueCh <-chan []*moduleInfo
+	// responseCh is the output channel where a parallelVisitWorkerResponse is sent after processing
+	// each batch.
+	responseCh chan<- parallelVisitWorkerResponse
+}
+
 // pauseSpec describes a pause that a module needs to occur until another module has been visited,
 // at which point the unpause channel will be closed.
 type pauseSpec struct {
@@ -2264,215 +2323,412 @@ type pauseSpec struct {
 	unpause unpause
 }
 
-type unpause chan struct{}
+// parallelVisitWorkerResponse is sent after a parallelVisitWorker processes a batch of modules.
+type parallelVisitWorkerResponse struct {
+	// done is the slice of modules that have had the visit method called on.
+	done []*moduleInfo
 
-const parallelVisitLimit = 1000
+	// returned is the slice of modules that the worker did not call the visit method on,
+	// either because the visit method returned an error, or because the visit method called
+	// the pause function, which may be waiting (directly or transitively) on a module that
+	// is later in the batch.
+	returned []*moduleInfo
 
-// Calls visit on each module, guaranteeing that visit is not called on a module until visit on all
-// of its dependencies has finished.  A visit function can write a pauseSpec to the pause channel
-// to wait for another dependency to be visited.  If a visit function returns true to cancel
-// while another visitor is paused, the paused visitor will never be resumed and its goroutine
-// will stay paused forever.
+	// unblocked is the slice of modules that became ready (i.e. waitingCount is now zero)
+	// after the modules that the worker ran finished.
+	unblocked []*moduleInfo
+
+	// error is set when a visit method returned an error, signalling that parallelVisit should
+	// abort.
+	error bool
+
+	// pause is set when the visit method called pause, signalling that the worker is waiting
+	// indefinitely on the unpause channel, which should be closed when the requested module
+	// has completed.
+	pause pauseSpec
+}
+
+// run is the main loop method of a parallelVisitWorker.  It receives batches of modules to
+// call the visit method on from queueCh, and then calls runQueue on them.
+func (worker *parallelVisitWorker) run() {
+	for queued := range worker.queueCh {
+		if len(worker.queue) > 0 {
+			panic(fmt.Errorf("already have queued work"))
+		}
+		errored := worker.runQueue(queued)
+		if errored {
+			return
+		}
+	}
+}
+
+// runQueue processes a single batch of modules.
+func (worker *parallelVisitWorker) runQueue(queue []*moduleInfo) bool {
+	worker.queue = queue
+	worker.done = nil
+	worker.unblocked = nil
+	// Use a loop on worker.currentQueueIndex so that the pause method can update it when it sends
+	// the done and remaining modules back to the orchestrator.
+	for worker.currentQueueIndex = 0; worker.currentQueueIndex < len(worker.queue); worker.currentQueueIndex++ {
+		worker.current = worker.queue[worker.currentQueueIndex]
+		worker.remaining = worker.queue[worker.currentQueueIndex+1:]
+		ret := worker.visit(worker.current, worker.pause)
+		worker.done = worker.queue[:worker.currentQueueIndex+1]
+		if ret {
+			// An error occurred.  Send the completed and uncompleted modules back to the orchestrator with
+			// the error flag set.
+			worker.responseCh <- parallelVisitWorkerResponse{
+				done:      worker.done,
+				error:     true,
+				returned:  worker.remaining,
+				unblocked: worker.unblocked,
+			}
+			return true
+		}
+
+		// Decrement waitingCount on the next modules in the tree based
+		// on propagation order, and add them to the queue if they are
+		// ready to start.
+		for _, module := range worker.order.propagate(worker.current) {
+			if module.waitingCount.Add(-1) == 0 {
+				worker.unblocked = append(worker.unblocked, module)
+			}
+		}
+	}
+
+	// The batch is complete.  Send the completed modules back to the orchestrator.
+	worker.responseCh <- parallelVisitWorkerResponse{
+		done:      worker.done,
+		unblocked: worker.unblocked,
+	}
+	worker.queue = nil
+	return false
+}
+
+// pause is called by visitors (via the function pointer passed into the visit function) in order to
+// signal that the visitor needs to wait until the visitor has completed on the target module.
+func (worker *parallelVisitWorker) pause(until *moduleInfo) {
+	// If the target module is already done there is no need to pause.  This is safe because waitingCount
+	// will never change once it has reached -1.
+	if until.waitingCount.Load() == -1 {
+		return
+	}
+	unpause := make(chan struct{})
+	// This visitor needs to pause.  Send the completed and uncompleted modules back to the orchestrator
+	// with a pauseSpec that describes how and when to unpause this module.  The uncompleted modules are
+	// returned to the orchestrator in case the pause is waiting (directly or transitively) for one of
+	// the uncompleted modules.
+	worker.responseCh <- parallelVisitWorkerResponse{
+		done:      worker.done,
+		returned:  worker.remaining,
+		unblocked: worker.unblocked,
+		pause: pauseSpec{
+			paused:  worker.current,
+			until:   until,
+			unpause: unpause,
+		},
+	}
+	// Reset the queue to contain only the current module, as everything else has already been returned
+	// to the orchestrator.
+	worker.done = nil
+	worker.queue = []*moduleInfo{worker.current}
+	worker.currentQueueIndex = 0
+	worker.remaining = nil
+	worker.unblocked = nil
+
+	// Wait for the orchestrator to close the unpause channel to signal that the requested module has
+	// finished.
+	<-unpause
+}
+
+// parallelVisitLimit is the maximum number of visitors that can be simultaneously active in parallelVisit.
+var parallelVisitLimit = runtime.NumCPU() * 2
+
+// parallelVisitBatchSize is the number of visitors that will be batched together and passed to a single
+// parallelVisitWorker in order to reduce channel communication overhead.  Setting this value higher
+// amortizes the synchronization and coordination costs across more modules, but setting it too high
+// risks having a single worker left processing modules after all the other workers have finished if it
+// has too many long visitors in a single batch.
+const parallelVisitBatchSize = 100
+
+// parallelVisit calls visit on each module, guaranteeing that visit is not called on a module until
+// visit on all of its dependencies (as determined by the visitOrderer) has finished.  A visit function
+// can call the pause function to wait for another dependency to be visited before continuing.
+// If a visit function returns true to cancel while another visitor is paused, the paused visitor will
+// never be resumed and its goroutine will stay paused forever.
+// The limit argument sets the maximum number of workers that can be running visit functions simultaneously.
+// The total number of workers can be higher than limit if some of them are paused, but the paused workers
+// won't be unpaused until the number of active workers drops below the limit.
 func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit int,
-	visit func(module *moduleInfo, pause chan<- pauseSpec) bool) []error {
+	visit func(module *moduleInfo, pause pauseFunc) bool) []error {
 
-	doneCh := make(chan *moduleInfo)
-	cancelCh := make(chan bool)
-	pauseCh := make(chan pauseSpec)
-	cancel := false
+	// queueCh sends batches of modules to process from the orchestrator to the workers.
+	queueCh := make(chan []*moduleInfo, limit)
+	// responseCh receives responses from the workers when a batch has finished processing.
+	responseCh := make(chan parallelVisitWorkerResponse, limit)
 
-	var backlog []*moduleInfo      // Visitors that are ready to start but backlogged due to limit.
-	var unpauseBacklog []pauseSpec // Visitors that are ready to unpause but backlogged due to limit.
+	// Closing queueCh when parallelVisit finishes signals the workers to exit.
+	defer close(queueCh)
 
-	active := 0  // Number of visitors running, not counting paused visitors.
-	visited := 0 // Number of finished visitors.
+	activeWorkers := 0 // Number of workers running, not counting paused visitors.
+	activeModules := 0 // Number of modules that have been sent to workers.
+	visited := 0       // Number of modules whose visitors have finished.
+	pausedWorkers := 0 // Number of workers that are waiting on an unpause channel
+	workers := 0       // Total number of spawned workers.
 
+	cancel := false // will be set when any worker returns an error.
+
+	var queue []*moduleInfo           // The list of modules that are ready to be sent to workers.
+	var returnedQueue [][]*moduleInfo // The list of modules that were sent to workers and then returned and need to be resent.
+	var unpauseQueue []pauseSpec      // Visitors that are ready to unpause but backlogged due to limit.
+
+	queuedModules := 0 // The number of modules that are queued in queue, returnedQueue or unpauseQueue.
+
+	// pauseMap holds the map from modules that are being waited on to the list of pauseSpecs that are waiting on them.
 	pauseMap := make(map[*moduleInfo][]pauseSpec)
 
-	for module := range moduleIter {
-		module.waitingCount = order.waitCount(module)
-	}
-
-	// Call the visitor on a module if there are fewer active visitors than the parallelism
-	// limit, otherwise add it to the backlog.
-	startOrBacklog := func(module *moduleInfo) {
-		if active < limit {
-			active++
-			go func() {
-				ret := visit(module, pauseCh)
-				if ret {
-					cancelCh <- true
-				}
-				doneCh <- module
-			}()
-		} else {
-			backlog = append(backlog, module)
+	// newWorker spawns a new worker goroutine.
+	newWorker := func() {
+		worker := &parallelVisitWorker{
+			visit:      visit,
+			order:      order,
+			queueCh:    queueCh,
+			responseCh: responseCh,
 		}
-	}
-
-	// Unpause the already-started but paused  visitor on a module if there are fewer active
-	// visitors than the parallelism limit, otherwise add it to the backlog.
-	unpauseOrBacklog := func(pauseSpec pauseSpec) {
-		if active < limit {
-			active++
-			close(pauseSpec.unpause)
-		} else {
-			unpauseBacklog = append(unpauseBacklog, pauseSpec)
-		}
-	}
-
-	// Start any modules in the backlog up to the parallelism limit.  Unpause paused modules first
-	// since they may already be holding resources.
-	unpauseOrStartFromBacklog := func() {
-		for active < limit && len(unpauseBacklog) > 0 {
-			unpause := unpauseBacklog[0]
-			unpauseBacklog = unpauseBacklog[1:]
-			unpauseOrBacklog(unpause)
-		}
-		for active < limit && len(backlog) > 0 {
-			toVisit := backlog[0]
-			backlog = backlog[1:]
-			startOrBacklog(toVisit)
-		}
+		workers++
+		go worker.run()
 	}
 
 	toVisit := 0
 
-	// Start or backlog any modules that are not waiting for any other modules.
+	// Initialize waitingCount on each module with the number of modules that need to complete before it can run.
+	// Add any modules whose waitingCount is 0 to the initial queue of ready modules.
 	for module := range moduleIter {
 		toVisit++
-		if module.waitingCount == 0 {
-			startOrBacklog(module)
+		waitingCount := order.waitCount(module)
+		module.waitingCount.Store(int32(waitingCount))
+		if waitingCount == 0 {
+			queue = append(queue, module)
+			queuedModules++
+		}
+	}
+	queue = slices.Grow(queue, toVisit-len(queue))
+
+	// queueWork is called to send work to any available workers, including spawning new workers if there is work
+	// to do and the number of active workers is below the limit.
+	queueWork := func() {
+		for queuedModules > 0 && activeWorkers < limit {
+			// First priority: unpause any paused workers that are ready, as the visitor functions may already
+			// be holding resources.
+			if len(unpauseQueue) > 0 {
+				unpause := unpauseQueue[0]
+				unpauseQueue = unpauseQueue[1:]
+				pausedWorkers--
+				queuedModules--
+				activeModules++
+				close(unpause.unpause)
+			} else {
+				// If there are worker slots available and no idle workers, spawn a new worker.
+				if activeWorkers < limit && activeWorkers+pausedWorkers == workers {
+					newWorker()
+				}
+				var batch []*moduleInfo
+				// Second priority: re-send any returned work back to a worker.
+				if len(returnedQueue) > 0 {
+					batch = returnedQueue[0]
+					returnedQueue = returnedQueue[1:]
+				} else {
+					// Send a batch of work from the queue.  Limit the size of the batch to the size of the queue
+					// divided by the number of available workers to avoid sending a big batch of work to a single
+					// worker when other workers are available and to parallelVisitBatchSize.
+					availableWorkersSlots := limit - activeWorkers
+					queueSizePerAvailableWorker := (len(queue) + availableWorkersSlots - 1) / availableWorkersSlots
+					batchSize := min(parallelVisitBatchSize, queueSizePerAvailableWorker)
+					batch = queue[:batchSize]
+					queue = queue[batchSize:]
+				}
+				activeModules += len(batch)
+				queuedModules -= len(batch)
+				if len(batch) == 0 {
+					panic("zero length batch")
+				}
+				queueCh <- batch
+			}
+			activeWorkers++
 		}
 	}
 
-	for active > 0 {
-		select {
-		case <-cancelCh:
+	// Call queueWork before starting the loop so that activeModules is nonzero.
+	queueWork()
+
+	// The main orchestrator loop, which runs until there are no workers doing work.
+	for activeModules > 0 {
+		// Wait for a response from a worker.
+		response := <-responseCh
+		activeWorkers--
+
+		if response.error {
+			// Once cancel is set no more work will be sent to workers.
 			cancel = true
-			backlog = nil
-		case doneModule := <-doneCh:
-			active--
-			if !cancel {
-				// Mark this module as done.
-				doneModule.waitingCount = -1
-				visited++
+		}
 
-				// Unpause or backlog any modules that were waiting for this one.
-				if unpauses, ok := pauseMap[doneModule]; ok {
-					delete(pauseMap, doneModule)
-					for _, unpause := range unpauses {
-						unpauseOrBacklog(unpause)
-					}
-				}
-
-				// Start any backlogged modules up to limit.
-				unpauseOrStartFromBacklog()
-
-				// Decrement waitingCount on the next modules in the tree based
-				// on propagation order, and start or backlog them if they are
-				// ready to start.
-				for _, module := range order.propagate(doneModule) {
-					module.waitingCount--
-					if module.waitingCount == 0 {
-						startOrBacklog(module)
-					}
-				}
+		// Process finished modules.
+		visited += len(response.done)
+		activeModules -= len(response.done)
+		for _, doneModule := range response.done {
+			// Mark this module as done.  Nothing else should be updating waitingCount, so a single attempt
+			// at CompareAndSwap should always succeed.  This is the only location that will ever update
+			// waitingCount from 0 to -1, and once it is -1 it will never be changed for the rest of this
+			// call to parallelVisit.
+			if !doneModule.waitingCount.CompareAndSwap(0, -1) {
+				panic(fmt.Errorf("failed to atomically mark module %s as done", doneModule))
 			}
-		case pauseSpec := <-pauseCh:
-			if pauseSpec.until.waitingCount == -1 {
+			// Add any modules that were paused on this module to the unpause queue.
+			if unpauses, ok := pauseMap[doneModule]; ok {
+				delete(pauseMap, doneModule)
+				queuedModules += len(unpauses)
+				unpauseQueue = append(unpauseQueue, unpauses...)
+			}
+		}
+
+		if len(response.unblocked) > 0 {
+			// Add any modules that were made ready to the queue.
+			queuedModules += len(response.unblocked)
+			queue = append(queue, response.unblocked...)
+		}
+
+		// Re-queue any returned modules.
+		if len(response.returned) > 0 {
+			queuedModules += len(response.returned)
+			activeModules -= len(response.returned)
+			returnedQueue = append(returnedQueue, response.returned)
+		}
+
+		// Handle a requested pause.
+		if response.pause.paused != nil {
+			// This goroutine is the only one that can set waitingCount to -1, so reading it here does not
+			// race with updating pauseMap if the value is not yet -1.
+			if response.pause.until.waitingCount.Load() == -1 {
 				// Module being paused for is already finished, resume immediately.
-				close(pauseSpec.unpause)
+				// activeWorkers was decremented above when the response was received,
+				// re-increment it as it is going to resume.
+				activeWorkers++
+				close(response.pause.unpause)
 			} else {
 				// Register for unpausing.
-				pauseMap[pauseSpec.until] = append(pauseMap[pauseSpec.until], pauseSpec)
-
-				// Don't count paused visitors as active so that this can't deadlock
-				// if 1000 visitors are paused simultaneously.
-				active--
-				unpauseOrStartFromBacklog()
+				pauseMap[response.pause.until] = append(pauseMap[response.pause.until], response.pause)
+				pausedWorkers++
+				activeModules--
 			}
+		}
+
+		// Each time a response has been handled check if there is work that can now be queued.
+		if !cancel {
+			queueWork()
 		}
 	}
 
+	// The orchestrator loop has finished because there are no modules being processed.  In the normal case all
+	// the modules should have been visited.  If an error occurred there may be queued or paused modules.
+	// If a deadlock occurred and all remaining modules are not ready or paused then there is newly added
+	// cyclic dependency.
 	if !cancel {
-		// Invariant check: no backlogged modules, these weren't waiting on anything except
+		// Invariant checks: no queued, returned or unpaused modules.  These weren't waiting on anything except
 		// the parallelism limit so they should have run.
-		if len(backlog) > 0 {
-			panic(fmt.Errorf("parallelVisit finished with %d backlogged visitors", len(backlog)))
+		if len(queue) > 0 {
+			panic(fmt.Errorf("parallelVisit finished with %d queued visitors", len(queue)))
+		}
+		if len(returnedQueue) > 0 {
+			panic(fmt.Errorf("parallelVisit finished with %d returned queued visitors", len(returnedQueue)))
+		}
+		if len(unpauseQueue) > 0 {
+			panic(fmt.Errorf("parallelVisit finished with %d queued unpaused visitors", len(unpauseQueue)))
 		}
 
-		// Invariant check: no backlogged paused modules, these weren't waiting on anything
-		// except the parallelism limit so they should have run.
-		if len(unpauseBacklog) > 0 {
-			panic(fmt.Errorf("parallelVisit finished with %d backlogged unpaused visitors", len(unpauseBacklog)))
-		}
-
-		if len(pauseMap) > 0 {
-			// Probably a deadlock due to a newly added dependency cycle. Start from each module in
-			// the order of the input modules list and perform a depth-first search for the module
-			// it is paused on, ignoring modules that are marked as done.  Note this traverses from
-			// modules to the modules that would have been unblocked when that module finished, i.e
-			// the reverse of the visitOrderer.
+		if visited != toVisit || len(pauseMap) > 0 {
+			// Probably a deadlock due to a dependency cycle. Start from each module in the order
+			// of the input modules list and perform a depth-first search for any module that is
+			// in the walk path twice.  Note this traverses from modules to the modules that would
+			// have been unblocked when that module finished, i.e. the reverse of the visitOrderer.
+			// This search takes into account both the pre-existing dependencies and any newly
+			// added dependencies that are still in the pauseMap.
 
 			// In order to reduce duplicated work, once a module has been checked and determined
 			// not to be part of a cycle add it and everything that depends on it to the checked
 			// map.
-			checked := make(map[*moduleInfo]struct{})
+			checked := make(map[*moduleInfo]bool, toVisit) // modules that were already checked
+			checking := make(map[*moduleInfo]bool)         // modules actively being checked
 
-			var check func(module, end *moduleInfo) []*moduleInfo
-			check = func(module, end *moduleInfo) []*moduleInfo {
-				if module.waitingCount == -1 {
-					// This module was finished, it can't be part of a loop.
-					return nil
-				}
-				if module == end {
-					// This module is the end of the loop, start rolling up the cycle.
+			var errs []error
+			var check func(group *moduleInfo) []*moduleInfo
+
+			check = func(module *moduleInfo) []*moduleInfo {
+				if checking[module] {
+					// This is a cycle.
 					return []*moduleInfo{module}
 				}
-
-				if _, alreadyChecked := checked[module]; alreadyChecked {
+				if checked[module] {
 					return nil
 				}
 
+				checked[module] = true
+				checking[module] = true
+				defer delete(checking, module)
+
+				var cycle []*moduleInfo
 				for _, dep := range order.propagate(module) {
-					cycle := check(dep, end)
+					cycle = check(dep)
 					if cycle != nil {
-						return append([]*moduleInfo{module}, cycle...)
+						break
 					}
 				}
-				for _, depPauseSpec := range pauseMap[module] {
-					cycle := check(depPauseSpec.paused, end)
+				for _, pauseSpec := range pauseMap[module] {
+					cycle = check(pauseSpec.paused)
 					if cycle != nil {
-						return append([]*moduleInfo{module}, cycle...)
+						break
 					}
 				}
 
-				checked[module] = struct{}{}
+				if cycle != nil {
+					if cycle[0] == module {
+						// We are the "start" of the cycle, so we're responsible
+						// for generating the errors.
+						slices.Reverse(cycle)
+						errs = append(errs, cycleError(cycle)...)
+
+						// We can continue processing this module's children to
+						// find more cycles.  Since all the modules that were
+						// part of the found cycle were marked as visited we
+						// won't run into that cycle again.
+					} else {
+						// We're not the "start" of the cycle, so we just append
+						// our module to the list and return it.
+						return append(cycle, module)
+					}
+				}
+
 				return nil
 			}
 
-			// Iterate over the modules list instead of pauseMap to provide deterministic ordering.
 			for module := range moduleIter {
-				for _, pauseSpec := range pauseMap[module] {
-					cycle := check(pauseSpec.paused, pauseSpec.until)
-					if len(cycle) > 0 {
-						return cycleError(cycle)
-					}
-				}
+				check(module)
+			}
+
+			if len(errs) > 0 {
+				return errs
 			}
 		}
 
-		// Invariant check: if there was no deadlock and no cancellation every module
-		// should have been visited.
-		if visited != toVisit {
-			panic(fmt.Errorf("parallelVisit ran %d visitors, expected %d", visited, toVisit))
-		}
-
-		// Invariant check: if there was no deadlock and no cancellation  every module
+		// Invariant check: if there was no dependency cycle and no cancellation every module
 		// should have been visited, so there is nothing left to be paused on.
 		if len(pauseMap) > 0 {
 			panic(fmt.Errorf("parallelVisit finished with %d paused visitors", len(pauseMap)))
+		}
+
+		// Invariant check: if there was no dependency cycle and no cancellation every module
+		// should have been visited.
+		if visited != toVisit {
+			panic(fmt.Errorf("parallelVisit ran %d visitors, expected %d", visited, toVisit))
 		}
 	}
 
@@ -2510,20 +2766,14 @@ func cycleError(cycle []*moduleInfo) (errs []error) {
 // as well as after any mutator pass has called addDependency
 func (c *Context) updateDependencies() (errs []error) {
 	c.cachedDepsModified = true
-	visited := make(map[*moduleInfo]bool, len(c.moduleInfo)) // modules that were already checked
-	checking := make(map[*moduleInfo]bool)                   // modules actively being checked
 
-	var check func(group *moduleInfo) []*moduleInfo
-
-	check = func(module *moduleInfo) []*moduleInfo {
-		visited[module] = true
-		checking[module] = true
-		defer delete(checking, module)
-
+	for _, module := range c.moduleInfo {
 		// Reset the forward and reverse deps without reducing their capacity to avoid reallocation.
 		module.reverseDeps = module.reverseDeps[:0]
 		module.forwardDeps = module.forwardDeps[:0]
+	}
 
+	for _, module := range c.moduleInfo {
 		// Add an implicit dependency ordering on all earlier modules in the same module group
 		selfIndex := slices.Index(module.group.modules, module)
 		module.forwardDeps = slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
@@ -2534,46 +2784,7 @@ func (c *Context) updateDependencies() (errs []error) {
 		}
 
 		for _, dep := range module.forwardDeps {
-			if checking[dep] {
-				// This is a cycle.
-				return []*moduleInfo{dep, module}
-			}
-
-			if !visited[dep] {
-				cycle := check(dep)
-				if cycle != nil {
-					if cycle[0] == module {
-						// We are the "start" of the cycle, so we're responsible
-						// for generating the errors.
-						errs = append(errs, cycleError(cycle)...)
-
-						// We can continue processing this module's children to
-						// find more cycles.  Since all the modules that were
-						// part of the found cycle were marked as visited we
-						// won't run into that cycle again.
-					} else {
-						// We're not the "start" of the cycle, so we just append
-						// our module to the list and return it.
-						return append(cycle, module)
-					}
-				}
-			}
-
 			dep.reverseDeps = append(dep.reverseDeps, module)
-		}
-
-		return nil
-	}
-
-	for _, module := range c.moduleInfo {
-		if !visited[module] {
-			cycle := check(module)
-			if cycle != nil {
-				if cycle[len(cycle)-1] != module {
-					panic("inconceivable!")
-				}
-				errs = append(errs, cycleError(cycle)...)
-			}
 		}
 	}
 
@@ -2992,7 +3203,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 	c.needsUpdateDependencies = 0
 
-	visit := func(module *moduleInfo, pause chan<- pauseSpec) bool {
+	visit := func(module *moduleInfo, pause pauseFunc) bool {
 		if module.splitModules != nil {
 			panic("split module found in sorted module list")
 		}
@@ -3004,8 +3215,8 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				config:  config,
 				module:  module,
 			},
-			mutator: mutatorGroup[0],
-			pauseCh: pause,
+			mutator:   mutatorGroup[0],
+			pauseFunc: pause,
 		}
 
 		origLogicModule := module.logicModule
@@ -3110,52 +3321,55 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	var transitionMutatorInputVariants map[*moduleGroup][]*moduleInfo
 	if transitionMutator != nil {
 		transitionMutatorInputVariants = make(map[*moduleGroup][]*moduleInfo)
-	}
 
-	for _, group := range c.moduleGroups {
-		for i := 0; i < len(group.modules); i++ {
-			module := group.modules[i]
+		for _, group := range c.moduleGroups {
+			for i := 0; i < len(group.modules); i++ {
+				module := group.modules[i]
 
-			// Update module group to contain newly split variants
-			if module.splitModules != nil {
-				if transitionMutator != nil {
-					// For transition mutators, save the pre-split variant for reusing later in applyTransitions.
+				// Update module group to contain newly split variants
+				if module.splitModules != nil {
+					// Save the pre-split variant for reusing later in applyTransitions.
 					transitionMutatorInputVariants[group] = append(transitionMutatorInputVariants[group], module)
+					group.modules, i = spliceModules(group.modules, i, module.splitModules)
 				}
-				group.modules, i = spliceModules(group.modules, i, module.splitModules)
-			}
 
-			// Fix up any remaining dependencies on modules that were split into variants
-			// by replacing them with the first variant
-			for j, dep := range module.directDeps {
-				if dep.module.obsoletedByNewVariants {
-					module.directDeps[j].module = dep.module.splitModules.firstModule()
+				// Fix up any remaining dependencies on modules that were split into variants
+				// by replacing them with the first variant
+				for j, dep := range module.directDeps {
+					if dep.module.obsoletedByNewVariants {
+						module.directDeps[j].module = dep.module.splitModules.firstModule()
+					}
+				}
+
+				if module.createdBy != nil && module.createdBy.obsoletedByNewVariants {
+					module.createdBy = module.createdBy.splitModules.firstModule()
 				}
 			}
-
-			if module.createdBy != nil && module.createdBy.obsoletedByNewVariants {
-				module.createdBy = module.createdBy.splitModules.firstModule()
-			}
-
-			// Add any new forward dependencies to the reverse dependencies of the dependency to avoid
-			// having to call a full c.updateDependencies().
-			for _, m := range module.newDirectDeps {
-				m.reverseDeps = append(m.reverseDeps, module)
-			}
-			module.newDirectDeps = nil
 		}
-	}
 
-	if transitionMutator != nil {
 		transitionMutator.inputVariants = transitionMutatorInputVariants
 		c.completedTransitionMutators = transitionMutator.index + 1
+	} else {
+		for _, group := range c.moduleGroups {
+			for _, module := range group.modules {
+				// Add any new forward dependencies to the reverse dependencies of the dependency to avoid
+				// having to call a full c.updateDependencies().
+				for _, m := range module.newDirectDeps {
+					m.reverseDeps = append(m.reverseDeps, module)
+				}
+				module.newDirectDeps = nil
+			}
+		}
 	}
 
 	// Add in any new reverse dependencies that were added by the mutator
 	for module, deps := range reverseDeps {
 		sort.Sort(depSorter(deps))
 		module.directDeps = append(module.directDeps, deps...)
-		c.needsUpdateDependencies++
+		for _, dep := range deps {
+			module.forwardDeps = append(module.forwardDeps, dep.module)
+			dep.module.reverseDeps = append(dep.module.reverseDeps, module)
+		}
 	}
 
 	for _, module := range newModules {
@@ -3163,7 +3377,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		if len(errs) > 0 {
 			return nil, errs
 		}
-		c.needsUpdateDependencies++
 	}
 
 	errs = c.handleRenames(rename)
@@ -3206,7 +3419,7 @@ func (c *Context) cloneModules() {
 	doneCh := make(chan bool)
 	go func() {
 		errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
-			func(m *moduleInfo, pause chan<- pauseSpec) bool {
+			func(m *moduleInfo, pause pauseFunc) bool {
 				origLogicModule := m.logicModule
 				m.logicModule, m.properties = c.cloneLogicModule(m)
 				ch <- update{origLogicModule, m}
@@ -3281,7 +3494,7 @@ func (c *Context) generateModuleBuildActions(config interface{},
 	}()
 
 	visitErrs := parallelVisit(c.iterateAllVariants(), bottomUpVisitor, parallelVisitLimit,
-		func(module *moduleInfo, pause chan<- pauseSpec) bool {
+		func(module *moduleInfo, pause pauseFunc) bool {
 			uniqueName := c.nameInterface.UniqueName(newNamespaceContext(module), module.group.name)
 			sanitizedName := toNinjaName(uniqueName)
 			sanitizedVariant := toNinjaName(module.variant.name)
@@ -3317,12 +3530,8 @@ func (c *Context) generateModuleBuildActions(config interface{},
 						}
 					}
 				}()
-				restored, cacheKey := mctx.restoreModuleBuildActions()
-				if !restored {
+				if !mctx.restoreModuleBuildActions() {
 					mctx.module.logicModule.GenerateBuildActions(mctx)
-				}
-				if cacheKey != nil {
-					mctx.cacheModuleBuildActions(cacheKey)
 				}
 			}()
 
@@ -4541,23 +4750,20 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	c.BeginEvent("modules")
 	defer c.EndEvent("modules")
 
-	modules := make([]*moduleInfo, 0, len(c.moduleInfo))
-	incrementalModules := make([]*moduleInfo, 0, 200)
+	var modules []*moduleInfo
+	var incModules []*moduleInfo
 
 	for _, module := range c.moduleInfo {
 		if module.buildActionCacheKey != nil {
-			incrementalModules = append(incrementalModules, module)
+			incModules = append(incModules, module)
 			continue
 		}
 		modules = append(modules, module)
 	}
 	sort.Sort(moduleSorter{modules, c.nameInterface})
-	sort.Sort(moduleSorter{incrementalModules, c.nameInterface})
+	sort.Sort(moduleSorter{incModules, c.nameInterface})
 
-	phonys := c.deduplicateOrderOnlyDeps(append(modules, incrementalModules...))
-	if err := orderOnlyForIncremental(c, incrementalModules, phonys); err != nil {
-		return err
-	}
+	phonys := c.deduplicateOrderOnlyDeps(append(modules, incModules...))
 
 	c.EventHandler.Do("sort_phony_builddefs", func() {
 		// sorting for determinism, the phony output names are stable
@@ -4620,7 +4826,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				err := writeIncrementalModules(c, file, incrementalModules, headerTemplate)
+				err := writeIncrementalModules(c, file, incModules, headerTemplate)
 				if err != nil {
 					errorCh <- err
 				}
@@ -4646,69 +4852,6 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	}
 }
 
-func orderOnlyForIncremental(c *Context, modules []*moduleInfo, phonys *localBuildActions) error {
-	for _, mod := range modules {
-		// find the order only strings of the incremental module, it can come from
-		// the cache or from buildDefs depending on if the module was skipped or not.
-		var orderOnlyStrings []string
-		if mod.incrementalRestored {
-			orderOnlyStrings = mod.orderOnlyStrings
-		} else {
-			for _, b := range mod.actionDefs.buildDefs {
-				// We do similar check when creating phonys in deduplicateOrderOnlyDeps as well
-				if len(b.OrderOnly) > 0 {
-					return fmt.Errorf("order only shouldn't be used: %s", mod.Name())
-				}
-				for _, str := range b.OrderOnlyStrings {
-					if strings.HasPrefix(str, "dedup-") {
-						orderOnlyStrings = append(orderOnlyStrings, str)
-					}
-				}
-			}
-		}
-
-		if len(orderOnlyStrings) == 0 {
-			continue
-		}
-
-		// update the order only string cache with the info found above.
-		if data, ok := c.buildActionsToCache[*mod.buildActionCacheKey]; ok {
-			data.OrderOnlyStrings = orderOnlyStrings
-		}
-
-		if !mod.incrementalRestored {
-			continue
-		}
-
-		// if the module is skipped, the order only string that we restored from the
-		// cache might not exist anymore. For example, if two modules shared the same
-		// set of order only strings initially, deduplicateOrderOnlyDeps would create
-		// a dedup-* phony and replace the order only string with this phony for these
-		// two modules. If one of the module had its order only strings changed, and
-		// we skip the other module in the next build, the dedup-* phony would not
-		// in the phony list anymore, so we need to add it here in order to avoid
-		// writing the ninja statements for the skipped module, otherwise it would
-		// reference a dedup-* phony that no longer exists.
-		for _, dep := range orderOnlyStrings {
-			// nothing changed to this phony, the cached value is still valid
-			if _, ok := c.orderOnlyStringsToCache[dep]; ok {
-				continue
-			}
-			orderOnlyStrings, ok := c.orderOnlyStringsFromCache[dep]
-			if !ok {
-				return fmt.Errorf("no cached value found for order only dep: %s", dep)
-			}
-			phony := buildDef{
-				Rule:          Phony,
-				OutputStrings: []string{dep},
-				InputStrings:  orderOnlyStrings,
-			}
-			phonys.buildDefs = append(phonys.buildDefs, &phony)
-			c.orderOnlyStringsToCache[dep] = orderOnlyStrings
-		}
-	}
-	return nil
-}
 func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
 	bf, err := c.fs.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 	if err != nil {
@@ -4723,6 +4866,8 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 	if err != nil {
 		return err
 	}
+
+	c.buildActionsCache = make(BuildActionCache)
 	for _, module := range modules {
 		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
 		if !module.incrementalRestored {
@@ -4740,6 +4885,9 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 			if err != nil {
 				return err
 			}
+		}
+		if module.buildActionCacheKey != nil {
+			c.cacheModuleBuildActions(module)
 		}
 		bWriter.Subninja(moduleFile)
 	}
@@ -4868,16 +5016,6 @@ func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
 	c.BeforePrepareBuildActionsHook = hookFn
 }
 
-// phonyCandidate represents the state of a set of deps that decides its eligibility
-// to be extracted as a phony output
-type phonyCandidate struct {
-	sync.Once
-	phony             *buildDef // the phony buildDef that wraps the set
-	first             *buildDef // the first buildDef that uses this set
-	orderOnlyStrings  []string  // the original OrderOnlyStrings of the first buildDef that uses this set
-	usedByIncremental bool      // if the phony is used by any incremental module
-}
-
 // keyForPhonyCandidate gives a unique identifier for a set of deps.
 func keyForPhonyCandidate(stringDeps []string) uint64 {
 	hasher := fnv.New64a()
@@ -4895,41 +5033,6 @@ func keyForPhonyCandidate(stringDeps []string) uint64 {
 	return hasher.Sum64()
 }
 
-// scanBuildDef is called for every known buildDef `b` that has a non-empty `b.OrderOnly`.
-// If `b.OrderOnly` is not present in `candidates`, it gets stored.
-// But if `b.OrderOnly` already exists in `candidates`, then `b.OrderOnly`
-// (and phonyCandidate#first.OrderOnly) will be replaced with phonyCandidate#phony.Outputs
-func scanBuildDef(candidates *sync.Map, b *buildDef, incremental bool) {
-	key := keyForPhonyCandidate(b.OrderOnlyStrings)
-	if v, loaded := candidates.LoadOrStore(key, &phonyCandidate{
-		first:             b,
-		orderOnlyStrings:  b.OrderOnlyStrings,
-		usedByIncremental: incremental,
-	}); loaded {
-		m := v.(*phonyCandidate)
-		if slices.Equal(m.orderOnlyStrings, b.OrderOnlyStrings) {
-			m.Do(func() {
-				// this is the second occurrence and hence it makes sense to
-				// extract it as a phony output
-				m.phony = &buildDef{
-					Rule:          Phony,
-					OutputStrings: []string{fmt.Sprintf("dedup-%x", key)},
-					InputStrings:  m.first.OrderOnlyStrings,
-				}
-				// the previously recorded build-def, which first had these deps as its
-				// order-only deps, should now use this phony output instead
-				m.first.OrderOnlyStrings = m.phony.OutputStrings
-				m.first = nil
-			})
-			b.OrderOnlyStrings = m.phony.OutputStrings
-			// don't override the value with false if it was set to true already
-			if incremental {
-				m.usedByIncremental = incremental
-			}
-		}
-	}
-}
-
 // deduplicateOrderOnlyDeps searches for common sets of order-only dependencies across all
 // buildDef instances in the provided moduleInfo instances. Each such
 // common set forms a new buildDef representing a phony output that then becomes
@@ -4938,34 +5041,64 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 	c.BeginEvent("deduplicate_order_only_deps")
 	defer c.EndEvent("deduplicate_order_only_deps")
 
-	candidates := sync.Map{} //used as map[key]*candidate
-	parallelVisit(slices.Values(modules), unorderedVisitorImpl{}, parallelVisitLimit,
-		func(m *moduleInfo, pause chan<- pauseSpec) bool {
-			incremental := m.buildActionCacheKey != nil
-			for _, b := range m.actionDefs.buildDefs {
-				// The dedup logic doesn't handle the case where OrderOnly is not empty
-				if len(b.OrderOnly) == 0 && len(b.OrderOnlyStrings) > 0 {
-					scanBuildDef(&candidates, b, incremental)
-				}
-			}
-			return false
-		})
-
-	// now collect all created phonys to return
 	var phonys []*buildDef
-	candidates.Range(func(_ any, v any) bool {
-		candidate := v.(*phonyCandidate)
-		if candidate.phony != nil {
-			phonys = append(phonys, candidate.phony)
-			if candidate.usedByIncremental {
-				c.orderOnlyStringsToCache[candidate.phony.OutputStrings[0]] =
-					candidate.phony.InputStrings
+	c.orderOnlyStringsCache = make(OrderOnlyStringsCache)
+	c.orderOnlyStrings.Range(func(key uniquelist.UniqueList[string], info *orderOnlyStringsInfo) bool {
+		if info.dedup {
+			dedup := fmt.Sprintf("dedup-%x", keyForPhonyCandidate(key.ToSlice()))
+			phony := &buildDef{
+				Rule:          Phony,
+				OutputStrings: []string{dedup},
+				InputStrings:  key.ToSlice(),
+			}
+			info.dedupName = dedup
+			phonys = append(phonys, phony)
+			if info.incremental {
+				c.orderOnlyStringsCache[phony.OutputStrings[0]] = phony.InputStrings
 			}
 		}
 		return true
 	})
 
+	parallelVisit(slices.Values(modules), unorderedVisitorImpl{}, parallelVisitLimit,
+		func(m *moduleInfo, pause pauseFunc) bool {
+			for _, def := range m.actionDefs.buildDefs {
+				if info, loaded := c.orderOnlyStrings.Load(def.OrderOnlyStrings); loaded {
+					if info.dedup {
+						def.OrderOnlyStrings = uniquelist.Make([]string{info.dedupName})
+						m.orderOnlyStrings = append(m.orderOnlyStrings, info.dedupName)
+					}
+				}
+			}
+			return false
+		})
+
 	return &localBuildActions{buildDefs: phonys}
+}
+
+func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
+	var providers []CachedProvider
+	for i, p := range module.providers {
+		if p != nil && providerRegistry[i].mutator == "" {
+			providers = append(providers,
+				CachedProvider{
+					Id:    providerRegistry[i],
+					Value: &p,
+				})
+		}
+	}
+
+	// These show up in the ninja file, so we need to cache these to ensure we
+	// re-generate ninja file if they changed.
+	relPos := module.pos
+	relPos.Filename = module.relBlueprintsFile
+	data := BuildActionCachedData{
+		Providers:        providers,
+		Pos:              &relPos,
+		OrderOnlyStrings: module.orderOnlyStrings,
+	}
+
+	c.updateBuildActionsCache(module.buildActionCacheKey, &data)
 }
 
 func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
