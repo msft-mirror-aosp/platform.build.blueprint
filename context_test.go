@@ -1578,7 +1578,7 @@ func calculateHashKey(m *moduleInfo, providerHashes [][]uint64) BuildActionCache
 	cacheInput := new(BuildActionCacheInput)
 	cacheInput.PropertiesHash = hash
 	cacheInput.ProvidersHash = providerHashes
-	hash, err = proptools.CalculateHash(&cacheInput)
+	hash, err = proptools.CalculateHash(cacheInput)
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate cache input hash"))
 	}

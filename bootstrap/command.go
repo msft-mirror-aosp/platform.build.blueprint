@@ -44,6 +44,7 @@ type Args struct {
 	// Debug data json file
 	ModuleDebugFile         string
 	IncrementalBuildActions bool
+	IncrementalDebugFile    string
 }
 
 // RegisterGoModuleTypes adds module types to build tools written in golang
