@@ -15,12 +15,14 @@
 package depset
 
 import (
+	"bytes"
+	"encoding/gob"
+	"errors"
 	"fmt"
 	"iter"
 	"slices"
 	"unique"
 
-	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/uniquelist"
 )
 
@@ -99,33 +101,88 @@ type depSetGob[T depSettableType] struct {
 	Transitive []DepSet[T]
 }
 
-func (d *DepSet[T]) ToGob() *depSetGob[T] {
-	impl := d.impl()
-	return &depSetGob[T]{
-		Preorder:   impl.preorder,
-		Reverse:    impl.reverse,
-		Order:      impl.order,
-		Direct:     impl.direct.ToSlice(),
-		Transitive: impl.transitive.ToSlice(),
-	}
+var DepSetMapToGob = make(map[any]int)
+var DepSetMapFromGob = make(map[int]any)
+var depsetId = 0
+
+// Since the Gob decoding and encoding logic uses these two global maps to store
+// the depsets that have been processed, each time the whole encoding and decoding process
+// runs, these maps need to be cleared.
+func resetGobMaps() {
+	DepSetMapToGob = make(map[any]int)
+	DepSetMapFromGob = make(map[int]any)
 }
 
-func (d *DepSet[T]) FromGob(data *depSetGob[T]) {
-	d.handle = unique.Make(depSet[T]{
-		preorder:   data.Preorder,
-		reverse:    data.Reverse,
-		order:      data.Order,
-		direct:     uniquelist.Make(data.Direct),
-		transitive: uniquelist.Make(data.Transitive),
-	})
-}
-
+// The Gob encoding and decoding logic below only works in a single thread environment,
+// which is currently the case. When parallel Gob cache processing is necessary the logic
+// needs to be revisited.
 func (d DepSet[T]) GobEncode() ([]byte, error) {
-	return gobtools.CustomGobEncode[depSetGob[T]](&d)
+	w := new(bytes.Buffer)
+	encoder := gob.NewEncoder(w)
+	impl := d.impl()
+	var err error
+	// Below we first check if the given depset has been encoded, if no we encode the
+	// actual content of the depset, otherwise we just encode a reference number of it
+	// to avoid duplicating the same depset multiple times.
+	if id, ok := DepSetMapToGob[d]; !ok {
+		depsetId++
+		DepSetMapToGob[d] = depsetId
+		err = errors.Join(
+			encoder.Encode(true),
+			encoder.Encode(depsetId),
+			encoder.Encode(impl.preorder),
+			encoder.Encode(impl.reverse),
+			encoder.Encode(impl.order),
+			encoder.Encode(impl.direct.ToSlice()),
+			encoder.Encode(impl.transitive.ToSlice()))
+	} else {
+		err = errors.Join(
+			encoder.Encode(false),
+			encoder.Encode(id))
+	}
+
+	return w.Bytes(), err
 }
 
 func (d *DepSet[T]) GobDecode(data []byte) error {
-	return gobtools.CustomGobDecode[depSetGob[T]](data, d)
+	r := bytes.NewBuffer(data)
+	var embedded bool
+	var err error
+	var depsetId int
+	decoder := gob.NewDecoder(r)
+	if err = errors.Join(
+		decoder.Decode(&embedded),
+		decoder.Decode(&depsetId)); err != nil {
+		return err
+	}
+	if embedded {
+		var fromGob depSetGob[T]
+		if err = errors.Join(
+			decoder.Decode(&fromGob.Preorder),
+			decoder.Decode(&fromGob.Reverse),
+			decoder.Decode(&fromGob.Order),
+			decoder.Decode(&fromGob.Direct),
+			decoder.Decode(&fromGob.Transitive)); err != nil {
+			return err
+		}
+		d.handle = unique.Make(depSet[T]{
+			preorder:   fromGob.Preorder,
+			reverse:    fromGob.Reverse,
+			order:      fromGob.Order,
+			direct:     uniquelist.Make(fromGob.Direct),
+			transitive: uniquelist.Make(fromGob.Transitive),
+		})
+		DepSetMapFromGob[depsetId] = d
+	} else {
+		if v, ok := DepSetMapFromGob[depsetId].(*DepSet[T]); ok {
+			d.handle = v.handle
+		} else {
+			// This shouldn't happen in non-parallel processing of the gob cache file.
+			panic("Failed to find the referenced depset during Gob decoding")
+		}
+	}
+
+	return err
 }
 
 // New returns an immutable DepSet with the given order, direct and transitive contents.
