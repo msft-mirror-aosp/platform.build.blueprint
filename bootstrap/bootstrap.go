@@ -226,6 +226,8 @@ type pluginDependencyTag struct {
 	blueprint.BaseDependencyTag
 }
 
+func (pluginDependencyTag) ExcludeFromVisibilityEnforcement() {}
+
 type bootstrapDependencies interface {
 	bootstrapDeps(ctx blueprint.BottomUpMutatorContext)
 }

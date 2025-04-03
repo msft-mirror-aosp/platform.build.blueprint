@@ -872,6 +872,31 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 	return info
 }
 
+// RegisterFirstBottomUpMutator registers a mutator that will be invoked to split Modules into variants.
+// The registered mutator is placed at the front of the list.
+//
+// The mutator type names given here must be unique to all bottom up mutators in the Context.
+func (c *Context) RegisterFirstBottomUpMutator(name string, mutator BottomUpMutator) MutatorHandle {
+	for _, m := range c.variantMutatorNames {
+		if m == name {
+			panic(fmt.Errorf("mutator %q is already registered", name))
+		}
+	}
+
+	info := &mutatorInfo{
+		bottomUpMutator: mutator,
+		name:            name,
+		index:           0,
+	}
+	c.mutatorInfo = append([]*mutatorInfo{info}, c.mutatorInfo...)
+	c.variantMutatorNames = append([]string{name}, c.variantMutatorNames...)
+	for i := range c.mutatorInfo {
+		c.mutatorInfo[i].index = i
+	}
+
+	return info
+}
+
 // HasMutatorFinished returns true if the given mutator has finished running.
 // It will panic if given an invalid mutator name.
 func (c *Context) HasMutatorFinished(mutatorName string) bool {
@@ -1783,9 +1808,11 @@ func newModule(factory ModuleFactory) *moduleInfo {
 	logicModule, properties := factory()
 
 	return &moduleInfo{
-		logicModule: logicModule,
-		factory:     factory,
-		properties:  properties,
+		logicModule:     logicModule,
+		factory:         factory,
+		properties:      properties,
+		startedMutator:  -1,
+		finishedMutator: -1,
 	}
 }
 
