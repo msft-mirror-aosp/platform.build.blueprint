@@ -110,31 +110,55 @@ type Module interface {
 	GenerateBuildActions(ModuleContext)
 
 	String() string
+
+	info() *moduleInfo
+	setInfo(*moduleInfo)
+}
+
+type ModuleBase struct {
+	moduleInfo *moduleInfo
+}
+
+func (m ModuleBase) info() *moduleInfo {
+	return m.moduleInfo
+}
+
+func (m *ModuleBase) setInfo(moduleInfo *moduleInfo) {
+	m.moduleInfo = moduleInfo
 }
 
 type ModuleProxy struct {
-	module Module
+	moduleInfo *moduleInfo
+}
+
+func (m ModuleProxy) info() *moduleInfo {
+	return m.moduleInfo
+}
+
+func (m ModuleProxy) setInfo(moduleInfo *moduleInfo) {
+	panic(fmt.Errorf("setInfo not implemented on ModuleProxy"))
 }
 
 func CreateModuleProxy(module Module) ModuleProxy {
 	return ModuleProxy{
-		module: module,
+		moduleInfo: module.info(),
 	}
 }
 
 func (m ModuleProxy) IsNil() bool {
-	return m.module == nil
+	return m.moduleInfo == nil
 }
 
 func (m ModuleProxy) Name() string {
-	return m.module.Name()
+	return m.moduleInfo.logicModule.Name()
 }
 
 func (m ModuleProxy) String() string {
-	return m.module.String()
+	return m.moduleInfo.logicModule.String()
 }
+
 func (m ModuleProxy) GenerateBuildActions(context ModuleContext) {
-	m.module.GenerateBuildActions(context)
+	m.moduleInfo.logicModule.GenerateBuildActions(context)
 }
 
 // A DynamicDependerModule is a Module that may add dependencies that do not
@@ -526,7 +550,7 @@ func (d *baseModuleContext) PropertyErrorf(property, format string,
 func (d *baseModuleContext) OtherModulePropertyErrorf(logicModule Module, property string, format string,
 	args ...interface{}) {
 
-	d.error(d.context.PropertyErrorf(getWrappedModule(logicModule), property, format, args...))
+	d.error(d.context.PropertyErrorf(logicModule, property, format, args...))
 }
 
 func (d *baseModuleContext) Failed() bool {
@@ -560,28 +584,28 @@ type moduleContext struct {
 }
 
 func EqualModules(m1, m2 Module) bool {
-	return getWrappedModule(m1) == getWrappedModule(m2)
+	return m1.info() == m2.info()
 }
 
 func (m *baseModuleContext) OtherModuleName(logicModule Module) string {
-	module := m.context.moduleInfo[getWrappedModule(logicModule)]
+	module := logicModule.info()
 	return module.Name()
 }
 
 func (m *baseModuleContext) OtherModuleDir(logicModule Module) string {
-	module := m.context.moduleInfo[getWrappedModule(logicModule)]
+	module := logicModule.info()
 	return filepath.Dir(module.relBlueprintsFile)
 }
 
 func (m *baseModuleContext) OtherModuleType(logicModule Module) string {
-	module := m.context.moduleInfo[getWrappedModule(logicModule)]
+	module := logicModule.info()
 	return module.typeName
 }
 
 func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 	args ...interface{}) {
 
-	module := m.context.moduleInfo[getWrappedModule(logicModule)]
+	module := logicModule.info()
 	m.errs = append(m.errs, &ModuleError{
 		BlueprintError: BlueprintError{
 			Err: fmt.Errorf(format, args...),
@@ -591,16 +615,9 @@ func (m *baseModuleContext) OtherModuleErrorf(logicModule Module, format string,
 	})
 }
 
-func getWrappedModule(module Module) Module {
-	if mp, isProxy := module.(ModuleProxy); isProxy {
-		return mp.module
-	}
-	return module
-}
-
 func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) DependencyTag {
 	// fast path for calling OtherModuleDependencyTag from inside VisitDirectDeps
-	if m.visitingDep.module != nil && getWrappedModule(logicModule) == m.visitingDep.module.logicModule {
+	if m.visitingDep.module != nil && logicModule.info() == m.visitingDep.module {
 		return m.visitingDep.tag
 	}
 
@@ -609,7 +626,7 @@ func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) Depende
 	}
 
 	for _, dep := range m.visitingParent.directDeps {
-		if dep.module.logicModule == getWrappedModule(logicModule) {
+		if dep.module == logicModule.info() {
 			return dep.tag
 		}
 	}
@@ -618,7 +635,7 @@ func (m *baseModuleContext) OtherModuleDependencyTag(logicModule Module) Depende
 }
 
 func (m *baseModuleContext) OtherModuleSubDir(logicModule Module) string {
-	return m.context.ModuleSubDir(getWrappedModule(logicModule))
+	return m.context.ModuleSubDir(logicModule)
 }
 
 func (m *baseModuleContext) ModuleFromName(name string) (Module, bool) {
@@ -680,13 +697,11 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 }
 
 func (m *baseModuleContext) OtherModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
-	module := m.context.moduleInfo[getWrappedModule(logicModule)]
-	return m.context.provider(module, provider.provider())
+	return m.context.provider(logicModule.info(), provider.provider())
 }
 
 func (m *baseModuleContext) OtherModuleHasProvider(logicModule Module, provider AnyProviderKey) bool {
-	module := m.context.moduleInfo[getWrappedModule(logicModule)]
-	return m.context.hasProvider(module, provider.provider())
+	return m.context.hasProvider(logicModule.info(), provider.provider())
 }
 
 func (m *baseModuleContext) Provider(provider AnyProviderKey) (any, bool) {
@@ -722,7 +737,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		var deps []Module
 		m.VisitDirectDeps(func(module Module) {
 			cacheInput.ProvidersHash =
-				append(cacheInput.ProvidersHash, m.context.moduleInfo[module].providerInitialValueHashes)
+				append(cacheInput.ProvidersHash, module.info().providerInitialValueHashes)
 			if m.context.incrementalDebugFile != "" {
 				deps = append(deps, module)
 			}
@@ -811,7 +826,7 @@ func incrementalDebugData(m *moduleContext, deps []Module, inputHash *BuildActio
 		Providers: func() []depProviders {
 			result := make([]depProviders, 0, len(deps))
 			for _, d := range deps {
-				dep := m.context.moduleInfo[d]
+				dep := d.info()
 				dp := depProviders{
 					Name:    dep.Name(),
 					Type:    dep.typeName,
@@ -854,7 +869,7 @@ func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) 
 func (m *baseModuleContext) GetDirectDepProxyWithTag(name string, tag DependencyTag) ModuleProxy {
 	module := m.GetDirectDepWithTag(name, tag)
 	if module != nil {
-		return ModuleProxy{module}
+		return ModuleProxy{module.info()}
 	}
 
 	return ModuleProxy{}
@@ -891,7 +906,7 @@ func (m *baseModuleContext) VisitDirectDepsProxy(visit func(proxy ModuleProxy)) 
 
 	for _, dep := range m.module.directDeps {
 		m.visitingDep = dep
-		visit(ModuleProxy{dep.module.logicModule})
+		visit(ModuleProxy{dep.module})
 	}
 
 	m.visitingParent = nil
@@ -974,7 +989,7 @@ func (m *baseModuleContext) WalkDepsProxy(visit func(child, parent ModuleProxy) 
 	m.context.walkDeps(m.module, true, func(dep depInfo, parent *moduleInfo) bool {
 		m.visitingParent = parent
 		m.visitingDep = dep
-		return visit(ModuleProxy{dep.module.logicModule}, ModuleProxy{parent.logicModule})
+		return visit(ModuleProxy{dep.module}, ModuleProxy{parent})
 	}, nil)
 
 	m.visitingParent = nil
@@ -990,7 +1005,7 @@ func (m *baseModuleContext) FinalModule() Module {
 }
 
 func (m *baseModuleContext) IsFinalModule(module Module) bool {
-	return m.module.group.modules.lastModule().logicModule == module
+	return m.module.group.modules.lastModule() == module.info()
 }
 
 func (m *baseModuleContext) VisitAllModuleVariants(visit func(Module)) {
@@ -1014,7 +1029,7 @@ func (m *baseModuleContext) base() *baseModuleContext {
 }
 
 func (m *baseModuleContext) OtherModuleIsAutoGenerated(logicModule Module) bool {
-	module := m.context.moduleInfo[getWrappedModule(logicModule)]
+	module := logicModule.info()
 	if module == nil {
 		panic(fmt.Errorf("Module %s not found in baseModuleContext", logicModule.Name()))
 	}
@@ -1235,7 +1250,7 @@ func (mctx *mutatorContext) Module() Module {
 func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps ...string) []Module {
 	depInfos := make([]Module, 0, len(deps))
 	for _, dep := range deps {
-		modInfo := mctx.context.moduleInfo[module]
+		modInfo := module.info()
 		depInfo, errs := mctx.context.addVariationDependency(modInfo, mctx.mutator, mctx.config, nil, tag, dep, false)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)

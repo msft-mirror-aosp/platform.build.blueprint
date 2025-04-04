@@ -74,6 +74,7 @@ type IncrementalTestProvider struct {
 var IncrementalTestProviderKey = NewProvider[IncrementalTestProvider]()
 
 type baseTestModule struct {
+	ModuleBase
 	SimpleName
 	properties struct {
 		Deps             []string

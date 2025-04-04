@@ -202,27 +202,27 @@ func (s *singletonContext) Name() string {
 }
 
 func (s *singletonContext) ModuleName(logicModule Module) string {
-	return s.context.ModuleName(getWrappedModule(logicModule))
+	return s.context.ModuleName(logicModule)
 }
 
 func (s *singletonContext) ModuleDir(logicModule Module) string {
-	return s.context.ModuleDir(getWrappedModule(logicModule))
+	return s.context.ModuleDir(logicModule)
 }
 
 func (s *singletonContext) ModuleSubDir(logicModule Module) string {
-	return s.context.ModuleSubDir(getWrappedModule(logicModule))
+	return s.context.ModuleSubDir(logicModule)
 }
 
 func (s *singletonContext) ModuleType(logicModule Module) string {
-	return s.context.ModuleType(getWrappedModule(logicModule))
+	return s.context.ModuleType(logicModule)
 }
 
 func (s *singletonContext) ModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
-	return s.context.ModuleProvider(getWrappedModule(logicModule), provider)
+	return s.context.ModuleProvider(logicModule, provider)
 }
 
 func (s *singletonContext) BlueprintFile(logicModule Module) string {
-	return s.context.BlueprintFile(getWrappedModule(logicModule))
+	return s.context.BlueprintFile(logicModule)
 }
 
 func (s *singletonContext) error(err error) {
@@ -332,7 +332,7 @@ func (s *singletonContext) VisitAllModules(visit func(Module)) {
 	defer func() {
 		if r := recover(); r != nil {
 			panic(newPanicErrorf(r, "VisitAllModules(%s) for module %s",
-				funcName(visit), s.context.moduleInfo[visitingModule]))
+				funcName(visit), visitingModule.info()))
 		}
 	}()
 
@@ -377,11 +377,11 @@ func (s *singletonContext) PrimaryModule(module Module) Module {
 }
 
 func (s *singletonContext) PrimaryModuleProxy(module ModuleProxy) ModuleProxy {
-	return ModuleProxy{s.context.PrimaryModule(module.module)}
+	return ModuleProxy{s.context.primaryModule(module.info())}
 }
 
 func (s *singletonContext) IsFinalModule(module Module) bool {
-	return s.context.IsFinalModule(getWrappedModule(module))
+	return s.context.IsFinalModule(module)
 }
 
 func (s *singletonContext) VisitAllModuleVariants(module Module, visit func(Module)) {
@@ -389,7 +389,7 @@ func (s *singletonContext) VisitAllModuleVariants(module Module, visit func(Modu
 }
 
 func (s *singletonContext) VisitAllModuleVariantProxies(module Module, visit func(proxy ModuleProxy)) {
-	s.context.VisitAllModuleVariants(getWrappedModule(module), visitProxyAdaptor(visit))
+	s.context.VisitAllModuleVariants(module, visitProxyAdaptor(visit))
 }
 
 func (s *singletonContext) AddNinjaFileDeps(deps ...string) {
@@ -408,7 +408,7 @@ func (s *singletonContext) Fs() pathtools.FileSystem {
 func (s *singletonContext) ModuleVariantsFromName(referer ModuleProxy, name string) []ModuleProxy {
 	c := s.context
 
-	refererInfo := c.moduleInfo[referer.module]
+	refererInfo := referer.info()
 	if refererInfo == nil {
 		s.ModuleErrorf(referer, "could not find module %q", referer.Name())
 		return nil
@@ -421,7 +421,7 @@ func (s *singletonContext) ModuleVariantsFromName(referer ModuleProxy, name stri
 	result := make([]ModuleProxy, 0, len(moduleGroup.modules))
 	for _, moduleInfo := range moduleGroup.modules {
 		if moduleInfo.logicModule != nil {
-			result = append(result, ModuleProxy{moduleInfo.logicModule})
+			result = append(result, ModuleProxy{moduleInfo})
 		}
 	}
 	return result
@@ -433,8 +433,6 @@ func (s *singletonContext) HasMutatorFinished(mutatorName string) bool {
 
 func visitProxyAdaptor(visit func(proxy ModuleProxy)) func(module Module) {
 	return func(module Module) {
-		visit(ModuleProxy{
-			module: module,
-		})
+		visit(ModuleProxy{module.info()})
 	}
 }

@@ -1707,6 +1707,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 
 		m := *origModule
 		newModule := &m
+		newLogicModule.setInfo(newModule)
 		newModule.directDeps = slices.Clone(origModule.directDeps)
 		newModule.reverseDeps = nil
 		newModule.forwardDeps = nil
@@ -1807,13 +1808,15 @@ func (c *Context) prettyPrintGroupVariants(group *moduleGroup) string {
 func newModule(factory ModuleFactory) *moduleInfo {
 	logicModule, properties := factory()
 
-	return &moduleInfo{
+	moduleInfo := &moduleInfo{
 		logicModule:     logicModule,
 		factory:         factory,
 		properties:      properties,
 		startedMutator:  -1,
 		finishedMutator: -1,
 	}
+	logicModule.setInfo(moduleInfo)
+	return moduleInfo
 }
 
 func processModuleDef(moduleDef *parser.Module,
@@ -3422,6 +3425,7 @@ func (c *Context) cloneModules() {
 			func(m *moduleInfo, pause pauseFunc) bool {
 				origLogicModule := m.logicModule
 				m.logicModule, m.properties = c.cloneLogicModule(m)
+				m.logicModule.setInfo(m)
 				ch <- update{origLogicModule, m}
 				return false
 			})
@@ -4183,8 +4187,7 @@ func (c *Context) ModuleTypeFactories() map[string]ModuleFactory {
 }
 
 func (c *Context) ModuleName(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.Name()
+	return logicModule.info().Name()
 }
 
 func (c *Context) ModuleDir(logicModule Module) string {
@@ -4192,13 +4195,11 @@ func (c *Context) ModuleDir(logicModule Module) string {
 }
 
 func (c *Context) ModuleSubDir(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.variant.name
+	return logicModule.info().variant.name
 }
 
 func (c *Context) ModuleType(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.typeName
+	return logicModule.info().typeName
 }
 
 // ModuleProvider returns the value, if any, for the provider for a module.  If the value for the
@@ -4206,13 +4207,11 @@ func (c *Context) ModuleType(logicModule Module) string {
 // It panics if called before the appropriate mutator or GenerateBuildActions pass for the provider on the
 // module.  The value returned may be a deep copy of the value originally passed to SetProvider.
 func (c *Context) ModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
-	module := c.moduleInfo[logicModule]
-	return c.provider(module, provider.provider())
+	return c.provider(logicModule.info(), provider.provider())
 }
 
 func (c *Context) BlueprintFile(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.relBlueprintsFile
+	return logicModule.info().relBlueprintsFile
 }
 
 func (c *Context) moduleErrorf(module *moduleInfo, format string,
@@ -4235,13 +4234,13 @@ func (c *Context) moduleErrorf(module *moduleInfo, format string,
 
 func (c *Context) ModuleErrorf(logicModule Module, format string,
 	args ...interface{}) error {
-	return c.moduleErrorf(c.moduleInfo[logicModule], format, args...)
+	return c.moduleErrorf(logicModule.info(), format, args...)
 }
 
 func (c *Context) PropertyErrorf(logicModule Module, property string, format string,
 	args ...interface{}) error {
 
-	module := c.moduleInfo[logicModule]
+	module := logicModule.info()
 	if module == nil {
 		// This can happen if PropertyErrorf is called from a load hook
 		return &BlueprintError{
@@ -4283,7 +4282,7 @@ func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
 }
 
 func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, DependencyTag)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4301,7 +4300,7 @@ func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, Depe
 }
 
 func (c *Context) VisitDirectDepsIf(module Module, pred func(Module) bool, visit func(Module)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4321,7 +4320,7 @@ func (c *Context) VisitDirectDepsIf(module Module, pred func(Module) bool, visit
 }
 
 func (c *Context) VisitDepsDepthFirst(module Module, visit func(Module)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4339,7 +4338,7 @@ func (c *Context) VisitDepsDepthFirst(module Module, visit func(Module)) {
 }
 
 func (c *Context) VisitDepsDepthFirstIf(module Module, pred func(Module) bool, visit func(Module)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4359,17 +4358,21 @@ func (c *Context) VisitDepsDepthFirstIf(module Module, pred func(Module) bool, v
 }
 
 func (c *Context) PrimaryModule(module Module) Module {
-	return c.moduleInfo[module].group.modules.firstModule().logicModule
+	return c.primaryModule(module.info()).logicModule
+}
+
+func (c *Context) primaryModule(moduleInfo *moduleInfo) *moduleInfo {
+	return moduleInfo.group.modules.firstModule()
 }
 
 func (c *Context) IsFinalModule(module Module) bool {
-	return c.moduleInfo[module].group.modules.lastModule().logicModule == module
+	return module.info().group.modules.lastModule() == module.info()
 }
 
 func (c *Context) VisitAllModuleVariants(module Module,
 	visit func(Module)) {
 
-	c.visitAllModuleVariants(c.moduleInfo[module], visit)
+	c.visitAllModuleVariants(module.info(), visit)
 }
 
 // Singletons returns a list of all registered Singletons.
