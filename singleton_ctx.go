@@ -32,36 +32,36 @@ type SingletonContext interface {
 	Name() string
 
 	// ModuleName returns the name of the given Module.  See BaseModuleContext.ModuleName for more information.
-	ModuleName(module Module) string
+	ModuleName(module ModuleOrProxy) string
 
 	// ModuleDir returns the directory of the given Module.  See BaseModuleContext.ModuleDir for more information.
-	ModuleDir(module Module) string
+	ModuleDir(module ModuleOrProxy) string
 
 	// ModuleSubDir returns the unique subdirectory name of the given Module.  See ModuleContext.ModuleSubDir for
 	// more information.
-	ModuleSubDir(module Module) string
+	ModuleSubDir(module ModuleOrProxy) string
 
 	// ModuleType returns the type of the given Module.  See BaseModuleContext.ModuleType for more information.
-	ModuleType(module Module) string
+	ModuleType(module ModuleOrProxy) string
 
 	// BlueprintFile returns the path of the Blueprint file that defined the given module.
-	BlueprintFile(module Module) string
+	BlueprintFile(module ModuleOrProxy) string
 
 	// ModuleProvider returns the value, if any, for the provider for a module.  If the value for the
 	// provider was not set it returns the zero value of the type of the provider, which means the
 	// return value can always be type-asserted to the type of the provider.  The return value should
 	// always be considered read-only.  It panics if called before the appropriate mutator or
 	// GenerateBuildActions pass for the provider on the module.
-	ModuleProvider(module Module, provider AnyProviderKey) (any, bool)
+	ModuleProvider(module ModuleOrProxy, provider AnyProviderKey) (any, bool)
 
 	// ModuleErrorf reports an error at the line number of the module type in the module definition.
-	ModuleErrorf(module Module, format string, args ...interface{})
+	ModuleErrorf(module ModuleOrProxy, format string, args ...interface{})
 
 	// Errorf reports an error at the specified position of the module definition file.
 	Errorf(format string, args ...interface{})
 
 	// OtherModulePropertyErrorf reports an error on the line number of the given property of the given module
-	OtherModulePropertyErrorf(module Module, property string, format string, args ...interface{})
+	OtherModulePropertyErrorf(module ModuleOrProxy, property string, format string, args ...interface{})
 
 	// Failed returns true if any errors have been reported.  In most cases the singleton can continue with generating
 	// build rules after an error, allowing it to report additional errors in a single run, but in cases where the error
@@ -138,7 +138,7 @@ type SingletonContext interface {
 	VisitAllModuleVariants(module Module, visit func(Module))
 
 	// VisitAllModuleVariantProxies calls visit for each variant of the given module.
-	VisitAllModuleVariantProxies(module Module, visit func(proxy ModuleProxy))
+	VisitAllModuleVariantProxies(module ModuleProxy, visit func(proxy ModuleProxy))
 
 	// PrimaryModule returns the first variant of the given module.  This can be used to perform
 	// singleton actions that are only done once for all variants of a module.
@@ -151,7 +151,7 @@ type SingletonContext interface {
 
 	// IsFinalModule returns if the given module is the last variant. This can be used to perform
 	// singleton actions that are only done once for all variants of a module.
-	IsFinalModule(module Module) bool
+	IsFinalModule(module ModuleOrProxy) bool
 
 	// AddNinjaFileDeps adds dependencies on the specified files to the rule that creates the ninja manifest.  The
 	// primary builder will be rerun whenever the specified files are modified.
@@ -201,27 +201,27 @@ func (s *singletonContext) Name() string {
 	return s.name
 }
 
-func (s *singletonContext) ModuleName(logicModule Module) string {
+func (s *singletonContext) ModuleName(logicModule ModuleOrProxy) string {
 	return s.context.ModuleName(logicModule)
 }
 
-func (s *singletonContext) ModuleDir(logicModule Module) string {
+func (s *singletonContext) ModuleDir(logicModule ModuleOrProxy) string {
 	return s.context.ModuleDir(logicModule)
 }
 
-func (s *singletonContext) ModuleSubDir(logicModule Module) string {
+func (s *singletonContext) ModuleSubDir(logicModule ModuleOrProxy) string {
 	return s.context.ModuleSubDir(logicModule)
 }
 
-func (s *singletonContext) ModuleType(logicModule Module) string {
+func (s *singletonContext) ModuleType(logicModule ModuleOrProxy) string {
 	return s.context.ModuleType(logicModule)
 }
 
-func (s *singletonContext) ModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
+func (s *singletonContext) ModuleProvider(logicModule ModuleOrProxy, provider AnyProviderKey) (any, bool) {
 	return s.context.ModuleProvider(logicModule, provider)
 }
 
-func (s *singletonContext) BlueprintFile(logicModule Module) string {
+func (s *singletonContext) BlueprintFile(logicModule ModuleOrProxy) string {
 	return s.context.BlueprintFile(logicModule)
 }
 
@@ -231,7 +231,7 @@ func (s *singletonContext) error(err error) {
 	}
 }
 
-func (s *singletonContext) ModuleErrorf(logicModule Module, format string,
+func (s *singletonContext) ModuleErrorf(logicModule ModuleOrProxy, format string,
 	args ...interface{}) {
 
 	s.error(s.context.ModuleErrorf(logicModule, format, args...))
@@ -242,7 +242,7 @@ func (s *singletonContext) Errorf(format string, args ...interface{}) {
 	s.error(fmt.Errorf(format, args...))
 }
 
-func (s *singletonContext) OtherModulePropertyErrorf(logicModule Module, property string, format string,
+func (s *singletonContext) OtherModulePropertyErrorf(logicModule ModuleOrProxy, property string, format string,
 	args ...interface{}) {
 
 	s.error(s.context.PropertyErrorf(logicModule, property, format, args...))
@@ -380,7 +380,7 @@ func (s *singletonContext) PrimaryModuleProxy(module ModuleProxy) ModuleProxy {
 	return ModuleProxy{s.context.primaryModule(module.info())}
 }
 
-func (s *singletonContext) IsFinalModule(module Module) bool {
+func (s *singletonContext) IsFinalModule(module ModuleOrProxy) bool {
 	return s.context.IsFinalModule(module)
 }
 
@@ -388,7 +388,7 @@ func (s *singletonContext) VisitAllModuleVariants(module Module, visit func(Modu
 	s.context.VisitAllModuleVariants(module, visit)
 }
 
-func (s *singletonContext) VisitAllModuleVariantProxies(module Module, visit func(proxy ModuleProxy)) {
+func (s *singletonContext) VisitAllModuleVariantProxies(module ModuleProxy, visit func(proxy ModuleProxy)) {
 	s.context.VisitAllModuleVariants(module, visitProxyAdaptor(visit))
 }
 

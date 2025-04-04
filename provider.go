@@ -269,7 +269,7 @@ func (c *Context) mutatorStartedForModule(mutator *mutatorInfo, m *moduleInfo) b
 // OtherModuleProviderContext is a helper interface that is a subset of ModuleContext or BottomUpMutatorContext
 // for use in OtherModuleProvider.
 type OtherModuleProviderContext interface {
-	OtherModuleProvider(m Module, provider AnyProviderKey) (any, bool)
+	OtherModuleProvider(m ModuleOrProxy, provider AnyProviderKey) (any, bool)
 }
 
 var _ OtherModuleProviderContext = BaseModuleContext(nil)
@@ -282,7 +282,7 @@ var _ OtherModuleProviderContext = BottomUpMutatorContext(nil)
 //
 // OtherModuleProviderContext is a helper interface that accepts ModuleContext, BottomUpMutatorContext, or
 // TopDownMutatorContext.
-func OtherModuleProvider[K any](ctx OtherModuleProviderContext, module Module, provider ProviderKey[K]) (K, bool) {
+func OtherModuleProvider[K any](ctx OtherModuleProviderContext, module ModuleOrProxy, provider ProviderKey[K]) (K, bool) {
 	value, ok := ctx.OtherModuleProvider(module, provider)
 	if !ok {
 		var k K
@@ -294,7 +294,7 @@ func OtherModuleProvider[K any](ctx OtherModuleProviderContext, module Module, p
 // SingletonModuleProviderContext is a helper interface that is a subset of Context and SingletonContext for use in
 // SingletonModuleProvider.
 type SingletonModuleProviderContext interface {
-	ModuleProvider(m Module, provider AnyProviderKey) (any, bool)
+	ModuleProvider(m ModuleOrProxy, provider AnyProviderKey) (any, bool)
 }
 
 var _ SingletonModuleProviderContext = &Context{}

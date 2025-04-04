@@ -4186,19 +4186,19 @@ func (c *Context) ModuleTypeFactories() map[string]ModuleFactory {
 	return maps.Clone(c.moduleFactories)
 }
 
-func (c *Context) ModuleName(logicModule Module) string {
+func (c *Context) ModuleName(logicModule ModuleOrProxy) string {
 	return logicModule.info().Name()
 }
 
-func (c *Context) ModuleDir(logicModule Module) string {
+func (c *Context) ModuleDir(logicModule ModuleOrProxy) string {
 	return filepath.Dir(c.BlueprintFile(logicModule))
 }
 
-func (c *Context) ModuleSubDir(logicModule Module) string {
+func (c *Context) ModuleSubDir(logicModule ModuleOrProxy) string {
 	return logicModule.info().variant.name
 }
 
-func (c *Context) ModuleType(logicModule Module) string {
+func (c *Context) ModuleType(logicModule ModuleOrProxy) string {
 	return logicModule.info().typeName
 }
 
@@ -4206,11 +4206,11 @@ func (c *Context) ModuleType(logicModule Module) string {
 // provider was not set it returns nil and false.  The return value should always be considered read-only.
 // It panics if called before the appropriate mutator or GenerateBuildActions pass for the provider on the
 // module.  The value returned may be a deep copy of the value originally passed to SetProvider.
-func (c *Context) ModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
+func (c *Context) ModuleProvider(logicModule ModuleOrProxy, provider AnyProviderKey) (any, bool) {
 	return c.provider(logicModule.info(), provider.provider())
 }
 
-func (c *Context) BlueprintFile(logicModule Module) string {
+func (c *Context) BlueprintFile(logicModule ModuleOrProxy) string {
 	return logicModule.info().relBlueprintsFile
 }
 
@@ -4232,12 +4232,12 @@ func (c *Context) moduleErrorf(module *moduleInfo, format string,
 	}
 }
 
-func (c *Context) ModuleErrorf(logicModule Module, format string,
+func (c *Context) ModuleErrorf(logicModule ModuleOrProxy, format string,
 	args ...interface{}) error {
 	return c.moduleErrorf(logicModule.info(), format, args...)
 }
 
-func (c *Context) PropertyErrorf(logicModule Module, property string, format string,
+func (c *Context) PropertyErrorf(logicModule ModuleOrProxy, property string, format string,
 	args ...interface{}) error {
 
 	module := logicModule.info()
@@ -4365,13 +4365,11 @@ func (c *Context) primaryModule(moduleInfo *moduleInfo) *moduleInfo {
 	return moduleInfo.group.modules.firstModule()
 }
 
-func (c *Context) IsFinalModule(module Module) bool {
+func (c *Context) IsFinalModule(module ModuleOrProxy) bool {
 	return module.info().group.modules.lastModule() == module.info()
 }
 
-func (c *Context) VisitAllModuleVariants(module Module,
-	visit func(Module)) {
-
+func (c *Context) VisitAllModuleVariants(module ModuleOrProxy, visit func(Module)) {
 	c.visitAllModuleVariants(module.info(), visit)
 }
 
