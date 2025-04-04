@@ -244,7 +244,7 @@ type BaseModuleContext interface {
 	// none exists.  It panics if the dependency does not have the specified tag.
 	GetDirectDepWithTag(name string, tag DependencyTag) Module
 
-	GetDirectDepProxyWithTag(name string, tag DependencyTag) *ModuleProxy
+	GetDirectDepProxyWithTag(name string, tag DependencyTag) ModuleProxy
 
 	// VisitDirectDeps calls visit for each direct dependency.  If there are multiple direct dependencies on the same
 	// module visit will be called multiple times on that module and OtherModuleDependencyTag will return a different
@@ -851,13 +851,13 @@ func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) 
 	return nil
 }
 
-func (m *baseModuleContext) GetDirectDepProxyWithTag(name string, tag DependencyTag) *ModuleProxy {
+func (m *baseModuleContext) GetDirectDepProxyWithTag(name string, tag DependencyTag) ModuleProxy {
 	module := m.GetDirectDepWithTag(name, tag)
 	if module != nil {
-		return &ModuleProxy{module}
+		return ModuleProxy{module}
 	}
 
-	return nil
+	return ModuleProxy{}
 }
 
 func (m *baseModuleContext) VisitDirectDeps(visit func(Module)) {
