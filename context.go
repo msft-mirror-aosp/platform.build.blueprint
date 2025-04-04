@@ -98,7 +98,6 @@ type Context struct {
 	moduleFactories     map[string]ModuleFactory
 	nameInterface       NameInterface
 	moduleGroups        []*moduleGroup
-	moduleInfo          map[Module]*moduleInfo
 	singletonInfo       []*singletonInfo
 	mutatorInfo         []*mutatorInfo
 	variantMutatorNames []string
@@ -596,7 +595,6 @@ func newContext() *Context {
 		EventHandler:          &eventHandler,
 		moduleFactories:       make(map[string]ModuleFactory),
 		nameInterface:         NewSimpleNameInterface(),
-		moduleInfo:            make(map[Module]*moduleInfo),
 		globs:                 make(map[globKey]pathtools.GlobResult),
 		fs:                    pathtools.OsFs,
 		includeTags:           &IncludeTags{},
@@ -1877,7 +1875,6 @@ func (c *Context) addModule(module *moduleInfo) []error {
 			},
 		}
 	}
-	c.moduleInfo[module.logicModule] = module
 
 	group := &moduleGroup{
 		name:    name,
@@ -2783,13 +2780,13 @@ func cycleError(cycle []*moduleInfo) (errs []error) {
 func (c *Context) updateDependencies() (errs []error) {
 	c.cachedDepsModified = true
 
-	for _, module := range c.moduleInfo {
+	for module := range c.iterateAllVariants() {
 		// Reset the forward and reverse deps without reducing their capacity to avoid reallocation.
 		module.reverseDeps = module.reverseDeps[:0]
 		module.forwardDeps = module.forwardDeps[:0]
 	}
 
-	for _, module := range c.moduleInfo {
+	for module := range c.iterateAllVariants() {
 		// Add an implicit dependency ordering on all earlier modules in the same module group
 		selfIndex := slices.Index(module.group.modules, module)
 		module.forwardDeps = slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
@@ -3192,19 +3189,12 @@ var mutatorContextPool = pool.New[mutatorContext]()
 func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	direction mutatorDirection) (deps []string, errs []error) {
 
-	newModuleInfo := maps.Clone(c.moduleInfo)
-
 	type globalStateChange struct {
 		reverse    []reverseDep
 		rename     []rename
 		replace    []replace
 		newModules []*moduleInfo
 		deps       []string
-	}
-
-	type newVariationPair struct {
-		newVariations   moduleList
-		origLogicModule Module
 	}
 
 	reverseDeps := make(map[*moduleInfo][]depInfo)
@@ -3214,7 +3204,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 	errsCh := make(chan []error)
 	globalStateCh := make(chan globalStateChange)
-	newVariationsCh := make(chan newVariationPair)
 	done := make(chan bool)
 
 	c.needsUpdateDependencies = 0
@@ -3234,8 +3223,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			mutator:   mutatorGroup[0],
 			pauseFunc: pause,
 		}
-
-		origLogicModule := module.logicModule
 
 		module.startedMutator = mutatorGroup[0].index
 
@@ -3261,10 +3248,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			errsCh <- mctx.errs
 			hasErrors = true
 		} else {
-			if len(mctx.newVariations) > 0 {
-				newVariationsCh <- newVariationPair{mctx.newVariations, origLogicModule}
-			}
-
 			if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 {
 				globalStateCh <- globalStateChange{
 					reverse:    mctx.reverseDeps,
@@ -3281,8 +3264,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		return hasErrors
 	}
 
-	var obsoleteLogicModules []Module
-
 	// Process errs and reverseDeps in a single goroutine
 	go func() {
 		for {
@@ -3297,13 +3278,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				rename = append(rename, globalStateChange.rename...)
 				newModules = append(newModules, globalStateChange.newModules...)
 				deps = append(deps, globalStateChange.deps...)
-			case newVariations := <-newVariationsCh:
-				if newVariations.origLogicModule != newVariations.newVariations[0].logicModule {
-					obsoleteLogicModules = append(obsoleteLogicModules, newVariations.origLogicModule)
-				}
-				for _, module := range newVariations.newVariations {
-					newModuleInfo[module.logicModule] = module
-				}
 			case <-done:
 				return
 			}
@@ -3326,16 +3300,9 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		return nil, errs
 	}
 
-	for _, obsoleteLogicModule := range obsoleteLogicModules {
-		delete(newModuleInfo, obsoleteLogicModule)
-	}
-
-	c.moduleInfo = newModuleInfo
-
 	transitionMutator := mutatorGroup[0].transitionMutator
 
 	if transitionMutator != nil {
-
 		for _, group := range c.moduleGroups {
 			for i := 0; i < len(group.modules); i++ {
 				module := group.modules[i]
@@ -3414,36 +3381,14 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 // a mutator sets a non-property member variable on a module, which works until a later mutator
 // creates variants of that module.
 func (c *Context) cloneModules() {
-	type update struct {
-		orig  Module
-		clone *moduleInfo
-	}
-	ch := make(chan update)
-	doneCh := make(chan bool)
-	go func() {
-		errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
-			func(m *moduleInfo, pause pauseFunc) bool {
-				origLogicModule := m.logicModule
-				m.logicModule, m.properties = c.cloneLogicModule(m)
-				m.logicModule.setInfo(m)
-				ch <- update{origLogicModule, m}
-				return false
-			})
-		if len(errs) > 0 {
-			panic(errs)
-		}
-		doneCh <- true
-	}()
-
-	done := false
-	for !done {
-		select {
-		case <-doneCh:
-			done = true
-		case update := <-ch:
-			delete(c.moduleInfo, update.orig)
-			c.moduleInfo[update.clone.logicModule] = update.clone
-		}
+	errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
+		func(m *moduleInfo, pause pauseFunc) bool {
+			m.logicModule, m.properties = c.cloneLogicModule(m)
+			m.logicModule.setInfo(m)
+			return false
+		})
+	if len(errs) > 0 {
+		panic(errs)
 	}
 }
 
@@ -4781,7 +4726,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	var modules []*moduleInfo
 	var incModules []*moduleInfo
 
-	for _, module := range c.moduleInfo {
+	for module := range c.iterateAllVariants() {
 		if module.buildActionCacheKey != nil {
 			incModules = append(incModules, module)
 			continue
