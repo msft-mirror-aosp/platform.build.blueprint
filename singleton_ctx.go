@@ -328,22 +328,11 @@ func (s *singletonContext) AddSubninja(file string) {
 }
 
 func (s *singletonContext) VisitAllModules(visit func(Module)) {
-	var visitingModule Module
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitAllModules(%s) for module %s",
-				funcName(visit), visitingModule.info()))
-		}
-	}()
-
-	s.context.VisitAllModules(func(m Module) {
-		visitingModule = m
-		visit(m)
-	})
+	s.context.VisitAllModules(visit)
 }
 
 func (s *singletonContext) VisitAllModuleProxies(visit func(proxy ModuleProxy)) {
-	s.VisitAllModules(visitProxyAdaptor(visit))
+	s.context.VisitAllModulesProxies(visit)
 }
 
 func (s *singletonContext) VisitAllModulesIf(pred func(Module) bool,
@@ -389,7 +378,7 @@ func (s *singletonContext) VisitAllModuleVariants(module Module, visit func(Modu
 }
 
 func (s *singletonContext) VisitAllModuleVariantProxies(module ModuleProxy, visit func(proxy ModuleProxy)) {
-	s.context.VisitAllModuleVariants(module, visitProxyAdaptor(visit))
+	s.context.VisitAllModuleVariantProxies(module, visitProxyAdaptor(visit))
 }
 
 func (s *singletonContext) AddNinjaFileDeps(deps ...string) {
@@ -431,8 +420,8 @@ func (s *singletonContext) HasMutatorFinished(mutatorName string) bool {
 	return s.context.HasMutatorFinished(mutatorName)
 }
 
-func visitProxyAdaptor(visit func(proxy ModuleProxy)) func(module Module) {
-	return func(module Module) {
+func visitProxyAdaptor(visit func(proxy ModuleProxy)) func(module ModuleProxy) {
+	return func(module ModuleProxy) {
 		visit(ModuleProxy{module.info()})
 	}
 }

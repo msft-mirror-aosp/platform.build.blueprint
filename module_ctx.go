@@ -155,10 +155,16 @@ func (m ModuleProxy) IsNil() bool {
 }
 
 func (m ModuleProxy) Name() string {
+	if m.moduleInfo.logicModule == nil {
+		return m.moduleInfo.cachedName
+	}
 	return m.moduleInfo.logicModule.Name()
 }
 
 func (m ModuleProxy) String() string {
+	if m.moduleInfo.logicModule == nil {
+		return m.moduleInfo.cachedString
+	}
 	return m.moduleInfo.logicModule.String()
 }
 
@@ -337,18 +343,6 @@ type BaseModuleContext interface {
 	// singleton actions that are only done once for all variants of a module.
 	IsFinalModule(module ModuleOrProxy) bool
 
-	// VisitAllModuleVariants calls visit for each variant of the current module.  Variants of a module are always
-	// visited in order by mutators and GenerateBuildActions, so the data created by the current mutator can be read
-	// from all variants if the current module is the last one.  Otherwise, care must be taken to not access any
-	// data modified by the current mutator.
-	VisitAllModuleVariants(visit func(Module))
-
-	// VisitAllModuleVariantProxies calls visit for each variant of the current module.  Variants of a module are always
-	// visited in order by mutators and GenerateBuildActions, so the data created by the current mutator can be read
-	// from all variants if the current module is the last one.  Otherwise, care must be taken to not access any
-	// data modified by the current mutator.
-	VisitAllModuleVariantProxies(visit func(proxy ModuleProxy))
-
 	// OtherModuleName returns the name of another Module.  See BaseModuleContext.ModuleName for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleName(m ModuleOrProxy) string
@@ -467,6 +461,11 @@ type ModuleContext interface {
 	// but do not exist.  It can be used with Context.SetAllowMissingDependencies to allow the primary builder to
 	// handle missing dependencies on its own instead of having Blueprint treat them as an error.
 	GetMissingDependencies() []string
+
+	// FreeModuleAfterGenerateBuildActions marks this module as no longer necessary after the completion of
+	// GenerateBuildActions, i.e. all later accesses to the module will be via ModuleProxy and not direct access
+	// to the Module.
+	FreeModuleAfterGenerateBuildActions()
 }
 
 var _ BaseModuleContext = (*baseModuleContext)(nil)
@@ -888,6 +887,9 @@ func (m *baseModuleContext) VisitDirectDeps(visit func(Module)) {
 
 	for _, dep := range m.module.directDeps {
 		m.visitingDep = dep
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDirectDeps visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		visit(dep.module.logicModule)
 	}
 
@@ -926,6 +928,9 @@ func (m *baseModuleContext) VisitDirectDepsIf(pred func(Module) bool, visit func
 
 	for _, dep := range m.module.directDeps {
 		m.visitingDep = dep
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDirectDepsIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		if pred(dep.module.logicModule) {
 			visit(dep.module.logicModule)
 		}
@@ -946,6 +951,9 @@ func (m *baseModuleContext) VisitDepsDepthFirst(visit func(Module)) {
 	m.context.walkDeps(m.module, false, nil, func(dep depInfo, parent *moduleInfo) {
 		m.visitingParent = parent
 		m.visitingDep = dep
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDepsDepthFirst visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		visit(dep.module.logicModule)
 	})
 
@@ -967,6 +975,9 @@ func (m *baseModuleContext) VisitDepsDepthFirstIf(pred func(Module) bool,
 		if pred(dep.module.logicModule) {
 			m.visitingParent = parent
 			m.visitingDep = dep
+			if dep.module.logicModule == nil {
+				panic(fmt.Errorf("VisitDepsDepthFirstIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+			}
 			visit(dep.module.logicModule)
 		}
 	})
@@ -979,6 +990,9 @@ func (m *baseModuleContext) WalkDeps(visit func(child, parent Module) bool) {
 	m.context.walkDeps(m.module, true, func(dep depInfo, parent *moduleInfo) bool {
 		m.visitingParent = parent
 		m.visitingDep = dep
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("WalkDeps visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		return visit(dep.module.logicModule, parent.logicModule)
 	}, nil)
 
@@ -1007,14 +1021,6 @@ func (m *baseModuleContext) FinalModule() Module {
 
 func (m *baseModuleContext) IsFinalModule(module ModuleOrProxy) bool {
 	return m.module.group.modules.lastModule() == module.info()
-}
-
-func (m *baseModuleContext) VisitAllModuleVariants(visit func(Module)) {
-	m.context.visitAllModuleVariants(m.module, visit)
-}
-
-func (m *baseModuleContext) VisitAllModuleVariantProxies(visit func(proxy ModuleProxy)) {
-	m.context.visitAllModuleVariants(m.module, visitProxyAdaptor(visit))
 }
 
 func (m *baseModuleContext) AddNinjaFileDeps(deps ...string) {
@@ -1104,6 +1110,10 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 func (m *moduleContext) GetMissingDependencies() []string {
 	m.handledMissingDeps = true
 	return m.module.missingDeps
+}
+
+func (m *moduleContext) FreeModuleAfterGenerateBuildActions() {
+	m.module.freeAfterGenerateBuildActions = true
 }
 
 func (m *baseModuleContext) EarlyGetMissingDependencies() []string {
