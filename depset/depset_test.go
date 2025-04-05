@@ -270,6 +270,109 @@ func TestDepSet(t *testing.T) {
 	}
 }
 
+// The following test cases are modifying a global variable, so the test cases can't be run in parallel
+// and the test itself can't be run in parallel with any other tests.
+func TestDepSetGob(t *testing.T) {
+	tests := []struct {
+		name   string
+		depSet func(t *testing.T, order Order) DepSet[string]
+	}{
+		{
+			name: "direct",
+			depSet: func(t *testing.T, order Order) DepSet[string] {
+				return New[string](order, []string{"c", "a", "b"}, nil)
+			},
+		},
+		{
+			name: "simple",
+			depSet: func(t *testing.T, order Order) DepSet[string] {
+				subset := New[string](order, []string{"c", "a", "e"}, nil)
+				return New[string](order, []string{"b", "d"}, []DepSet[string]{subset})
+			},
+		},
+		{
+			name: "simpleWithDuplicates",
+			depSet: func(t *testing.T, order Order) DepSet[string] {
+				subset := New[string](order, []string{"c", "a", "e"}, nil)
+				return New[string](order, []string{"c", "a", "a", "a", "b"}, []DepSet[string]{subset, subset})
+			},
+		},
+		{
+			name: "chain",
+			depSet: func(t *testing.T, order Order) DepSet[string] {
+				c := NewBuilder[string](order).Direct("c").Build()
+				b := NewBuilder[string](order).Direct("b").Transitive(c).Build()
+				a := NewBuilder[string](order).Direct("a").Transitive(b).Build()
+
+				return a
+			},
+		},
+		{
+			name: "diamond",
+			depSet: func(t *testing.T, order Order) DepSet[string] {
+				d := NewBuilder[string](order).Direct("d").Build()
+				c := NewBuilder[string](order).Direct("c").Transitive(d).Build()
+				b := NewBuilder[string](order).Direct("b").Transitive(d).Build()
+				a := NewBuilder[string](order).Direct("a").Transitive(b).Transitive(c).Build()
+
+				return a
+			},
+		},
+		{
+			name: "extendedDiamond",
+			depSet: func(t *testing.T, order Order) DepSet[string] {
+				d := NewBuilder[string](order).Direct("d").Build()
+				e := NewBuilder[string](order).Direct("e").Build()
+				b := NewBuilder[string](order).Direct("b").Transitive(d).Transitive(e).Build()
+				c := NewBuilder[string](order).Direct("c").Transitive(e).Transitive(d).Build()
+				a := NewBuilder[string](order).Direct("a").Transitive(b).Transitive(c).Build()
+				return a
+			},
+		},
+		{
+			name: "extendedDiamondRightArm",
+			depSet: func(t *testing.T, order Order) DepSet[string] {
+				d := NewBuilder[string](order).Direct("d").Build()
+				e := NewBuilder[string](order).Direct("e").Build()
+				b := NewBuilder[string](order).Direct("b").Transitive(d).Transitive(e).Build()
+				c2 := NewBuilder[string](order).Direct("c2").Transitive(e).Transitive(d).Build()
+				c := NewBuilder[string](order).Direct("c").Transitive(c2).Build()
+				a := NewBuilder[string](order).Direct("a").Transitive(b).Transitive(c).Build()
+				return a
+			},
+		},
+		{
+			name: "zeroDepSet",
+			depSet: func(t *testing.T, order Order) DepSet[string] {
+				a := NewBuilder[string](order).Build()
+				var b DepSet[string]
+				c := NewBuilder[string](order).Direct("c").Transitive(a, b).Build()
+				return c
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		resetGobMaps()
+		t.Run(tt.name, func(t *testing.T) {
+			toGob := tt.depSet(t, POSTORDER)
+			data, err := toGob.GobEncode()
+			if err != nil {
+				t.Errorf("failed to serialize depset: %s", err)
+			}
+			var fromGob DepSet[string]
+			err = fromGob.GobDecode(data)
+
+			if err != nil {
+				t.Errorf("failed to deserialize depset: %s", err)
+			}
+			if toGob != fromGob {
+				t.Errorf("depsets are different: %v %v", toGob.ToList(), fromGob.ToList())
+			}
+		})
+	}
+}
+
 func TestDepSetInvalidOrder(t *testing.T) {
 	orders := []Order{POSTORDER, PREORDER, TOPOLOGICAL}
 
