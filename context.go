@@ -5324,12 +5324,15 @@ func debugValue(value reflect.Value) interface{} {
 	case reflect.Slice:
 		return debugSlice(value)
 	case reflect.Struct:
+		// At least some of the private struct fields cause stack overflow here.  Do not include them until
+		// we track the recursion down.
+		if !value.CanInterface() {
+			return nil
+		}
 		// If we originally received an interface, and there is a String() method, call that.
 		// TODO: figure out why Path doesn't work correctly otherwise (in aconfigPropagatingDeclarationsInfo)
-		if value.CanInterface() {
-			if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
-				return s.String()
-			}
+		if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
+			return s.String()
 		}
 		return debugStruct(value)
 	case reflect.Map:
