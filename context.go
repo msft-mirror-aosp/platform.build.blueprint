@@ -872,6 +872,31 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 	return info
 }
 
+// RegisterFirstBottomUpMutator registers a mutator that will be invoked to split Modules into variants.
+// The registered mutator is placed at the front of the list.
+//
+// The mutator type names given here must be unique to all bottom up mutators in the Context.
+func (c *Context) RegisterFirstBottomUpMutator(name string, mutator BottomUpMutator) MutatorHandle {
+	for _, m := range c.variantMutatorNames {
+		if m == name {
+			panic(fmt.Errorf("mutator %q is already registered", name))
+		}
+	}
+
+	info := &mutatorInfo{
+		bottomUpMutator: mutator,
+		name:            name,
+		index:           0,
+	}
+	c.mutatorInfo = append([]*mutatorInfo{info}, c.mutatorInfo...)
+	c.variantMutatorNames = append([]string{name}, c.variantMutatorNames...)
+	for i := range c.mutatorInfo {
+		c.mutatorInfo[i].index = i
+	}
+
+	return info
+}
+
 // HasMutatorFinished returns true if the given mutator has finished running.
 // It will panic if given an invalid mutator name.
 func (c *Context) HasMutatorFinished(mutatorName string) bool {
@@ -1783,9 +1808,11 @@ func newModule(factory ModuleFactory) *moduleInfo {
 	logicModule, properties := factory()
 
 	return &moduleInfo{
-		logicModule: logicModule,
-		factory:     factory,
-		properties:  properties,
+		logicModule:     logicModule,
+		factory:         factory,
+		properties:      properties,
+		startedMutator:  -1,
+		finishedMutator: -1,
 	}
 }
 
@@ -1936,8 +1963,6 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 		}
 		defer c.EndEvent("clone_modules")
 
-		c.clearTransitionMutatorInputVariants()
-
 		c.dependenciesReady = true
 	})
 
@@ -2009,31 +2034,13 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 		earlierVariantCreatingMutators := c.transitionMutatorNames[:transitionMutator.index]
 		filteredVariant := variant.cloneMatching(earlierVariantCreatingMutators)
 
-		check := func(inputVariant variationMap) bool {
-			filteredInputVariant := inputVariant.cloneMatching(earlierVariantCreatingMutators)
-			return filteredInputVariant.equal(filteredVariant)
-		}
-
-		// Find an appropriate module to use as the context for the IncomingTransition.  First check if any of the
-		// saved inputVariants for the transition mutator match the filtered variant.
+		// Find an appropriate module to use as the context for the IncomingTransition.
 		var matchingInputVariant *moduleInfo
-		for _, inputVariant := range transitionMutator.inputVariants[group] {
-			if check(inputVariant.variant.variations) {
-				matchingInputVariant = inputVariant
+		for _, module := range group.modules {
+			filteredInputVariant := module.variant.variations.cloneMatching(earlierVariantCreatingMutators)
+			if filteredInputVariant.equal(filteredVariant) {
+				matchingInputVariant = module
 				break
-			}
-		}
-
-		if matchingInputVariant == nil {
-			// If no inputVariants match, check all the variants of the module for a match.  This can happen if
-			// the mutator only created a single "" variant when it ran on this module.  Matching against all variants
-			// is slightly worse  than checking the input variants, as the selected variant could have been modified
-			// by a later mutator in a way that affects the results of IncomingTransition.
-			for _, module := range group.modules {
-				if check(module.variant.variations) {
-					matchingInputVariant = module
-					break
-				}
 			}
 		}
 
@@ -3324,9 +3331,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 	transitionMutator := mutatorGroup[0].transitionMutator
 
-	var transitionMutatorInputVariants map[*moduleGroup][]*moduleInfo
 	if transitionMutator != nil {
-		transitionMutatorInputVariants = make(map[*moduleGroup][]*moduleInfo)
 
 		for _, group := range c.moduleGroups {
 			for i := 0; i < len(group.modules); i++ {
@@ -3334,8 +3339,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 				// Update module group to contain newly split variants
 				if module.splitModules != nil {
-					// Save the pre-split variant for reusing later in applyTransitions.
-					transitionMutatorInputVariants[group] = append(transitionMutatorInputVariants[group], module)
 					group.modules, i = spliceModules(group.modules, i, module.splitModules)
 				}
 
@@ -3353,7 +3356,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			}
 		}
 
-		transitionMutator.inputVariants = transitionMutatorInputVariants
 		c.completedTransitionMutators = transitionMutator.index + 1
 	} else {
 		for _, group := range c.moduleGroups {
@@ -3403,14 +3405,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	}
 
 	return deps, errs
-}
-
-// clearTransitionMutatorInputVariants removes the inputVariants field from every
-// TransitionMutator now that all dependencies have been resolved.
-func (c *Context) clearTransitionMutatorInputVariants() {
-	for _, mutator := range c.transitionMutators {
-		mutator.inputVariants = nil
-	}
 }
 
 // Replaces every build logic module with a clone of itself.  Prevents introducing problems where
