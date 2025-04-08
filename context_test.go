@@ -1138,8 +1138,8 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 				}
 				t.FailNow()
 			}
-			modules := make([]*moduleInfo, 0, len(ctx.moduleInfo))
-			for _, module := range ctx.moduleInfo {
+			var modules []*moduleInfo
+			for module := range ctx.iterateAllVariants() {
 				modules = append(modules, module)
 			}
 			actualPhonys := ctx.deduplicateOrderOnlyDeps(modules)
