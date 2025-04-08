@@ -102,6 +102,11 @@ type SingletonContext interface {
 	// VisitAllModuleProxies calls visit for each defined variant of each module in an unspecified order.
 	VisitAllModuleProxies(visit func(proxy ModuleProxy))
 
+	// VisitAllModulesOrProxies calls visit for each defined variant of each module in an unspecified order,
+	// passing a Module if the module did not call FreeModuleAfterGenerateBuildActions, or a ModuleProxy if
+	// it did.
+	VisitAllModulesOrProxies(visit func(ModuleOrProxy))
+
 	// VisitAllModules calls pred for each defined variant of each module in an unspecified order, and if pred returns
 	// true calls visit.
 	VisitAllModulesIf(pred func(Module) bool, visit func(Module))
@@ -148,6 +153,10 @@ type SingletonContext interface {
 	// This can be used to perform singleton actions that are only done once for
 	// all variants of a module.
 	PrimaryModuleProxy(module ModuleProxy) ModuleProxy
+
+	// IsPrimaryModule returns if the given module is the first variant. This can be used to perform
+	// singleton actions that are only done once for all variants of a module.
+	IsPrimaryModule(module ModuleOrProxy) bool
 
 	// IsFinalModule returns if the given module is the last variant. This can be used to perform
 	// singleton actions that are only done once for all variants of a module.
@@ -331,6 +340,10 @@ func (s *singletonContext) VisitAllModules(visit func(Module)) {
 	s.context.VisitAllModules(visit)
 }
 
+func (s *singletonContext) VisitAllModulesOrProxies(visit func(ModuleOrProxy)) {
+	s.context.VisitAllModulesOrProxies(visit)
+}
+
 func (s *singletonContext) VisitAllModuleProxies(visit func(proxy ModuleProxy)) {
 	s.context.VisitAllModulesProxies(visit)
 }
@@ -367,6 +380,10 @@ func (s *singletonContext) PrimaryModule(module Module) Module {
 
 func (s *singletonContext) PrimaryModuleProxy(module ModuleProxy) ModuleProxy {
 	return ModuleProxy{s.context.primaryModule(module.info())}
+}
+
+func (s *singletonContext) IsPrimaryModule(module ModuleOrProxy) bool {
+	return s.context.IsPrimaryModule(module)
 }
 
 func (s *singletonContext) IsFinalModule(module ModuleOrProxy) bool {

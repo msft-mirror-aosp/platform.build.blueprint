@@ -4225,6 +4225,26 @@ func (c *Context) VisitAllModulesProxies(visit func(ModuleProxy)) {
 	})
 }
 
+func (c *Context) VisitAllModulesOrProxies(visit func(ModuleOrProxy)) {
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleInfos(func(module *moduleInfo) {
+		visitingModule = module
+		if module.logicModule != nil {
+			visit(module.logicModule)
+		} else {
+			visit(ModuleProxy{module})
+		}
+	})
+
+}
+
 func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
 	c.VisitDirectDepsWithTags(module, func(m Module, _ DependencyTag) {
 		visit(m)
@@ -4343,6 +4363,10 @@ func (c *Context) PrimaryModule(module Module) Module {
 
 func (c *Context) primaryModule(moduleInfo *moduleInfo) *moduleInfo {
 	return moduleInfo.group.modules.firstModule()
+}
+
+func (c *Context) IsPrimaryModule(module ModuleOrProxy) bool {
+	return module.info().group.modules.firstModule() == module.info()
 }
 
 func (c *Context) IsFinalModule(module ModuleOrProxy) bool {
