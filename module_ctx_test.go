@@ -21,6 +21,7 @@ import (
 )
 
 type moduleCtxTestModule struct {
+	ModuleBase
 	SimpleName
 }
 
@@ -266,6 +267,7 @@ test2 {
 }
 
 type addNinjaDepsTestModule struct {
+	ModuleBase
 	SimpleName
 }
 

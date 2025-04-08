@@ -74,6 +74,7 @@ type IncrementalTestProvider struct {
 var IncrementalTestProviderKey = NewProvider[IncrementalTestProvider]()
 
 type baseTestModule struct {
+	ModuleBase
 	SimpleName
 	properties struct {
 		Deps             []string
@@ -1137,8 +1138,8 @@ func TestDeduplicateOrderOnlyDeps(t *testing.T) {
 				}
 				t.FailNow()
 			}
-			modules := make([]*moduleInfo, 0, len(ctx.moduleInfo))
-			for _, module := range ctx.moduleInfo {
+			var modules []*moduleInfo
+			for module := range ctx.iterateAllVariants() {
 				modules = append(modules, module)
 			}
 			actualPhonys := ctx.deduplicateOrderOnlyDeps(modules)

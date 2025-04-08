@@ -98,7 +98,6 @@ type Context struct {
 	moduleFactories     map[string]ModuleFactory
 	nameInterface       NameInterface
 	moduleGroups        []*moduleGroup
-	moduleInfo          map[Module]*moduleInfo
 	singletonInfo       []*singletonInfo
 	mutatorInfo         []*mutatorInfo
 	variantMutatorNames []string
@@ -596,7 +595,6 @@ func newContext() *Context {
 		EventHandler:          &eventHandler,
 		moduleFactories:       make(map[string]ModuleFactory),
 		nameInterface:         NewSimpleNameInterface(),
-		moduleInfo:            make(map[Module]*moduleInfo),
 		globs:                 make(map[globKey]pathtools.GlobResult),
 		fs:                    pathtools.OsFs,
 		includeTags:           &IncludeTags{},
@@ -1707,6 +1705,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 
 		m := *origModule
 		newModule := &m
+		newLogicModule.setInfo(newModule)
 		newModule.directDeps = slices.Clone(origModule.directDeps)
 		newModule.reverseDeps = nil
 		newModule.forwardDeps = nil
@@ -1807,13 +1806,15 @@ func (c *Context) prettyPrintGroupVariants(group *moduleGroup) string {
 func newModule(factory ModuleFactory) *moduleInfo {
 	logicModule, properties := factory()
 
-	return &moduleInfo{
+	moduleInfo := &moduleInfo{
 		logicModule:     logicModule,
 		factory:         factory,
 		properties:      properties,
 		startedMutator:  -1,
 		finishedMutator: -1,
 	}
+	logicModule.setInfo(moduleInfo)
+	return moduleInfo
 }
 
 func processModuleDef(moduleDef *parser.Module,
@@ -1874,7 +1875,6 @@ func (c *Context) addModule(module *moduleInfo) []error {
 			},
 		}
 	}
-	c.moduleInfo[module.logicModule] = module
 
 	group := &moduleGroup{
 		name:    name,
@@ -2780,13 +2780,13 @@ func cycleError(cycle []*moduleInfo) (errs []error) {
 func (c *Context) updateDependencies() (errs []error) {
 	c.cachedDepsModified = true
 
-	for _, module := range c.moduleInfo {
+	for module := range c.iterateAllVariants() {
 		// Reset the forward and reverse deps without reducing their capacity to avoid reallocation.
 		module.reverseDeps = module.reverseDeps[:0]
 		module.forwardDeps = module.forwardDeps[:0]
 	}
 
-	for _, module := range c.moduleInfo {
+	for module := range c.iterateAllVariants() {
 		// Add an implicit dependency ordering on all earlier modules in the same module group
 		selfIndex := slices.Index(module.group.modules, module)
 		module.forwardDeps = slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
@@ -3189,19 +3189,12 @@ var mutatorContextPool = pool.New[mutatorContext]()
 func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	direction mutatorDirection) (deps []string, errs []error) {
 
-	newModuleInfo := maps.Clone(c.moduleInfo)
-
 	type globalStateChange struct {
 		reverse    []reverseDep
 		rename     []rename
 		replace    []replace
 		newModules []*moduleInfo
 		deps       []string
-	}
-
-	type newVariationPair struct {
-		newVariations   moduleList
-		origLogicModule Module
 	}
 
 	reverseDeps := make(map[*moduleInfo][]depInfo)
@@ -3211,7 +3204,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 	errsCh := make(chan []error)
 	globalStateCh := make(chan globalStateChange)
-	newVariationsCh := make(chan newVariationPair)
 	done := make(chan bool)
 
 	c.needsUpdateDependencies = 0
@@ -3231,8 +3223,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			mutator:   mutatorGroup[0],
 			pauseFunc: pause,
 		}
-
-		origLogicModule := module.logicModule
 
 		module.startedMutator = mutatorGroup[0].index
 
@@ -3258,10 +3248,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			errsCh <- mctx.errs
 			hasErrors = true
 		} else {
-			if len(mctx.newVariations) > 0 {
-				newVariationsCh <- newVariationPair{mctx.newVariations, origLogicModule}
-			}
-
 			if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 {
 				globalStateCh <- globalStateChange{
 					reverse:    mctx.reverseDeps,
@@ -3278,8 +3264,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		return hasErrors
 	}
 
-	var obsoleteLogicModules []Module
-
 	// Process errs and reverseDeps in a single goroutine
 	go func() {
 		for {
@@ -3294,13 +3278,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				rename = append(rename, globalStateChange.rename...)
 				newModules = append(newModules, globalStateChange.newModules...)
 				deps = append(deps, globalStateChange.deps...)
-			case newVariations := <-newVariationsCh:
-				if newVariations.origLogicModule != newVariations.newVariations[0].logicModule {
-					obsoleteLogicModules = append(obsoleteLogicModules, newVariations.origLogicModule)
-				}
-				for _, module := range newVariations.newVariations {
-					newModuleInfo[module.logicModule] = module
-				}
 			case <-done:
 				return
 			}
@@ -3323,16 +3300,9 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		return nil, errs
 	}
 
-	for _, obsoleteLogicModule := range obsoleteLogicModules {
-		delete(newModuleInfo, obsoleteLogicModule)
-	}
-
-	c.moduleInfo = newModuleInfo
-
 	transitionMutator := mutatorGroup[0].transitionMutator
 
 	if transitionMutator != nil {
-
 		for _, group := range c.moduleGroups {
 			for i := 0; i < len(group.modules); i++ {
 				module := group.modules[i]
@@ -3411,35 +3381,14 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 // a mutator sets a non-property member variable on a module, which works until a later mutator
 // creates variants of that module.
 func (c *Context) cloneModules() {
-	type update struct {
-		orig  Module
-		clone *moduleInfo
-	}
-	ch := make(chan update)
-	doneCh := make(chan bool)
-	go func() {
-		errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
-			func(m *moduleInfo, pause pauseFunc) bool {
-				origLogicModule := m.logicModule
-				m.logicModule, m.properties = c.cloneLogicModule(m)
-				ch <- update{origLogicModule, m}
-				return false
-			})
-		if len(errs) > 0 {
-			panic(errs)
-		}
-		doneCh <- true
-	}()
-
-	done := false
-	for !done {
-		select {
-		case <-doneCh:
-			done = true
-		case update := <-ch:
-			delete(c.moduleInfo, update.orig)
-			c.moduleInfo[update.clone.logicModule] = update.clone
-		}
+	errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
+		func(m *moduleInfo, pause pauseFunc) bool {
+			m.logicModule, m.properties = c.cloneLogicModule(m)
+			m.logicModule.setInfo(m)
+			return false
+		})
+	if len(errs) > 0 {
+		panic(errs)
 	}
 }
 
@@ -4182,37 +4131,32 @@ func (c *Context) ModuleTypeFactories() map[string]ModuleFactory {
 	return maps.Clone(c.moduleFactories)
 }
 
-func (c *Context) ModuleName(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.Name()
+func (c *Context) ModuleName(logicModule ModuleOrProxy) string {
+	return logicModule.info().Name()
 }
 
-func (c *Context) ModuleDir(logicModule Module) string {
+func (c *Context) ModuleDir(logicModule ModuleOrProxy) string {
 	return filepath.Dir(c.BlueprintFile(logicModule))
 }
 
-func (c *Context) ModuleSubDir(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.variant.name
+func (c *Context) ModuleSubDir(logicModule ModuleOrProxy) string {
+	return logicModule.info().variant.name
 }
 
-func (c *Context) ModuleType(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.typeName
+func (c *Context) ModuleType(logicModule ModuleOrProxy) string {
+	return logicModule.info().typeName
 }
 
 // ModuleProvider returns the value, if any, for the provider for a module.  If the value for the
 // provider was not set it returns nil and false.  The return value should always be considered read-only.
 // It panics if called before the appropriate mutator or GenerateBuildActions pass for the provider on the
 // module.  The value returned may be a deep copy of the value originally passed to SetProvider.
-func (c *Context) ModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
-	module := c.moduleInfo[logicModule]
-	return c.provider(module, provider.provider())
+func (c *Context) ModuleProvider(logicModule ModuleOrProxy, provider AnyProviderKey) (any, bool) {
+	return c.provider(logicModule.info(), provider.provider())
 }
 
-func (c *Context) BlueprintFile(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.relBlueprintsFile
+func (c *Context) BlueprintFile(logicModule ModuleOrProxy) string {
+	return logicModule.info().relBlueprintsFile
 }
 
 func (c *Context) moduleErrorf(module *moduleInfo, format string,
@@ -4233,15 +4177,15 @@ func (c *Context) moduleErrorf(module *moduleInfo, format string,
 	}
 }
 
-func (c *Context) ModuleErrorf(logicModule Module, format string,
+func (c *Context) ModuleErrorf(logicModule ModuleOrProxy, format string,
 	args ...interface{}) error {
-	return c.moduleErrorf(c.moduleInfo[logicModule], format, args...)
+	return c.moduleErrorf(logicModule.info(), format, args...)
 }
 
-func (c *Context) PropertyErrorf(logicModule Module, property string, format string,
+func (c *Context) PropertyErrorf(logicModule ModuleOrProxy, property string, format string,
 	args ...interface{}) error {
 
-	module := c.moduleInfo[logicModule]
+	module := logicModule.info()
 	if module == nil {
 		// This can happen if PropertyErrorf is called from a load hook
 		return &BlueprintError{
@@ -4283,7 +4227,7 @@ func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
 }
 
 func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, DependencyTag)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4301,7 +4245,7 @@ func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, Depe
 }
 
 func (c *Context) VisitDirectDepsIf(module Module, pred func(Module) bool, visit func(Module)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4321,7 +4265,7 @@ func (c *Context) VisitDirectDepsIf(module Module, pred func(Module) bool, visit
 }
 
 func (c *Context) VisitDepsDepthFirst(module Module, visit func(Module)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4339,7 +4283,7 @@ func (c *Context) VisitDepsDepthFirst(module Module, visit func(Module)) {
 }
 
 func (c *Context) VisitDepsDepthFirstIf(module Module, pred func(Module) bool, visit func(Module)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4359,17 +4303,19 @@ func (c *Context) VisitDepsDepthFirstIf(module Module, pred func(Module) bool, v
 }
 
 func (c *Context) PrimaryModule(module Module) Module {
-	return c.moduleInfo[module].group.modules.firstModule().logicModule
+	return c.primaryModule(module.info()).logicModule
 }
 
-func (c *Context) IsFinalModule(module Module) bool {
-	return c.moduleInfo[module].group.modules.lastModule().logicModule == module
+func (c *Context) primaryModule(moduleInfo *moduleInfo) *moduleInfo {
+	return moduleInfo.group.modules.firstModule()
 }
 
-func (c *Context) VisitAllModuleVariants(module Module,
-	visit func(Module)) {
+func (c *Context) IsFinalModule(module ModuleOrProxy) bool {
+	return module.info().group.modules.lastModule() == module.info()
+}
 
-	c.visitAllModuleVariants(c.moduleInfo[module], visit)
+func (c *Context) VisitAllModuleVariants(module ModuleOrProxy, visit func(Module)) {
+	c.visitAllModuleVariants(module.info(), visit)
 }
 
 // Singletons returns a list of all registered Singletons.
@@ -4780,7 +4726,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	var modules []*moduleInfo
 	var incModules []*moduleInfo
 
-	for _, module := range c.moduleInfo {
+	for module := range c.iterateAllVariants() {
 		if module.buildActionCacheKey != nil {
 			incModules = append(incModules, module)
 			continue
@@ -5324,12 +5270,15 @@ func debugValue(value reflect.Value) interface{} {
 	case reflect.Slice:
 		return debugSlice(value)
 	case reflect.Struct:
+		// At least some of the private struct fields cause stack overflow here.  Do not include them until
+		// we track the recursion down.
+		if !value.CanInterface() {
+			return nil
+		}
 		// If we originally received an interface, and there is a String() method, call that.
 		// TODO: figure out why Path doesn't work correctly otherwise (in aconfigPropagatingDeclarationsInfo)
-		if value.CanInterface() {
-			if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
-				return s.String()
-			}
+		if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
+			return s.String()
 		}
 		return debugStruct(value)
 	case reflect.Map:
