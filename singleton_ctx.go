@@ -185,6 +185,8 @@ type SingletonContext interface {
 	// HasMutatorFinished returns true if the given mutator has finished running.
 	// It will panic if given an invalid mutator name.
 	HasMutatorFinished(mutatorName string) bool
+
+	GetIncrementalAnalysis() bool
 }
 
 var _ SingletonContext = (*singletonContext)(nil)
@@ -441,4 +443,8 @@ func visitProxyAdaptor(visit func(proxy ModuleProxy)) func(module ModuleProxy) {
 	return func(module ModuleProxy) {
 		visit(ModuleProxy{module.info()})
 	}
+}
+
+func (s *singletonContext) GetIncrementalAnalysis() bool {
+	return s.context.GetIncrementalAnalysis()
 }
