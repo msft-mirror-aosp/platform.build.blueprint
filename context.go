@@ -401,6 +401,15 @@ type moduleInfo struct {
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
 
+	// freeAfterGenerateBuildActions is set if the module called ModuleContext.FreeModuleAfterGenerateBuildActions,
+	// allowing the Module to be freed after GenerateBuildActions complete, and requiring all future accesses
+	// to go through ModuleProxy instead of the Module.
+	freeAfterGenerateBuildActions bool
+	// cachedName stores the result of Module.Name() after the end of GenerateBuildActions for use in ModuleProxy.Name()
+	cachedName string
+	// cachedString stores the result of Module.String() after the end of GenerateBuildActions for use in ModuleProxy.String().
+	cachedString string
+
 	incrementalInfo
 }
 
@@ -1694,7 +1703,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 		var newLogicModule Module
 		var newProperties []interface{}
 
-		if i == 0 && mutator.transitionMutator == nil {
+		if i == 0 {
 			// Reuse the existing module for the first new variant
 			// This both saves creating a new module, and causes the insertion in c.moduleInfo below
 			// with logicModule as the key to replace the original entry in c.moduleInfo
@@ -3502,6 +3511,15 @@ func (c *Context) generateModuleBuildActions(config interface{},
 
 			depsCh <- mctx.ninjaFileDeps
 
+			if mctx.module.freeAfterGenerateBuildActions {
+				// This module is freed after GenerateBuildActions complete, requiring all future accesses
+				// to go through ModuleProxy instead of the Module.
+				// Cache Module.Name() and Module.String() for future use in ModuleProxy.Name() and ModuleProxy.String()
+				mctx.module.cachedName = mctx.module.logicModule.Name()
+				mctx.module.cachedString = mctx.module.logicModule.String()
+				mctx.module.logicModule = nil
+			}
+
 			newErrs := c.processLocalBuildActions(&module.actionDefs,
 				&mctx.actionDefs, liveGlobals)
 			if len(newErrs) > 0 {
@@ -3872,71 +3890,15 @@ func (c *Context) sortedModuleGroups() []*moduleGroup {
 	return c.cachedSortedModuleGroups
 }
 
-func (c *Context) visitAllModules(visit func(Module)) {
-	var module *moduleInfo
-
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
-				funcName(visit), module))
-		}
-	}()
-
-	for _, moduleGroup := range c.sortedModuleGroups() {
-		for _, module := range moduleGroup.modules {
-			visit(module.logicModule)
-		}
-	}
-}
-
-func (c *Context) visitAllModulesIf(pred func(Module) bool,
-	visit func(Module)) {
-
-	var module *moduleInfo
-
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitAllModulesIf(%s, %s) for %s",
-				funcName(pred), funcName(visit), module))
-		}
-	}()
-
-	for _, moduleGroup := range c.sortedModuleGroups() {
-		for _, module := range moduleGroup.modules {
-			if pred(module.logicModule) {
-				visit(module.logicModule)
-			}
-		}
-	}
-}
-
 func (c *Context) visitAllModuleVariants(module *moduleInfo,
-	visit func(Module)) {
-
-	var variant *moduleInfo
-
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitAllModuleVariants(%s, %s) for %s",
-				module, funcName(visit), variant))
-		}
-	}()
+	visit func(*moduleInfo)) {
 
 	for _, module := range module.group.modules {
-		visit(module.logicModule)
+		visit(module)
 	}
 }
 
 func (c *Context) visitAllModuleInfos(visit func(*moduleInfo)) {
-	var module *moduleInfo
-
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
-				funcName(visit), module))
-		}
-	}()
-
 	for _, moduleGroup := range c.sortedModuleGroups() {
 		for _, module := range moduleGroup.modules {
 			visit(module)
@@ -4211,19 +4173,100 @@ func (c *Context) PropertyErrorf(logicModule ModuleOrProxy, property string, for
 }
 
 func (c *Context) VisitAllModules(visit func(Module)) {
-	c.visitAllModules(visit)
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleInfos(func(module *moduleInfo) {
+		visitingModule = module
+		if module.logicModule == nil {
+			panic(fmt.Errorf("VisitAllModules visited module %s that called FreeAfterGenerateBuildActions()", module))
+		}
+		visit(module.logicModule)
+	})
 }
 
-func (c *Context) VisitAllModulesIf(pred func(Module) bool,
-	visit func(Module)) {
+func (c *Context) VisitAllModulesIf(pred func(Module) bool, visit func(Module)) {
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModulesIf(%s, %s) for %s",
+				funcName(pred), funcName(visit), visitingModule))
+		}
+	}()
 
-	c.visitAllModulesIf(pred, visit)
+	c.visitAllModuleInfos(func(module *moduleInfo) {
+		visitingModule = module
+		if module.logicModule == nil {
+			panic(fmt.Errorf("VisitAllModulesIf visited module %s that called FreeAfterGenerateBuildActions()", module))
+		}
+		if pred(module.logicModule) {
+			visit(module.logicModule)
+		}
+	})
+}
+
+func (c *Context) VisitAllModulesProxies(visit func(ModuleProxy)) {
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleInfos(func(module *moduleInfo) {
+		visitingModule = module
+		visit(ModuleProxy{module})
+	})
+}
+
+func (c *Context) VisitAllModulesOrProxies(visit func(ModuleOrProxy)) {
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleInfos(func(module *moduleInfo) {
+		visitingModule = module
+		if module.logicModule != nil {
+			visit(module.logicModule)
+		} else {
+			visit(ModuleProxy{module})
+		}
+	})
+
 }
 
 func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
 	c.VisitDirectDepsWithTags(module, func(m Module, _ DependencyTag) {
 		visit(m)
 	})
+}
+
+func (c *Context) VisitDirectDepsProxies(module ModuleOrProxy, visit func(ModuleProxy)) {
+	topModule := module.info()
+
+	var visiting *moduleInfo
+
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitDirectDepsProxies(%s, %s) for dependency %s",
+				topModule, funcName(visit), visiting))
+		}
+	}()
+
+	for _, dep := range topModule.directDeps {
+		visiting = dep.module
+		visit(ModuleProxy{dep.module})
+	}
 }
 
 func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, DependencyTag)) {
@@ -4240,6 +4283,9 @@ func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, Depe
 
 	for _, dep := range topModule.directDeps {
 		visiting = dep.module
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDirectDepsWithTags visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		visit(dep.module.logicModule, dep.tag)
 	}
 }
@@ -4258,6 +4304,9 @@ func (c *Context) VisitDirectDepsIf(module Module, pred func(Module) bool, visit
 
 	for _, dep := range topModule.directDeps {
 		visiting = dep.module
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDirectDepsIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		if pred(dep.module.logicModule) {
 			visit(dep.module.logicModule)
 		}
@@ -4278,6 +4327,9 @@ func (c *Context) VisitDepsDepthFirst(module Module, visit func(Module)) {
 
 	c.walkDeps(topModule, false, nil, func(dep depInfo, parent *moduleInfo) {
 		visiting = dep.module
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDepsDepthFirst visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		visit(dep.module.logicModule)
 	})
 }
@@ -4295,6 +4347,9 @@ func (c *Context) VisitDepsDepthFirstIf(module Module, pred func(Module) bool, v
 	}()
 
 	c.walkDeps(topModule, false, nil, func(dep depInfo, parent *moduleInfo) {
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDepsDepthFirstIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		if pred(dep.module.logicModule) {
 			visiting = dep.module
 			visit(dep.module.logicModule)
@@ -4310,12 +4365,46 @@ func (c *Context) primaryModule(moduleInfo *moduleInfo) *moduleInfo {
 	return moduleInfo.group.modules.firstModule()
 }
 
+func (c *Context) IsPrimaryModule(module ModuleOrProxy) bool {
+	return module.info().group.modules.firstModule() == module.info()
+}
+
 func (c *Context) IsFinalModule(module ModuleOrProxy) bool {
 	return module.info().group.modules.lastModule() == module.info()
 }
 
 func (c *Context) VisitAllModuleVariants(module ModuleOrProxy, visit func(Module)) {
-	c.visitAllModuleVariants(module.info(), visit)
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModuleVariants(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleVariants(module.info(), func(module *moduleInfo) {
+		visitingModule = module
+		if module.logicModule == nil {
+			panic(fmt.Errorf("VisitAllModuleVariants visited module %s that called FreeAfterGenerateBuildActions()", module))
+		}
+
+		visit(module.logicModule)
+	})
+}
+
+func (c *Context) VisitAllModuleVariantProxies(module ModuleProxy, visit func(ModuleProxy)) {
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModuleVariantProxies(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleVariants(module.info(), func(module *moduleInfo) {
+		visitingModule = module
+		visit(ModuleProxy{module})
+	})
 }
 
 // Singletons returns a list of all registered Singletons.
