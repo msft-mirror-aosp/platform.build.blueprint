@@ -466,7 +466,6 @@ func (module *moduleInfo) ModuleCacheKey() string {
 	}
 	return calculateFileNameHash(fmt.Sprintf("%s-%s-%s-%s",
 		filepath.Dir(module.relBlueprintsFile), module.Name(), variant, module.typeName))
-
 }
 
 func calculateFileNameHash(name string) string {
