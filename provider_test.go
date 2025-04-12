@@ -22,6 +22,7 @@ import (
 )
 
 type providerTestModule struct {
+	ModuleBase
 	SimpleName
 	properties struct {
 		Deps []string
@@ -176,6 +177,7 @@ var invalidProviderUsageMutatorInfoProvider = NewMutatorProvider[invalidProvider
 var invalidProviderUsageGenerateBuildActionsInfoProvider = NewProvider[invalidProviderUsageGenerateBuildActionsInfo]()
 
 type invalidProviderUsageTestModule struct {
+	ModuleBase
 	SimpleName
 	properties struct {
 		Deps []string

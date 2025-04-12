@@ -98,7 +98,6 @@ type Context struct {
 	moduleFactories     map[string]ModuleFactory
 	nameInterface       NameInterface
 	moduleGroups        []*moduleGroup
-	moduleInfo          map[Module]*moduleInfo
 	singletonInfo       []*singletonInfo
 	mutatorInfo         []*mutatorInfo
 	variantMutatorNames []string
@@ -402,6 +401,15 @@ type moduleInfo struct {
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
 
+	// freeAfterGenerateBuildActions is set if the module called ModuleContext.FreeModuleAfterGenerateBuildActions,
+	// allowing the Module to be freed after GenerateBuildActions complete, and requiring all future accesses
+	// to go through ModuleProxy instead of the Module.
+	freeAfterGenerateBuildActions bool
+	// cachedName stores the result of Module.Name() after the end of GenerateBuildActions for use in ModuleProxy.Name()
+	cachedName string
+	// cachedString stores the result of Module.String() after the end of GenerateBuildActions for use in ModuleProxy.String().
+	cachedString string
+
 	incrementalInfo
 }
 
@@ -596,7 +604,6 @@ func newContext() *Context {
 		EventHandler:          &eventHandler,
 		moduleFactories:       make(map[string]ModuleFactory),
 		nameInterface:         NewSimpleNameInterface(),
-		moduleInfo:            make(map[Module]*moduleInfo),
 		globs:                 make(map[globKey]pathtools.GlobResult),
 		fs:                    pathtools.OsFs,
 		includeTags:           &IncludeTags{},
@@ -868,6 +875,31 @@ func (c *Context) RegisterBottomUpMutator(name string, mutator BottomUpMutator) 
 	c.mutatorInfo = append(c.mutatorInfo, info)
 
 	c.variantMutatorNames = append(c.variantMutatorNames, name)
+
+	return info
+}
+
+// RegisterFirstBottomUpMutator registers a mutator that will be invoked to split Modules into variants.
+// The registered mutator is placed at the front of the list.
+//
+// The mutator type names given here must be unique to all bottom up mutators in the Context.
+func (c *Context) RegisterFirstBottomUpMutator(name string, mutator BottomUpMutator) MutatorHandle {
+	for _, m := range c.variantMutatorNames {
+		if m == name {
+			panic(fmt.Errorf("mutator %q is already registered", name))
+		}
+	}
+
+	info := &mutatorInfo{
+		bottomUpMutator: mutator,
+		name:            name,
+		index:           0,
+	}
+	c.mutatorInfo = append([]*mutatorInfo{info}, c.mutatorInfo...)
+	c.variantMutatorNames = append([]string{name}, c.variantMutatorNames...)
+	for i := range c.mutatorInfo {
+		c.mutatorInfo[i].index = i
+	}
 
 	return info
 }
@@ -1671,7 +1703,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 		var newLogicModule Module
 		var newProperties []interface{}
 
-		if i == 0 && mutator.transitionMutator == nil {
+		if i == 0 {
 			// Reuse the existing module for the first new variant
 			// This both saves creating a new module, and causes the insertion in c.moduleInfo below
 			// with logicModule as the key to replace the original entry in c.moduleInfo
@@ -1682,6 +1714,7 @@ func (c *Context) createVariations(origModule *moduleInfo, mutator *mutatorInfo,
 
 		m := *origModule
 		newModule := &m
+		newLogicModule.setInfo(newModule)
 		newModule.directDeps = slices.Clone(origModule.directDeps)
 		newModule.reverseDeps = nil
 		newModule.forwardDeps = nil
@@ -1782,11 +1815,15 @@ func (c *Context) prettyPrintGroupVariants(group *moduleGroup) string {
 func newModule(factory ModuleFactory) *moduleInfo {
 	logicModule, properties := factory()
 
-	return &moduleInfo{
-		logicModule: logicModule,
-		factory:     factory,
-		properties:  properties,
+	moduleInfo := &moduleInfo{
+		logicModule:     logicModule,
+		factory:         factory,
+		properties:      properties,
+		startedMutator:  -1,
+		finishedMutator: -1,
 	}
+	logicModule.setInfo(moduleInfo)
+	return moduleInfo
 }
 
 func processModuleDef(moduleDef *parser.Module,
@@ -1847,7 +1884,6 @@ func (c *Context) addModule(module *moduleInfo) []error {
 			},
 		}
 	}
-	c.moduleInfo[module.logicModule] = module
 
 	group := &moduleGroup{
 		name:    name,
@@ -1936,8 +1972,6 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 		}
 		defer c.EndEvent("clone_modules")
 
-		c.clearTransitionMutatorInputVariants()
-
 		c.dependenciesReady = true
 	})
 
@@ -2009,31 +2043,13 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 		earlierVariantCreatingMutators := c.transitionMutatorNames[:transitionMutator.index]
 		filteredVariant := variant.cloneMatching(earlierVariantCreatingMutators)
 
-		check := func(inputVariant variationMap) bool {
-			filteredInputVariant := inputVariant.cloneMatching(earlierVariantCreatingMutators)
-			return filteredInputVariant.equal(filteredVariant)
-		}
-
-		// Find an appropriate module to use as the context for the IncomingTransition.  First check if any of the
-		// saved inputVariants for the transition mutator match the filtered variant.
+		// Find an appropriate module to use as the context for the IncomingTransition.
 		var matchingInputVariant *moduleInfo
-		for _, inputVariant := range transitionMutator.inputVariants[group] {
-			if check(inputVariant.variant.variations) {
-				matchingInputVariant = inputVariant
+		for _, module := range group.modules {
+			filteredInputVariant := module.variant.variations.cloneMatching(earlierVariantCreatingMutators)
+			if filteredInputVariant.equal(filteredVariant) {
+				matchingInputVariant = module
 				break
-			}
-		}
-
-		if matchingInputVariant == nil {
-			// If no inputVariants match, check all the variants of the module for a match.  This can happen if
-			// the mutator only created a single "" variant when it ran on this module.  Matching against all variants
-			// is slightly worse  than checking the input variants, as the selected variant could have been modified
-			// by a later mutator in a way that affects the results of IncomingTransition.
-			for _, module := range group.modules {
-				if check(module.variant.variations) {
-					matchingInputVariant = module
-					break
-				}
 			}
 		}
 
@@ -2773,13 +2789,13 @@ func cycleError(cycle []*moduleInfo) (errs []error) {
 func (c *Context) updateDependencies() (errs []error) {
 	c.cachedDepsModified = true
 
-	for _, module := range c.moduleInfo {
+	for module := range c.iterateAllVariants() {
 		// Reset the forward and reverse deps without reducing their capacity to avoid reallocation.
 		module.reverseDeps = module.reverseDeps[:0]
 		module.forwardDeps = module.forwardDeps[:0]
 	}
 
-	for _, module := range c.moduleInfo {
+	for module := range c.iterateAllVariants() {
 		// Add an implicit dependency ordering on all earlier modules in the same module group
 		selfIndex := slices.Index(module.group.modules, module)
 		module.forwardDeps = slices.Grow(module.forwardDeps, selfIndex+len(module.directDeps))
@@ -3182,19 +3198,12 @@ var mutatorContextPool = pool.New[mutatorContext]()
 func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	direction mutatorDirection) (deps []string, errs []error) {
 
-	newModuleInfo := maps.Clone(c.moduleInfo)
-
 	type globalStateChange struct {
 		reverse    []reverseDep
 		rename     []rename
 		replace    []replace
 		newModules []*moduleInfo
 		deps       []string
-	}
-
-	type newVariationPair struct {
-		newVariations   moduleList
-		origLogicModule Module
 	}
 
 	reverseDeps := make(map[*moduleInfo][]depInfo)
@@ -3204,7 +3213,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 	errsCh := make(chan []error)
 	globalStateCh := make(chan globalStateChange)
-	newVariationsCh := make(chan newVariationPair)
 	done := make(chan bool)
 
 	c.needsUpdateDependencies = 0
@@ -3224,8 +3232,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			mutator:   mutatorGroup[0],
 			pauseFunc: pause,
 		}
-
-		origLogicModule := module.logicModule
 
 		module.startedMutator = mutatorGroup[0].index
 
@@ -3251,10 +3257,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			errsCh <- mctx.errs
 			hasErrors = true
 		} else {
-			if len(mctx.newVariations) > 0 {
-				newVariationsCh <- newVariationPair{mctx.newVariations, origLogicModule}
-			}
-
 			if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 {
 				globalStateCh <- globalStateChange{
 					reverse:    mctx.reverseDeps,
@@ -3271,8 +3273,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		return hasErrors
 	}
 
-	var obsoleteLogicModules []Module
-
 	// Process errs and reverseDeps in a single goroutine
 	go func() {
 		for {
@@ -3287,13 +3287,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				rename = append(rename, globalStateChange.rename...)
 				newModules = append(newModules, globalStateChange.newModules...)
 				deps = append(deps, globalStateChange.deps...)
-			case newVariations := <-newVariationsCh:
-				if newVariations.origLogicModule != newVariations.newVariations[0].logicModule {
-					obsoleteLogicModules = append(obsoleteLogicModules, newVariations.origLogicModule)
-				}
-				for _, module := range newVariations.newVariations {
-					newModuleInfo[module.logicModule] = module
-				}
 			case <-done:
 				return
 			}
@@ -3316,26 +3309,15 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		return nil, errs
 	}
 
-	for _, obsoleteLogicModule := range obsoleteLogicModules {
-		delete(newModuleInfo, obsoleteLogicModule)
-	}
-
-	c.moduleInfo = newModuleInfo
-
 	transitionMutator := mutatorGroup[0].transitionMutator
 
-	var transitionMutatorInputVariants map[*moduleGroup][]*moduleInfo
 	if transitionMutator != nil {
-		transitionMutatorInputVariants = make(map[*moduleGroup][]*moduleInfo)
-
 		for _, group := range c.moduleGroups {
 			for i := 0; i < len(group.modules); i++ {
 				module := group.modules[i]
 
 				// Update module group to contain newly split variants
 				if module.splitModules != nil {
-					// Save the pre-split variant for reusing later in applyTransitions.
-					transitionMutatorInputVariants[group] = append(transitionMutatorInputVariants[group], module)
 					group.modules, i = spliceModules(group.modules, i, module.splitModules)
 				}
 
@@ -3353,7 +3335,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			}
 		}
 
-		transitionMutator.inputVariants = transitionMutatorInputVariants
 		c.completedTransitionMutators = transitionMutator.index + 1
 	} else {
 		for _, group := range c.moduleGroups {
@@ -3405,47 +3386,18 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	return deps, errs
 }
 
-// clearTransitionMutatorInputVariants removes the inputVariants field from every
-// TransitionMutator now that all dependencies have been resolved.
-func (c *Context) clearTransitionMutatorInputVariants() {
-	for _, mutator := range c.transitionMutators {
-		mutator.inputVariants = nil
-	}
-}
-
 // Replaces every build logic module with a clone of itself.  Prevents introducing problems where
 // a mutator sets a non-property member variable on a module, which works until a later mutator
 // creates variants of that module.
 func (c *Context) cloneModules() {
-	type update struct {
-		orig  Module
-		clone *moduleInfo
-	}
-	ch := make(chan update)
-	doneCh := make(chan bool)
-	go func() {
-		errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
-			func(m *moduleInfo, pause pauseFunc) bool {
-				origLogicModule := m.logicModule
-				m.logicModule, m.properties = c.cloneLogicModule(m)
-				ch <- update{origLogicModule, m}
-				return false
-			})
-		if len(errs) > 0 {
-			panic(errs)
-		}
-		doneCh <- true
-	}()
-
-	done := false
-	for !done {
-		select {
-		case <-doneCh:
-			done = true
-		case update := <-ch:
-			delete(c.moduleInfo, update.orig)
-			c.moduleInfo[update.clone.logicModule] = update.clone
-		}
+	errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
+		func(m *moduleInfo, pause pauseFunc) bool {
+			m.logicModule, m.properties = c.cloneLogicModule(m)
+			m.logicModule.setInfo(m)
+			return false
+		})
+	if len(errs) > 0 {
+		panic(errs)
 	}
 }
 
@@ -3558,6 +3510,15 @@ func (c *Context) generateModuleBuildActions(config interface{},
 			}
 
 			depsCh <- mctx.ninjaFileDeps
+
+			if mctx.module.freeAfterGenerateBuildActions {
+				// This module is freed after GenerateBuildActions complete, requiring all future accesses
+				// to go through ModuleProxy instead of the Module.
+				// Cache Module.Name() and Module.String() for future use in ModuleProxy.Name() and ModuleProxy.String()
+				mctx.module.cachedName = mctx.module.logicModule.Name()
+				mctx.module.cachedString = mctx.module.logicModule.String()
+				mctx.module.logicModule = nil
+			}
 
 			newErrs := c.processLocalBuildActions(&module.actionDefs,
 				&mctx.actionDefs, liveGlobals)
@@ -3929,71 +3890,15 @@ func (c *Context) sortedModuleGroups() []*moduleGroup {
 	return c.cachedSortedModuleGroups
 }
 
-func (c *Context) visitAllModules(visit func(Module)) {
-	var module *moduleInfo
-
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
-				funcName(visit), module))
-		}
-	}()
-
-	for _, moduleGroup := range c.sortedModuleGroups() {
-		for _, module := range moduleGroup.modules {
-			visit(module.logicModule)
-		}
-	}
-}
-
-func (c *Context) visitAllModulesIf(pred func(Module) bool,
-	visit func(Module)) {
-
-	var module *moduleInfo
-
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitAllModulesIf(%s, %s) for %s",
-				funcName(pred), funcName(visit), module))
-		}
-	}()
-
-	for _, moduleGroup := range c.sortedModuleGroups() {
-		for _, module := range moduleGroup.modules {
-			if pred(module.logicModule) {
-				visit(module.logicModule)
-			}
-		}
-	}
-}
-
 func (c *Context) visitAllModuleVariants(module *moduleInfo,
-	visit func(Module)) {
-
-	var variant *moduleInfo
-
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitAllModuleVariants(%s, %s) for %s",
-				module, funcName(visit), variant))
-		}
-	}()
+	visit func(*moduleInfo)) {
 
 	for _, module := range module.group.modules {
-		visit(module.logicModule)
+		visit(module)
 	}
 }
 
 func (c *Context) visitAllModuleInfos(visit func(*moduleInfo)) {
-	var module *moduleInfo
-
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
-				funcName(visit), module))
-		}
-	}()
-
 	for _, moduleGroup := range c.sortedModuleGroups() {
 		for _, module := range moduleGroup.modules {
 			visit(module)
@@ -4188,37 +4093,32 @@ func (c *Context) ModuleTypeFactories() map[string]ModuleFactory {
 	return maps.Clone(c.moduleFactories)
 }
 
-func (c *Context) ModuleName(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.Name()
+func (c *Context) ModuleName(logicModule ModuleOrProxy) string {
+	return logicModule.info().Name()
 }
 
-func (c *Context) ModuleDir(logicModule Module) string {
+func (c *Context) ModuleDir(logicModule ModuleOrProxy) string {
 	return filepath.Dir(c.BlueprintFile(logicModule))
 }
 
-func (c *Context) ModuleSubDir(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.variant.name
+func (c *Context) ModuleSubDir(logicModule ModuleOrProxy) string {
+	return logicModule.info().variant.name
 }
 
-func (c *Context) ModuleType(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.typeName
+func (c *Context) ModuleType(logicModule ModuleOrProxy) string {
+	return logicModule.info().typeName
 }
 
 // ModuleProvider returns the value, if any, for the provider for a module.  If the value for the
 // provider was not set it returns nil and false.  The return value should always be considered read-only.
 // It panics if called before the appropriate mutator or GenerateBuildActions pass for the provider on the
 // module.  The value returned may be a deep copy of the value originally passed to SetProvider.
-func (c *Context) ModuleProvider(logicModule Module, provider AnyProviderKey) (any, bool) {
-	module := c.moduleInfo[logicModule]
-	return c.provider(module, provider.provider())
+func (c *Context) ModuleProvider(logicModule ModuleOrProxy, provider AnyProviderKey) (any, bool) {
+	return c.provider(logicModule.info(), provider.provider())
 }
 
-func (c *Context) BlueprintFile(logicModule Module) string {
-	module := c.moduleInfo[logicModule]
-	return module.relBlueprintsFile
+func (c *Context) BlueprintFile(logicModule ModuleOrProxy) string {
+	return logicModule.info().relBlueprintsFile
 }
 
 func (c *Context) moduleErrorf(module *moduleInfo, format string,
@@ -4239,15 +4139,15 @@ func (c *Context) moduleErrorf(module *moduleInfo, format string,
 	}
 }
 
-func (c *Context) ModuleErrorf(logicModule Module, format string,
+func (c *Context) ModuleErrorf(logicModule ModuleOrProxy, format string,
 	args ...interface{}) error {
-	return c.moduleErrorf(c.moduleInfo[logicModule], format, args...)
+	return c.moduleErrorf(logicModule.info(), format, args...)
 }
 
-func (c *Context) PropertyErrorf(logicModule Module, property string, format string,
+func (c *Context) PropertyErrorf(logicModule ModuleOrProxy, property string, format string,
 	args ...interface{}) error {
 
-	module := c.moduleInfo[logicModule]
+	module := logicModule.info()
 	if module == nil {
 		// This can happen if PropertyErrorf is called from a load hook
 		return &BlueprintError{
@@ -4273,13 +4173,76 @@ func (c *Context) PropertyErrorf(logicModule Module, property string, format str
 }
 
 func (c *Context) VisitAllModules(visit func(Module)) {
-	c.visitAllModules(visit)
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleInfos(func(module *moduleInfo) {
+		visitingModule = module
+		if module.logicModule == nil {
+			panic(fmt.Errorf("VisitAllModules visited module %s that called FreeAfterGenerateBuildActions()", module))
+		}
+		visit(module.logicModule)
+	})
 }
 
-func (c *Context) VisitAllModulesIf(pred func(Module) bool,
-	visit func(Module)) {
+func (c *Context) VisitAllModulesIf(pred func(Module) bool, visit func(Module)) {
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModulesIf(%s, %s) for %s",
+				funcName(pred), funcName(visit), visitingModule))
+		}
+	}()
 
-	c.visitAllModulesIf(pred, visit)
+	c.visitAllModuleInfos(func(module *moduleInfo) {
+		visitingModule = module
+		if module.logicModule == nil {
+			panic(fmt.Errorf("VisitAllModulesIf visited module %s that called FreeAfterGenerateBuildActions()", module))
+		}
+		if pred(module.logicModule) {
+			visit(module.logicModule)
+		}
+	})
+}
+
+func (c *Context) VisitAllModulesProxies(visit func(ModuleProxy)) {
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleInfos(func(module *moduleInfo) {
+		visitingModule = module
+		visit(ModuleProxy{module})
+	})
+}
+
+func (c *Context) VisitAllModulesOrProxies(visit func(ModuleOrProxy)) {
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModules(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleInfos(func(module *moduleInfo) {
+		visitingModule = module
+		if module.logicModule != nil {
+			visit(module.logicModule)
+		} else {
+			visit(ModuleProxy{module})
+		}
+	})
+
 }
 
 func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
@@ -4288,8 +4251,26 @@ func (c *Context) VisitDirectDeps(module Module, visit func(Module)) {
 	})
 }
 
+func (c *Context) VisitDirectDepsProxies(module ModuleOrProxy, visit func(ModuleProxy)) {
+	topModule := module.info()
+
+	var visiting *moduleInfo
+
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitDirectDepsProxies(%s, %s) for dependency %s",
+				topModule, funcName(visit), visiting))
+		}
+	}()
+
+	for _, dep := range topModule.directDeps {
+		visiting = dep.module
+		visit(ModuleProxy{dep.module})
+	}
+}
+
 func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, DependencyTag)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4302,12 +4283,15 @@ func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, Depe
 
 	for _, dep := range topModule.directDeps {
 		visiting = dep.module
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDirectDepsWithTags visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		visit(dep.module.logicModule, dep.tag)
 	}
 }
 
 func (c *Context) VisitDirectDepsIf(module Module, pred func(Module) bool, visit func(Module)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4320,6 +4304,9 @@ func (c *Context) VisitDirectDepsIf(module Module, pred func(Module) bool, visit
 
 	for _, dep := range topModule.directDeps {
 		visiting = dep.module
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDirectDepsIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		if pred(dep.module.logicModule) {
 			visit(dep.module.logicModule)
 		}
@@ -4327,7 +4314,7 @@ func (c *Context) VisitDirectDepsIf(module Module, pred func(Module) bool, visit
 }
 
 func (c *Context) VisitDepsDepthFirst(module Module, visit func(Module)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4340,12 +4327,15 @@ func (c *Context) VisitDepsDepthFirst(module Module, visit func(Module)) {
 
 	c.walkDeps(topModule, false, nil, func(dep depInfo, parent *moduleInfo) {
 		visiting = dep.module
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDepsDepthFirst visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		visit(dep.module.logicModule)
 	})
 }
 
 func (c *Context) VisitDepsDepthFirstIf(module Module, pred func(Module) bool, visit func(Module)) {
-	topModule := c.moduleInfo[module]
+	topModule := module.info()
 
 	var visiting *moduleInfo
 
@@ -4357,6 +4347,9 @@ func (c *Context) VisitDepsDepthFirstIf(module Module, pred func(Module) bool, v
 	}()
 
 	c.walkDeps(topModule, false, nil, func(dep depInfo, parent *moduleInfo) {
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDepsDepthFirstIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
 		if pred(dep.module.logicModule) {
 			visiting = dep.module
 			visit(dep.module.logicModule)
@@ -4365,17 +4358,53 @@ func (c *Context) VisitDepsDepthFirstIf(module Module, pred func(Module) bool, v
 }
 
 func (c *Context) PrimaryModule(module Module) Module {
-	return c.moduleInfo[module].group.modules.firstModule().logicModule
+	return c.primaryModule(module.info()).logicModule
 }
 
-func (c *Context) IsFinalModule(module Module) bool {
-	return c.moduleInfo[module].group.modules.lastModule().logicModule == module
+func (c *Context) primaryModule(moduleInfo *moduleInfo) *moduleInfo {
+	return moduleInfo.group.modules.firstModule()
 }
 
-func (c *Context) VisitAllModuleVariants(module Module,
-	visit func(Module)) {
+func (c *Context) IsPrimaryModule(module ModuleOrProxy) bool {
+	return module.info().group.modules.firstModule() == module.info()
+}
 
-	c.visitAllModuleVariants(c.moduleInfo[module], visit)
+func (c *Context) IsFinalModule(module ModuleOrProxy) bool {
+	return module.info().group.modules.lastModule() == module.info()
+}
+
+func (c *Context) VisitAllModuleVariants(module ModuleOrProxy, visit func(Module)) {
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModuleVariants(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleVariants(module.info(), func(module *moduleInfo) {
+		visitingModule = module
+		if module.logicModule == nil {
+			panic(fmt.Errorf("VisitAllModuleVariants visited module %s that called FreeAfterGenerateBuildActions()", module))
+		}
+
+		visit(module.logicModule)
+	})
+}
+
+func (c *Context) VisitAllModuleVariantProxies(module ModuleProxy, visit func(ModuleProxy)) {
+	var visitingModule *moduleInfo
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllModuleVariantProxies(%s) for %s",
+				funcName(visit), visitingModule))
+		}
+	}()
+
+	c.visitAllModuleVariants(module.info(), func(module *moduleInfo) {
+		visitingModule = module
+		visit(ModuleProxy{module})
+	})
 }
 
 // Singletons returns a list of all registered Singletons.
@@ -4786,7 +4815,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	var modules []*moduleInfo
 	var incModules []*moduleInfo
 
-	for _, module := range c.moduleInfo {
+	for module := range c.iterateAllVariants() {
 		if module.buildActionCacheKey != nil {
 			incModules = append(incModules, module)
 			continue
@@ -5330,12 +5359,15 @@ func debugValue(value reflect.Value) interface{} {
 	case reflect.Slice:
 		return debugSlice(value)
 	case reflect.Struct:
+		// At least some of the private struct fields cause stack overflow here.  Do not include them until
+		// we track the recursion down.
+		if !value.CanInterface() {
+			return nil
+		}
 		// If we originally received an interface, and there is a String() method, call that.
 		// TODO: figure out why Path doesn't work correctly otherwise (in aconfigPropagatingDeclarationsInfo)
-		if value.CanInterface() {
-			if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
-				return s.String()
-			}
+		if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
+			return s.String()
 		}
 		return debugStruct(value)
 	case reflect.Map:

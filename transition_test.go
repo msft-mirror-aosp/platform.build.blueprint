@@ -576,6 +576,7 @@ func (transitionTestMutator) Mutate(ctx BottomUpMutatorContext, variation Transi
 }
 
 type transitionModule struct {
+	ModuleBase
 	SimpleName
 	properties struct {
 		Deps                                   []string

@@ -20,6 +20,7 @@ import (
 )
 
 type visitModule struct {
+	ModuleBase
 	SimpleName
 	properties struct {
 		Visit                 []string
