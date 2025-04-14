@@ -559,7 +559,19 @@ func (d *baseModuleContext) Failed() bool {
 
 func (d *baseModuleContext) GlobWithDeps(pattern string,
 	excludes []string) ([]string, error) {
-	return d.context.glob(pattern, excludes)
+	result, err := d.context.glob(pattern, excludes)
+	if err == nil && d.context.incrementalEnabled {
+		hash, err := proptools.CalculateHash(result)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate hash for glob result: %s", d.ModuleName()))
+		}
+		d.module.globCache = append(d.module.globCache, globResultCache{
+			Pattern:  pattern,
+			Excludes: excludes,
+			Result:   hash,
+		})
+	}
+	return result, err
 }
 
 func (d *baseModuleContext) Fs() pathtools.FileSystem {
@@ -760,14 +772,32 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 	if incrementalAnalysis && cacheKey != nil {
 		// Try to restore from cache if there is a cache hit
 		data := m.context.getBuildActionsFromCache(cacheKey)
+		if data == nil {
+			return false
+		}
+		for _, glob := range data.GlobCache {
+			result, err := m.context.glob(glob.Pattern, glob.Excludes)
+			if err != nil {
+				panic(newPanicErrorf(err, "failed to glob for cached module: %s %s %v", m.ModuleName(), glob.Pattern, glob.Excludes))
+			}
+			hash, err := proptools.CalculateHash(result)
+			if err != nil {
+				panic(newPanicErrorf(err, "failed to calculate hash for cached glob result: %s", m.ModuleName()))
+			}
+			if hash != glob.Result {
+				return false
+			}
+		}
+
 		relPos := m.module.pos
 		relPos.Filename = m.module.relBlueprintsFile
-		if data != nil && data.Pos != nil && relPos == *data.Pos {
+		if data.Pos != nil && relPos == *data.Pos {
 			for _, provider := range data.Providers {
 				m.context.setProvider(m.module, provider.Id, *provider.Value)
 			}
 			m.module.incrementalRestored = true
 			m.module.orderOnlyStrings = data.OrderOnlyStrings
+			m.module.globCache = data.GlobCache
 			restored = true
 			for _, str := range data.OrderOnlyStrings {
 				if !strings.HasPrefix(str, "dedup-") {

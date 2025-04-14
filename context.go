@@ -413,11 +413,18 @@ type moduleInfo struct {
 	incrementalInfo
 }
 
+type globResultCache struct {
+	Pattern  string
+	Excludes []string
+	Result   uint64
+}
+
 type incrementalInfo struct {
 	incrementalRestored  bool
 	buildActionCacheKey  *BuildActionCacheKey
 	orderOnlyStrings     []string
 	incrementalDebugInfo []byte
+	globCache            []globResultCache
 }
 
 type variant struct {
@@ -5162,6 +5169,7 @@ func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
 		Providers:        providers,
 		Pos:              &relPos,
 		OrderOnlyStrings: module.orderOnlyStrings,
+		GlobCache:        module.globCache,
 	}
 
 	c.updateBuildActionsCache(module.buildActionCacheKey, &data)
