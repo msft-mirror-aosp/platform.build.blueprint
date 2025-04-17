@@ -132,7 +132,7 @@ func (s *SimpleNameInterface) NewModule(ctx NamespaceContext, group ModuleGroup,
 		}
 	}
 
-	if !isValidModuleName(name) {
+	if !IsValidModuleName(name) {
 		return nil, []error{
 			// seven characters at the start of the second line to align with the string "error: "
 			fmt.Errorf("module %q should use a valid name.\n"+
@@ -158,7 +158,7 @@ var allowedSpecialCharsInModuleNames = map[rune]bool{
 	'&': true,
 }
 
-func isValidModuleName(name string) bool {
+func IsValidModuleName(name string) bool {
 	for _, c := range name {
 		_, allowedSpecialChar := allowedSpecialCharsInModuleNames[c]
 		valid := unicode.IsLetter(c) || unicode.IsDigit(c) || allowedSpecialChar
