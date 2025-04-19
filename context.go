@@ -4407,6 +4407,10 @@ func (c *Context) VisitAllModuleVariantProxies(module ModuleProxy, visit func(Mo
 	})
 }
 
+func (c *Context) ModuleToProxy(module ModuleOrProxy) ModuleProxy {
+	return ModuleProxy{module.info()}
+}
+
 // Singletons returns a list of all registered Singletons.
 func (c *Context) Singletons() []Singleton {
 	var ret []Singleton

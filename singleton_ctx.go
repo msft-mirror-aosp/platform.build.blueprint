@@ -128,16 +128,13 @@ type SingletonContext interface {
 	// function, it may be invalidated by future mutators.
 	VisitDirectDepsIf(module Module, pred func(Module) bool, visit func(Module))
 
-	// VisitDepsDepthFirst calls visit for each transitive dependency, traversing the dependency tree in depth first
-	// order. visit will only be called once for any given module, even if there are multiple paths through the
-	// dependency tree to the module or multiple direct dependencies with different tags.
-	VisitDepsDepthFirst(module Module, visit func(Module))
-
-	// VisitDepsDepthFirst calls pred for each transitive dependency, and if pred returns true calls visit, traversing
-	// the dependency tree in depth first order.  visit will only be called once for any given module, even if there are
-	// multiple paths through the dependency tree to the module or multiple direct dependencies with different tags.
-	VisitDepsDepthFirstIf(module Module, pred func(Module) bool,
-		visit func(Module))
+	// VisitDirectDepsProxies calls visit for each direct dependency of the ModuleProxy.  If there are
+	// multiple direct dependencies on the same module visit will be called multiple times on
+	// that module and OtherModuleDependencyTag will return a different tag for each.
+	//
+	// The ModuleProxy passed to the visit function should not be retained outside of the visit
+	// function, it may be invalidated by future mutators.
+	VisitDirectDepsProxies(module ModuleProxy, visit func(ModuleProxy))
 
 	// VisitAllModuleVariants calls visit for each variant of the given module.
 	VisitAllModuleVariants(module Module, visit func(Module))
@@ -186,6 +183,11 @@ type SingletonContext interface {
 	// It will panic if given an invalid mutator name.
 	HasMutatorFinished(mutatorName string) bool
 
+	// OtherModuleDependencyTag returns the dependency tag used to depend on a module, or nil if there is no dependency
+	// on the module.  When called inside a Visit* method with current module being visited, and there are multiple
+	// dependencies on the module being visited, it returns the dependency tag used for the current dependency.
+	OtherModuleDependencyTag(module ModuleOrProxy) DependencyTag
+
 	GetIncrementalAnalysis() bool
 }
 
@@ -200,6 +202,8 @@ type singletonContext struct {
 
 	ninjaFileDeps []string
 	errs          []error
+
+	visitingDep depInfo
 
 	actionDefs localBuildActions
 }
@@ -357,23 +361,66 @@ func (s *singletonContext) VisitAllModulesIf(pred func(Module) bool,
 }
 
 func (s *singletonContext) VisitDirectDeps(module Module, visit func(Module)) {
-	s.context.VisitDirectDeps(module, visit)
+	topModule := module.info()
+
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitDirectDeps(%s, %s) for dependency %s",
+				topModule, funcName(visit), s.visitingDep.module))
+		}
+	}()
+
+	for _, dep := range topModule.directDeps {
+		s.visitingDep = dep
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDirectDeps visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
+		visit(dep.module.logicModule)
+	}
 }
 
 func (s *singletonContext) VisitDirectDepsIf(module Module, pred func(Module) bool, visit func(Module)) {
-	s.context.VisitDirectDepsIf(module, pred, visit)
+	topModule := module.info()
+
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitDirectDepsIf(%s, %s, %s) for dependency %s",
+				topModule, funcName(pred), funcName(visit), s.visitingDep.module))
+		}
+	}()
+
+	for _, dep := range topModule.directDeps {
+		s.visitingDep = dep
+		if dep.module.logicModule == nil {
+			panic(fmt.Errorf("VisitDirectDepsIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
+		}
+		if pred(dep.module.logicModule) {
+			visit(dep.module.logicModule)
+		}
+	}
 }
 
-func (s *singletonContext) VisitDepsDepthFirst(module Module,
-	visit func(Module)) {
+func (s *singletonContext) VisitDirectDepsProxies(module ModuleProxy, visit func(ModuleProxy)) {
+	topModule := module.info()
 
-	s.context.VisitDepsDepthFirst(module, visit)
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitDirectDepsProxies(%s, %s) for dependency %s",
+				topModule, funcName(visit), s.visitingDep.module))
+		}
+	}()
+
+	for _, dep := range topModule.directDeps {
+		s.visitingDep = dep
+		visit(ModuleProxy{dep.module})
+	}
 }
 
-func (s *singletonContext) VisitDepsDepthFirstIf(module Module,
-	pred func(Module) bool, visit func(Module)) {
-
-	s.context.VisitDepsDepthFirstIf(module, pred, visit)
+func (s *singletonContext) OtherModuleDependencyTag(module ModuleOrProxy) DependencyTag {
+	if s.visitingDep.module == module.info() {
+		return s.visitingDep.tag
+	}
+	return nil
 }
 
 func (s *singletonContext) PrimaryModule(module Module) Module {
