@@ -404,8 +404,8 @@ type BaseModuleContext interface {
 	OtherModuleReverseDependencyVariantExists(name string) bool
 
 	// OtherModuleProvider returns the value for a provider for the given module.  If the value is
-	// not set it returns nil and false.  The value returned may be a deep copy of the value originally
-	// passed to SetProvider.
+	// not set or the module is nil, it returns nil and false.  The value returned may be a deep
+	// copy of the value originally passed to SetProvider.
 	//
 	// This method shouldn't be used directly, prefer the type-safe android.OtherModuleProvider instead.
 	OtherModuleProvider(m ModuleOrProxy, provider AnyProviderKey) (any, bool)
@@ -701,10 +701,16 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 }
 
 func (m *baseModuleContext) OtherModuleProvider(logicModule ModuleOrProxy, provider AnyProviderKey) (any, bool) {
+	if logicModule == nil {
+		return nil, false
+	}
 	return m.context.provider(logicModule.info(), provider.provider())
 }
 
 func (m *baseModuleContext) OtherModuleHasProvider(logicModule ModuleOrProxy, provider AnyProviderKey) bool {
+	if logicModule == nil {
+		return false
+	}
 	return m.context.hasProvider(logicModule.info(), provider.provider())
 }
 
