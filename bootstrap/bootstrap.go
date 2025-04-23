@@ -731,8 +731,8 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	var blueprintTests []string
 	// blueprintGoPackages contains all blueprint go packages that can be built in StageMain
 	var blueprintGoPackages []string
-	ctx.VisitAllModules(func(module blueprint.Module) {
-		if ctx.PrimaryModule(module) == module {
+	ctx.VisitAllModuleProxies(func(module blueprint.ModuleProxy) {
+		if ctx.IsPrimaryModule(module) {
 			if binaryInfo, ok := blueprint.SingletonModuleProvider(ctx, module, BinaryProvider); ok {
 				if binaryInfo.InstallPath != "" {
 					blueprintTools = append(blueprintTools, binaryInfo.InstallPath)
