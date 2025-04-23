@@ -466,7 +466,6 @@ func (module *moduleInfo) ModuleCacheKey() string {
 	}
 	return calculateFileNameHash(fmt.Sprintf("%s-%s-%s-%s",
 		filepath.Dir(module.relBlueprintsFile), module.Name(), variant, module.typeName))
-
 }
 
 func calculateFileNameHash(name string) string {
@@ -3518,6 +3517,8 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				mctx.module.cachedName = mctx.module.logicModule.Name()
 				mctx.module.cachedString = mctx.module.logicModule.String()
 				mctx.module.logicModule = nil
+				mctx.module.properties = nil
+				mctx.module.propertyPos = nil
 			}
 
 			newErrs := c.processLocalBuildActions(&module.actionDefs,

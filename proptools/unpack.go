@@ -535,6 +535,14 @@ func selectOnNonConfigurablePropertyError(property *parser.Property) error {
 		return nil
 	}
 
+	if property.Name == "defaults" {
+		return &UnpackError{
+			fmt.Errorf("can't assign select statement to non-configurable property %q. We explicitly don't support selects on this property",
+				property.Name),
+			property.Value.Pos(),
+		}
+	}
+
 	return &UnpackError{
 		fmt.Errorf("can't assign select statement to non-configurable property %q. This requires a small soong change to enable in most cases, please file a go/soong-bug if you'd like to use a select statement here",
 			property.Name),
