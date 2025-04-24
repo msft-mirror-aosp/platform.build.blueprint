@@ -306,7 +306,7 @@ var _ SingletonModuleProviderContext = SingletonContext(nil)
 // and the boolean is false.  The value returned may be a deep copy of the value originally passed to SetProvider.
 //
 // SingletonModuleProviderContext is a helper interface that accepts Context or SingletonContext.
-func SingletonModuleProvider[K any](ctx SingletonModuleProviderContext, module Module, provider ProviderKey[K]) (K, bool) {
+func SingletonModuleProvider[K any](ctx SingletonModuleProviderContext, module ModuleOrProxy, provider ProviderKey[K]) (K, bool) {
 	value, ok := ctx.ModuleProvider(module, provider)
 	if !ok {
 		var k K
