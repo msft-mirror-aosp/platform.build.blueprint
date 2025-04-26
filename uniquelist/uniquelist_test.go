@@ -58,28 +58,8 @@ func TestUniqueList(t *testing.T) {
 			in:   testSlice(1),
 		},
 		{
-			name: "nodeSize_minus_one",
-			in:   testSlice(nodeSize - 1),
-		},
-		{
-			name: "nodeSize",
-			in:   testSlice(nodeSize),
-		},
-		{
-			name: "nodeSize_plus_one",
-			in:   testSlice(nodeSize + 1),
-		},
-		{
-			name: "two_times_nodeSize_minus_one",
-			in:   testSlice(2*nodeSize - 1),
-		},
-		{
-			name: "two_times_nodeSize",
-			in:   testSlice(2 * nodeSize),
-		},
-		{
-			name: "two_times_nodeSize_plus_one",
-			in:   testSlice(2*nodeSize + 1),
+			name: "small",
+			in:   testSlice(8),
 		},
 		{
 			name: "large",
@@ -89,7 +69,12 @@ func TestUniqueList(t *testing.T) {
 
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			uniqueList := Make(testCase.in)
+			uniqueList := Make(slices.Clone(testCase.in))
+			uniqueList2 := Make(slices.Clone(testCase.in))
+
+			if uniqueList != uniqueList2 {
+				t.Errorf("uniqueList != uniqueList2")
+			}
 
 			if g, w := uniqueList.ToSlice(), testCase.in; !slices.Equal(g, w) {
 				t.Errorf("incorrect ToSlice()\nwant: %q\ngot:  %q", w, g)

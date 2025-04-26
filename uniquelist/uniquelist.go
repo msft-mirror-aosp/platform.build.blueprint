@@ -15,103 +15,91 @@
 package uniquelist
 
 import (
+	"hash/maphash"
 	"iter"
+	"reflect"
+	"runtime"
 	"slices"
-	"unique"
+	"sync"
+	"time"
+	"weak"
+
+	"github.com/google/blueprint/syncmap"
 )
 
 // UniqueList is a workaround for Go limitation that slices are not comparable and
-// thus can't be used with unique.Make.  It interns slices by storing them in an
-// unrolled linked list, where each node has a fixed size array, which are comparable
-// and can be stored using the unique package.  A UniqueList is immutable.
+// thus can't be used with unique.Make.  It interns slices by manually hashing the
+// contents of each element and using the result as the key in a sync.Map.
 type UniqueList[T comparable] struct {
-	handle unique.Handle[node[T]]
+	p *[]T
 }
 
-// Len returns the length of the slice that was originally passed to Make.  It returns
-// a stored value and does not require iterating the linked list.
+// uniqueListMapsByType stores a map from the type of list element to the uniqueListMap
+// that stores lists of that type.  The value in the map is always a *uniqueListMap[T]
+// when the key is the reflect.TypeOf(T).
+var uniqueListMapsByType syncmap.SyncMap[reflect.Type, any]
+
+// uniqueListMap stores a map of hash of the contents of a slice to a weak pointer to
+// a canonical slice with that contents.
+type uniqueListMap[T comparable] = syncmap.SyncMap[uint64, weak.Pointer[[]T]]
+
+// freeUnusedList stores a list of functions to call periodically to remove entries
+// in uniqueListMaps whose weak pointer is no longer valid.
+var freeUnusedList []func()
+
+// freeUnusedMutex protects freeUnusedList.
+var freeUnusedMutex sync.Mutex
+
+// initFreeUnused creates a goroutine to call the functions in the freeUnusedList.
+var initFreeUnused = sync.OnceFunc(func() {
+	t := time.Tick(5 * time.Second)
+	go func() {
+		for {
+			<-t
+			freeUnusedMutex.Lock()
+			c := freeUnusedList
+			freeUnusedMutex.Unlock()
+
+			for _, f := range c {
+				f()
+			}
+		}
+	}()
+})
+
+// Len returns the length of the slice that was originally passed to Make.
 func (s UniqueList[T]) Len() int {
-	var zeroList unique.Handle[node[T]]
-	if s.handle == zeroList {
+	if s.p == nil {
 		return 0
 	}
-
-	return s.handle.Value().len
+	return len(*s.p)
 }
 
 // ToSlice returns a slice containing a shallow copy of the list.
 func (s UniqueList[T]) ToSlice() []T {
-	return s.AppendTo(nil)
+	if s.p == nil {
+		return []T(nil)
+	}
+	return slices.Clone(*s.p)
 }
 
 // Iter returns a iter.Seq that iterates the elements of the list.
 func (s UniqueList[T]) Iter() iter.Seq[T] {
-	var zeroSlice unique.Handle[node[T]]
-
-	return func(yield func(T) bool) {
-		cur := s.handle
-		for cur != zeroSlice {
-			impl := cur.Value()
-			for _, v := range impl.elements[:min(nodeSize, impl.len)] {
-				if !yield(v) {
-					return
-				}
-			}
-			cur = impl.next
-		}
+	if s.p == nil {
+		return func(yield func(T) bool) {}
 	}
-}
-
-// iterNodes returns an iter.Seq that iterates each node of the
-// unrolled linked list, returning a slice that contains all the
-// elements in a node at once.
-func (s UniqueList[T]) iterNodes() iter.Seq[[]T] {
-	var zeroSlice unique.Handle[node[T]]
-
-	return func(yield func([]T) bool) {
-		cur := s.handle
-		for cur != zeroSlice {
-			impl := cur.Value()
-			l := min(impl.len, len(impl.elements))
-			if !yield(impl.elements[:l]) {
-				return
-			}
-			cur = impl.next
-		}
-	}
+	return slices.Values(*s.p)
 }
 
 // AppendTo appends the contents of the list to the given slice and returns
 // the results.
 func (s UniqueList[T]) AppendTo(slice []T) []T {
-	// TODO: should this grow by more than s.Len() to amortize reallocation costs?
-	slice = slices.Grow(slice, s.Len())
-	for chunk := range s.iterNodes() {
-		slice = append(slice, chunk...)
+	if s.p == nil {
+		return slice
 	}
+	slice = append(slice, *s.p...)
 	return slice
 }
-
-// node is a node in an unrolled linked list object that holds a group of elements of a
-// list in a fixed size array in order to satisfy the comparable constraint.
-type node[T comparable] struct {
-	// elements is a group of up to nodeSize elements of a list.
-	elements [nodeSize]T
-
-	// len is the length of the list stored in this node and any transitive linked nodes.
-	// If len is less than nodeSize then only the first len values in the elements array
-	// are part of the list.  If len is greater than nodeSize then next will point to the
-	// next node in the unrolled linked list.
-	len int
-
-	// next is the next node in the linked list.  If it is the zero value of unique.Handle
-	// then this is the last node.
-	next unique.Handle[node[T]]
-}
-
-// nodeSize is the number of list elements stored in each node.  The value 6 was chosen to make
-// the size of node 64 bytes to match the cache line size.
-const nodeSize = 6
 
 // Make returns a UniqueList for the given slice.  Two calls to UniqueList with the same slice contents
 // will return identical UniqueList objects.
@@ -120,42 +108,69 @@ func Make[T comparable](slice []T) UniqueList[T] {
 		return UniqueList[T]{}
 	}
 
-	var last unique.Handle[node[T]]
-	l := 0
+	uniqueListsForT := getUniqueListMapForType[T]()
+	key := hashSliceContents(slice)
 
-	// Iterate backwards through the lists in chunks of nodeSize, with the first chunk visited
-	// being the partial chunk if the length of the slice is not a multiple of nodeSize.
-	//
-	// For each chunk, create an unrolled linked list node with a chunk of slice elements and a
-	// pointer to the previously created node, uniquified through unique.Make.
-	for chunk := range chunkReverse(slice, nodeSize) {
-		var node node[T]
-		copy(node.elements[:], chunk)
-		node.next = last
-		l += len(chunk)
-		node.len = l
-		last = unique.Make(node)
+	var p *[]T
+	for {
+		w, ok := uniqueListsForT.Load(key)
+		if !ok {
+			s := slices.Clone(slice)
+			w = weak.Make(&s)
+			w, _ = uniqueListsForT.LoadOrStore(key, w)
+		}
+
+		p = w.Value()
+		if p != nil {
+			break
+		}
+
+		uniqueListsForT.Delete(key)
 	}
-
-	return UniqueList[T]{last}
+	runtime.KeepAlive(slice)
+	return UniqueList[T]{p}
 }
 
-// chunkReverse is similar to slices.Chunk, except that it returns the chunks in reverse
-// order.  If the length of the slice is not a multiple of n then the first chunk returned
-// (which is the last chunk of the input slice) is a partial chunk.
-func chunkReverse[T any](slice []T, n int) iter.Seq[[]T] {
-	return func(yield func([]T) bool) {
-		l := len(slice)
-		lastPartialChunkSize := l % n
-		if lastPartialChunkSize > 0 {
-			if !yield(slice[l-lastPartialChunkSize : l : l]) {
-				return
-			}
-		}
-		for i := l - lastPartialChunkSize - n; i >= 0; i -= n {
-			if !yield(slice[i : i+n : i+n]) {
-				return
-			}
+var seed = maphash.MakeSeed()
+
+// hashSliceContents uses maphash.Hash to hash each element of a slice.
+func hashSliceContents[T comparable](list []T) uint64 {
+	var h maphash.Hash
+	h.SetSeed(seed)
+	for _, e := range list {
+		maphash.WriteComparable(&h, e)
+	}
+	return h.Sum64()
+}
+
+// getUniqueListMapForType
+func getUniqueListMapForType[T comparable]() *uniqueListMap[T] {
+	var zero T
+	typ := reflect.TypeOf(zero)
+
+	initFreeUnused()
+	uniqueListsForT, ok := uniqueListMapsByType.Load(typ)
+	if !ok {
+		var loaded bool
+		uniqueListsForT = &uniqueListMap[T]{}
+		uniqueListsForT, loaded = uniqueListMapsByType.LoadOrStore(typ, uniqueListsForT)
+		if !loaded {
+			u := uniqueListsForT.(*uniqueListMap[T])
+			freeUnusedMutex.Lock()
+			freeUnusedList = append(freeUnusedList, func() { freeUnused(u) })
+			freeUnusedMutex.Unlock()
 		}
 	}
+	return uniqueListsForT.(*uniqueListMap[T])
+}
+
+// freeUnused walks the entries in a uniqueListMap and removes any whose
+// value is a weak pointer to an object that has been reclaimed.
+func freeUnused[T comparable](u *uniqueListMap[T]) {
+	u.Range(func(key uint64, value weak.Pointer[[]T]) bool {
+		if value.Value() == nil {
+			u.Delete(key)
+		}
+		return true
+	})
 }

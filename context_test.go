@@ -83,6 +83,8 @@ type baseTestModule struct {
 		Order_only       []string
 		Extra_outputs    []string
 		Extra_order_only []string
+		Srcs             []string
+		Exclude_srcs     []string
 	}
 	GenerateBuildActionsCalled bool
 }
@@ -113,6 +115,9 @@ func (b *baseTestModule) GenerateBuildActions(ctx ModuleContext) {
 			Outputs:   b.properties.Extra_outputs,
 			OrderOnly: b.properties.Extra_order_only,
 		})
+	}
+	for _, src := range b.properties.Srcs {
+		ctx.GlobWithDeps(src, b.properties.Exclude_srcs)
 	}
 	SetProvider(ctx, IncrementalTestProviderKey, IncrementalTestProvider{
 		Value: ctx.ModuleName(),
@@ -1478,6 +1483,10 @@ func bpSetup(t *testing.T, bp string) *Context {
 	ctx := NewContext()
 	fileSystem := map[string][]byte{
 		"Android.bp": []byte(bp),
+		"file1.cc":   {},
+		"file1.cpp":  {},
+		"file2.cc":   {},
+		"file2.cpp":  {},
 	}
 	ctx.MockFileSystem(fileSystem)
 	ctx.RegisterBottomUpMutator("deps", depsMutator)
@@ -1513,6 +1522,14 @@ func incrementalSetup(t *testing.T) *Context {
 					deps: ["MyBarModule"],
 					outputs: ["MyIncrementalModule_phony_output"],
 					order_only: ["test.lib"],
+					srcs: [
+							"*.cc",
+							"*.cpp",
+					],
+					exclude_srcs: [
+							"file1.cc",
+							"file1.cpp",
+					],
 			}
 			bar_module {
 					name: "MyBarModule",
@@ -1562,6 +1579,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 				Value: &providerValue,
 			}},
 			OrderOnlyStrings: orderOnlyStrings,
+			GlobCache:        calculateGlobCache(),
 		},
 	}
 	ctx.SetIncrementalEnabled(true)
@@ -1586,6 +1604,24 @@ func calculateHashKey(m *moduleInfo, providerHashes [][]uint64) BuildActionCache
 	return BuildActionCacheKey{
 		Id:        m.ModuleCacheKey(),
 		InputHash: hash,
+	}
+}
+
+func calculateGlobCache() []globResultCache {
+	globHash1, _ := proptools.CalculateHash([]string{"file2.cc"})
+	globHash2, _ := proptools.CalculateHash([]string{"file2.cpp"})
+
+	return []globResultCache{
+		{
+			Pattern:  "*.cc",
+			Excludes: []string{"file1.cc", "file1.cpp"},
+			Result:   globHash1,
+		},
+		{
+			Pattern:  "*.cpp",
+			Excludes: []string{"file1.cc", "file1.cpp"},
+			Result:   globHash2,
+		},
 	}
 }
 
@@ -1629,6 +1665,7 @@ func TestCacheBuildActions(t *testing.T) {
 			Value: &providerValue,
 		}},
 		OrderOnlyStrings: []string{"dedup-d479e9a8133ff998"},
+		GlobCache:        calculateGlobCache(),
 	}
 	if !reflect.DeepEqual(expectedCache, *cache) {
 		t.Errorf("expected: %v actual %v", expectedCache, *cache)
@@ -1658,6 +1695,35 @@ func TestRestoreBuildActions(t *testing.T) {
 	// Verify that the provider is set correctly for the incremental module
 	if !reflect.DeepEqual(incInfo.providers[IncrementalTestProviderKey.id], providerValue) {
 		t.Errorf("provider is not set correctly when restoring from cache")
+	}
+}
+
+func TestGlobChangeNotRestoreBuildActions(t *testing.T) {
+	ctx := incrementalSetup(t)
+	incrementalSetupForRestore(ctx, nil)
+	// Now change the file system to make the old glob result invalid.
+	fileSystem := map[string][]byte{
+		"Android.bp": {},
+		"file1.cc":   {},
+		"file1.cpp":  {},
+		"file3.cc":   {},
+		"file4.cpp":  {},
+	}
+	ctx.MockFileSystem(fileSystem)
+	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	// Verify that the GenerateBuildActions was rerun for the incremental module
+	incRerun := incInfo.logicModule.(*incrementalModule).GenerateBuildActionsCalled
+	if !incRerun {
+		t.Errorf("failed to rerun GenerateBuildActions when glob result changed: %t", incRerun)
 	}
 }
 
