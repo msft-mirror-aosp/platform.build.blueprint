@@ -50,3 +50,7 @@ func (m *SyncMap[K, V]) Range(f func(key K, value V) bool) {
 		return f(k.(K), v.(V))
 	})
 }
+
+func (m *SyncMap[K, V]) Delete(key K) {
+	m.Map.Delete(key)
+}

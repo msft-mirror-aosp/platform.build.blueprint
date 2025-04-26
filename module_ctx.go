@@ -15,13 +15,13 @@
 package blueprint
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
-	"sync"
 	"text/scanner"
 
 	"github.com/google/blueprint/parser"
@@ -111,6 +111,9 @@ type Module interface {
 
 	String() string
 
+	addLoadHook(hook LoadHookWithPriority)
+	getAndClearloadHooks() []LoadHookWithPriority
+
 	info() *moduleInfo
 	setInfo(*moduleInfo)
 }
@@ -126,6 +129,7 @@ var _ ModuleOrProxy = ModuleProxy{}
 
 type ModuleBase struct {
 	moduleInfo *moduleInfo
+	loadHooks  []LoadHookWithPriority
 }
 
 func (m ModuleBase) info() *moduleInfo {
@@ -134,6 +138,16 @@ func (m ModuleBase) info() *moduleInfo {
 
 func (m *ModuleBase) setInfo(moduleInfo *moduleInfo) {
 	m.moduleInfo = moduleInfo
+}
+
+func (m *ModuleBase) addLoadHook(hook LoadHookWithPriority) {
+	m.loadHooks = append(m.loadHooks, hook)
+}
+
+func (m *ModuleBase) getAndClearloadHooks() []LoadHookWithPriority {
+	hooks := m.loadHooks
+	m.loadHooks = nil
+	return hooks
 }
 
 type ModuleProxy struct {
@@ -563,7 +577,19 @@ func (d *baseModuleContext) Failed() bool {
 
 func (d *baseModuleContext) GlobWithDeps(pattern string,
 	excludes []string) ([]string, error) {
-	return d.context.glob(pattern, excludes)
+	result, err := d.context.glob(pattern, excludes)
+	if err == nil && d.context.incrementalEnabled {
+		hash, err := proptools.CalculateHash(result)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate hash for glob result: %s", d.ModuleName()))
+		}
+		d.module.globCache = append(d.module.globCache, globResultCache{
+			Pattern:  pattern,
+			Excludes: excludes,
+			Result:   hash,
+		})
+	}
+	return result, err
 }
 
 func (d *baseModuleContext) Fs() pathtools.FileSystem {
@@ -770,14 +796,32 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 	if incrementalAnalysis && cacheKey != nil {
 		// Try to restore from cache if there is a cache hit
 		data := m.context.getBuildActionsFromCache(cacheKey)
+		if data == nil {
+			return false
+		}
+		for _, glob := range data.GlobCache {
+			result, err := m.context.glob(glob.Pattern, glob.Excludes)
+			if err != nil {
+				panic(newPanicErrorf(err, "failed to glob for cached module: %s %s %v", m.ModuleName(), glob.Pattern, glob.Excludes))
+			}
+			hash, err := proptools.CalculateHash(result)
+			if err != nil {
+				panic(newPanicErrorf(err, "failed to calculate hash for cached glob result: %s", m.ModuleName()))
+			}
+			if hash != glob.Result {
+				return false
+			}
+		}
+
 		relPos := m.module.pos
 		relPos.Filename = m.module.relBlueprintsFile
-		if data != nil && data.Pos != nil && relPos == *data.Pos {
+		if data.Pos != nil && relPos == *data.Pos {
 			for _, provider := range data.Providers {
 				m.context.setProvider(m.module, provider.Id, *provider.Value)
 			}
 			m.module.incrementalRestored = true
 			m.module.orderOnlyStrings = data.OrderOnlyStrings
+			m.module.globCache = data.GlobCache
 			restored = true
 			for _, str := range data.OrderOnlyStrings {
 				if !strings.HasPrefix(str, "dedup-") {
@@ -1561,14 +1605,6 @@ type LoadHookWithPriority struct {
 	loadHook LoadHook
 }
 
-// Load hooks need to be added by module factories, which don't have any parameter to get to the
-// Context, and only produce a Module interface with no base implementation, so the load hooks
-// must be stored in a global map.  The key is a pointer allocated by the module factory, so there
-// is no chance of collisions even if tests are running in parallel with multiple contexts.  The
-// contents should be short-lived, they are added during a module factory and removed immediately
-// after the module factory returns.
-var pendingHooks sync.Map
-
 func AddLoadHook(module Module, hook LoadHook) {
 	// default priority is 0
 	AddLoadHookWithPriority(module, hook, 0)
@@ -1578,26 +1614,18 @@ func AddLoadHook(module Module, hook LoadHook) {
 // Hooks with higher priority run last.
 // Hooks with equal priority run in the order they were registered.
 func AddLoadHookWithPriority(module Module, hook LoadHook, priority int) {
-	// Only one goroutine can be processing a given module, so no additional locking is required
-	// for the slice stored in the sync.Map.
-	v, exists := pendingHooks.Load(module)
-	if !exists {
-		v, _ = pendingHooks.LoadOrStore(module, new([]LoadHookWithPriority))
-	}
-	hooks := v.(*[]LoadHookWithPriority)
-	*hooks = append(*hooks, LoadHookWithPriority{priority, hook})
+	module.addLoadHook(LoadHookWithPriority{priority, hook})
 }
 
 func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
 	scopedModuleFactories *map[string]ModuleFactory) (newModules []*moduleInfo, deps []string, errs []error) {
 
-	if v, exists := pendingHooks.Load(module.logicModule); exists {
-		hooks := v.(*[]LoadHookWithPriority)
+	if hooks := module.logicModule.getAndClearloadHooks(); len(hooks) > 0 {
 		// Sort the hooks by priority.
 		// Use SliceStable so that hooks with equal priority run in the order they were registered.
-		sort.SliceStable(*hooks, func(i, j int) bool { return (*hooks)[i].priority < (*hooks)[j].priority })
+		slices.SortStableFunc(hooks, func(i, j LoadHookWithPriority) int { return cmp.Compare(i.priority, j.priority) })
 
-		for _, hook := range *hooks {
+		for _, hook := range hooks {
 			mctx := &loadHookContext{
 				baseModuleContext: baseModuleContext{
 					context: ctx,
@@ -1611,7 +1639,6 @@ func runAndRemoveLoadHooks(ctx *Context, config interface{}, module *moduleInfo,
 			deps = append(deps, mctx.ninjaFileDeps...)
 			errs = append(errs, mctx.errs...)
 		}
-		pendingHooks.Delete(module.logicModule)
 
 		return newModules, deps, errs
 	}
