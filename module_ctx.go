@@ -346,6 +346,12 @@ type BaseModuleContext interface {
 	// only done once for all variants of a module.
 	PrimaryModule() Module
 
+	// IsPrimaryModule returns if the current module is the first variant.  Variants of a module are always visited in
+	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
+	// Module returned by PrimaryModule without data races.  This can be used to perform singleton actions that are
+	// only done once for all variants of a module.
+	IsPrimaryModule(module ModuleOrProxy) bool
+
 	// FinalModule returns the last variant of the current module.  Variants of a module are always visited in
 	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
 	// variants using VisitAllModuleVariants if the current module == FinalModule().  This can be used to perform
@@ -1067,6 +1073,10 @@ func (m *baseModuleContext) WalkDepsProxy(visit func(child, parent ModuleProxy) 
 
 func (m *baseModuleContext) PrimaryModule() Module {
 	return m.module.group.modules.firstModule().logicModule
+}
+
+func (m *baseModuleContext) IsPrimaryModule(module ModuleOrProxy) bool {
+	return m.module.group.modules.firstModule() == module.info()
 }
 
 func (m *baseModuleContext) FinalModule() Module {
