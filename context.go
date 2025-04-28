@@ -5450,7 +5450,7 @@ func getModuleDebugJson(module *moduleInfo) []byte {
 		Debug      string                 `json:"debug"` // from GetDebugString on the module
 		Properties map[string]interface{} `json:"properties"`
 	}{
-		Name:       module.logicModule.Name(),
+		Name:       module.Name(),
 		SourceFile: module.pos.Filename,
 		SourceLine: module.pos.Line,
 		Type:       module.typeName,
@@ -5459,7 +5459,7 @@ func getModuleDebugJson(module *moduleInfo) []byte {
 			result := make([]depJson, len(module.directDeps))
 			for i, dep := range module.directDeps {
 				result[i] = depJson{
-					Name:    dep.module.logicModule.Name(),
+					Name:    dep.module.Name(),
 					Variant: dep.module.variant.name,
 				}
 				t := reflect.TypeOf(dep.tag)
