@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/gob"
-	"fmt"
 	"io"
 )
 
@@ -97,7 +96,7 @@ func DecodeSimple[T any](buf *bytes.Reader, data *T) error {
 
 func EncodeStruct(buf *bytes.Buffer, val any) error {
 	var err error
-	if encdec, ok := val.(CustomEnc); ok && false {
+	if encdec, ok := val.(CustomEnc); ok {
 		var data []byte
 		data, err = encdec.GobEncode()
 		if err != nil {
@@ -112,10 +111,9 @@ func EncodeStruct(buf *bytes.Buffer, val any) error {
 }
 
 func DecodeStruct(buf *bytes.Reader, data any) error {
-	if encdec, ok := data.(CustomDec); ok && false {
+	if encdec, ok := data.(CustomDec); ok {
 		return encdec.Decode(buf)
 	} else {
-		fmt.Printf("BBB: %T\n", data)
 		decoder := gob.NewDecoder(buf)
 		return decoder.Decode(data)
 	}
