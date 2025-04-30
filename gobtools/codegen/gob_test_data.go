@@ -14,6 +14,8 @@
 
 package main
 
+import "github.com/google/blueprint/uniquelist"
+
 //go:generate go run gob_gen.go -source gob_test_data.go
 
 type TestEchoInterface interface {
@@ -42,6 +44,8 @@ type TestStruct struct {
 	f17 *TestEcho
 	f18 TestEchoInterface
 	f19 testStrings
+	f20 uniquelist.UniqueList[TestEcho]
+	f21 uniquelist.UniqueList[TestEchoInterface]
 }
 
 type testStrings []string

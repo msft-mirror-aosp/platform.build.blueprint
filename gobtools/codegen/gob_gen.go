@@ -16,7 +16,6 @@ package main
 
 import (
 	"bytes"
-	"cmp"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -26,7 +25,6 @@ import (
 	"maps"
 	"os"
 	"slices"
-	"sort"
 	"strings"
 )
 
@@ -175,16 +173,22 @@ func generateEncodeForType(encodeBody *strings.Builder, field ast.Expr, fieldNam
 		generateEncodeForType(encodeBody, t.Value, "v")
 		encodeBody.WriteString("\t}\n")
 	case *ast.ArrayType:
-		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return nil, err }\n", fieldName))
-		encodeBody.WriteString(fmt.Sprintf("\tfor i := 0; i < len(%s); i++ {\n", fieldName))
-		generateEncodeForType(encodeBody, t.Elt, fieldName+"[i]")
-		encodeBody.WriteString("\t}\n")
+		encodeArray(encodeBody, t.Elt, fieldName)
 	case *ast.StarExpr:
 		encodeBody.WriteString(fmt.Sprintf("\tisNil%d := %s == nil\n", fieldId, fieldName))
 		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, isNil%d); err != nil { return nil, err }\n", fieldId))
 		encodeBody.WriteString(fmt.Sprintf("\tif !isNil%d {\n", fieldId))
 		generateEncodeForType(encodeBody, t.X, "*"+fieldName)
 		encodeBody.WriteString("\t}\n")
+	case *ast.IndexExpr:
+		if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "UniqueList" {
+			listName := fmt.Sprintf("unilst%d", fieldId)
+			encodeBody.WriteString(fmt.Sprintf("\t%s := %s.ToSlice()\n", listName, fieldName))
+			encodeArray(encodeBody, t.Index, listName)
+		} else {
+			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return nil, err }\n", fieldName))
+			imports["\"github.com/google/blueprint/gobtools\""] = true
+		}
 	default:
 		panic(fmt.Errorf("unknown data type: %v", t))
 	}
@@ -206,7 +210,6 @@ func generateDecodeForType(decodeBody *strings.Builder, field ast.Expr, fieldNam
 			decodeBody.WriteString(fmt.Sprintf("\t%s = int(%s)\n", fieldName, valId))
 			imports["\"github.com/google/blueprint/gobtools\""] = true
 		case "bool", "int16", "int32", "int64", "uint16", "uint32", "uint64":
-			//typ := strings.ToUpper(string(t.Name[0])) + t.Name[1:]
 			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[%s](buf, &%s); if err != nil { return err }\n", t.Name, fieldName))
 			imports["\"github.com/google/blueprint/gobtools\""] = true
 		default:
@@ -232,14 +235,7 @@ func generateDecodeForType(decodeBody *strings.Builder, field ast.Expr, fieldNam
 		decodeBody.WriteString("\t}\n")
 		decodeBody.WriteString("\t}\n")
 	case *ast.ArrayType:
-		decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
-		decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int32](buf, &%s); if err != nil { return err }\n", valId))
-		decodeBody.WriteString(fmt.Sprintf("\tif %s > 0 {\n", valId))
-		decodeBody.WriteString(fmt.Sprintf("\t%s = make([]%s, %s)\n", fieldName, t.Elt.(*ast.Ident).Name, valId))
-		decodeBody.WriteString(fmt.Sprintf("\tfor i := 0; i < int(%s); i++ {\n", valId))
-		generateDecodeForType(decodeBody, t.Elt, fieldName+"[i]")
-		decodeBody.WriteString("\t}\n")
-		decodeBody.WriteString("\t}\n")
+		decodeArray(decodeBody, t.Elt, fieldName)
 	case *ast.StarExpr:
 		decodeBody.WriteString(fmt.Sprintf("\tvar isNil%d bool\n", fieldId))
 		decodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.DecodeSimple(buf, &isNil%d); err != nil { return err }\n", fieldId))
@@ -248,9 +244,39 @@ func generateDecodeForType(decodeBody *strings.Builder, field ast.Expr, fieldNam
 		generateDecodeForType(decodeBody, t.X, valId)
 		decodeBody.WriteString(fmt.Sprintf("\t%s = &%s\n", fieldName, valId))
 		decodeBody.WriteString("\t}\n")
+	case *ast.IndexExpr:
+		if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "UniqueList" {
+			listName := fmt.Sprintf("unilst%d", fieldId)
+			decodeBody.WriteString(fmt.Sprintf("\tvar %s []%s\n", listName, t.Index.(*ast.Ident).Name))
+			decodeArray(decodeBody, t.Index, listName)
+			decodeBody.WriteString(fmt.Sprintf("\t%s = uniquelist.Make(%s)\n", fieldName, listName))
+			imports["\"github.com/google/blueprint/uniquelist\""] = true
+		} else {
+			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeStruct(buf, &%s); if err != nil { return err }\n", fieldName))
+			imports["\"github.com/google/blueprint/gobtools\""] = true
+		}
 	default:
-		panic(fmt.Errorf("unknown data type: %v", t))
+		panic(fmt.Errorf("unknown data type: %T", t))
 	}
+}
+
+func encodeArray(encodeBody *strings.Builder, t ast.Expr, fieldName string) {
+	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return nil, err }\n", fieldName))
+	encodeBody.WriteString(fmt.Sprintf("\tfor i := 0; i < len(%s); i++ {\n", fieldName))
+	generateEncodeForType(encodeBody, t, fieldName+"[i]")
+	encodeBody.WriteString("\t}\n")
+}
+
+func decodeArray(decodeBody *strings.Builder, t ast.Expr, fieldName string) {
+	valId := fmt.Sprintf("val%d", fieldId)
+	decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
+	decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int32](buf, &%s); if err != nil { return err }\n", valId))
+	decodeBody.WriteString(fmt.Sprintf("\tif %s > 0 {\n", valId))
+	decodeBody.WriteString(fmt.Sprintf("\t%s = make([]%s, %s)\n", fieldName, t.(*ast.Ident).Name, valId))
+	decodeBody.WriteString(fmt.Sprintf("\tfor i := 0; i < int(%s); i++ {\n", valId))
+	generateDecodeForType(decodeBody, t, fieldName+"[i]")
+	decodeBody.WriteString("\t}\n")
+	decodeBody.WriteString("\t}\n")
 }
 
 func generateEncode(structDecl *ast.TypeSpec, encodeBody *strings.Builder) {
@@ -355,20 +381,4 @@ func main() {
 	if err := fd.Close(); err != nil {
 		panic(err)
 	}
-}
-
-// TODO: move the original one to blueprint so this can be removed.
-// SortedKeys returns the keys of the given map in the ascending order.
-func SortedKeys[T cmp.Ordered, V any](m map[T]V) []T {
-	if len(m) == 0 {
-		return nil
-	}
-	ret := make([]T, 0, len(m))
-	for k := range m {
-		ret = append(ret, k)
-	}
-	sort.Slice(ret, func(i, j int) bool {
-		return ret[i] < ret[j]
-	})
-	return ret
 }

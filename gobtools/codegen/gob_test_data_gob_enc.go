@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/uniquelist"
 )
 
 func (r TestStruct) GobEncode() ([]byte, error) {
@@ -127,6 +128,26 @@ func (r TestStruct) GobEncode() ([]byte, error) {
 		return nil, err
 	}
 
+	unilst28 := r.f20.ToSlice()
+	if err = gobtools.EncodeSimple(buf, int32(len(unilst28))); err != nil {
+		return nil, err
+	}
+	for i := 0; i < len(unilst28); i++ {
+		if err = gobtools.EncodeStruct(buf, &unilst28[i]); err != nil {
+			return nil, err
+		}
+	}
+
+	unilst30 := r.f21.ToSlice()
+	if err = gobtools.EncodeSimple(buf, int32(len(unilst30))); err != nil {
+		return nil, err
+	}
+	for i := 0; i < len(unilst30); i++ {
+		if err = gobtools.EncodeStruct(buf, &unilst30[i]); err != nil {
+			return nil, err
+		}
+	}
+
 	return buf.Bytes(), nil
 }
 
@@ -194,14 +215,14 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 		return err
 	}
 
-	var val39 int32
-	err = gobtools.DecodeSimple[int32](buf, &val39)
+	var val43 int32
+	err = gobtools.DecodeSimple[int32](buf, &val43)
 	if err != nil {
 		return err
 	}
-	if val39 > 0 {
-		r.f11 = make([]string, val39)
-		for i := 0; i < int(val39); i++ {
+	if val43 > 0 {
+		r.f11 = make([]string, val43)
+		for i := 0; i < int(val43); i++ {
 			err = gobtools.DecodeString(buf, &r.f11[i])
 			if err != nil {
 				return err
@@ -209,75 +230,75 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 		}
 	}
 
-	var val41 int32
-	err = gobtools.DecodeSimple[int32](buf, &val41)
+	var val45 int32
+	err = gobtools.DecodeSimple[int32](buf, &val45)
 	if err != nil {
 		return err
 	}
-	if val41 > 0 {
-		r.f12 = make(map[string]int, val41)
-		for i := 0; i < int(val41); i++ {
+	if val45 > 0 {
+		r.f12 = make(map[string]int, val45)
+		for i := 0; i < int(val45); i++ {
 			var k string
 			var v int
 			err = gobtools.DecodeString(buf, &k)
 			if err != nil {
 				return err
 			}
-			var val43 int64
-			err = gobtools.DecodeSimple[int64](buf, &val43)
+			var val47 int64
+			err = gobtools.DecodeSimple[int64](buf, &val47)
 			if err != nil {
 				return err
 			}
-			v = int(val43)
+			v = int(val47)
 			r.f12[k] = v
 		}
 	}
 
-	var isNil44 bool
-	if err = gobtools.DecodeSimple(buf, &isNil44); err != nil {
+	var isNil48 bool
+	if err = gobtools.DecodeSimple(buf, &isNil48); err != nil {
 		return err
 	}
-	if !isNil44 {
-		var val44 string
-		err = gobtools.DecodeString(buf, &val44)
+	if !isNil48 {
+		var val48 string
+		err = gobtools.DecodeString(buf, &val48)
 		if err != nil {
 			return err
 		}
-		r.f13 = &val44
+		r.f13 = &val48
 	}
 
-	var val46 int64
-	err = gobtools.DecodeSimple[int64](buf, &val46)
+	var val50 int64
+	err = gobtools.DecodeSimple[int64](buf, &val50)
 	if err != nil {
 		return err
 	}
-	r.f14 = int(val46)
+	r.f14 = int(val50)
 
-	var val47 int32
-	err = gobtools.DecodeSimple[int32](buf, &val47)
+	var val51 int32
+	err = gobtools.DecodeSimple[int32](buf, &val51)
 	if err != nil {
 		return err
 	}
-	if val47 > 0 {
-		r.f15 = make([]int, val47)
-		for i := 0; i < int(val47); i++ {
-			var val48 int64
-			err = gobtools.DecodeSimple[int64](buf, &val48)
+	if val51 > 0 {
+		r.f15 = make([]int, val51)
+		for i := 0; i < int(val51); i++ {
+			var val52 int64
+			err = gobtools.DecodeSimple[int64](buf, &val52)
 			if err != nil {
 				return err
 			}
-			r.f15[i] = int(val48)
+			r.f15[i] = int(val52)
 		}
 	}
 
-	var val49 int32
-	err = gobtools.DecodeSimple[int32](buf, &val49)
+	var val53 int32
+	err = gobtools.DecodeSimple[int32](buf, &val53)
 	if err != nil {
 		return err
 	}
-	if val49 > 0 {
-		r.f16 = make([]TestEcho, val49)
-		for i := 0; i < int(val49); i++ {
+	if val53 > 0 {
+		r.f16 = make([]TestEcho, val53)
+		for i := 0; i < int(val53); i++ {
 			err = gobtools.DecodeStruct(buf, &r.f16[i])
 			if err != nil {
 				return err
@@ -285,17 +306,17 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 		}
 	}
 
-	var isNil51 bool
-	if err = gobtools.DecodeSimple(buf, &isNil51); err != nil {
+	var isNil55 bool
+	if err = gobtools.DecodeSimple(buf, &isNil55); err != nil {
 		return err
 	}
-	if !isNil51 {
-		var val51 TestEcho
-		err = gobtools.DecodeStruct(buf, &val51)
+	if !isNil55 {
+		var val55 TestEcho
+		err = gobtools.DecodeStruct(buf, &val55)
 		if err != nil {
 			return err
 		}
-		r.f17 = &val51
+		r.f17 = &val55
 	}
 
 	err = gobtools.DecodeStruct(buf, &r.f18)
@@ -307,6 +328,40 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 	if err != nil {
 		return err
 	}
+
+	var unilst59 []TestEcho
+	var val59 int32
+	err = gobtools.DecodeSimple[int32](buf, &val59)
+	if err != nil {
+		return err
+	}
+	if val59 > 0 {
+		unilst59 = make([]TestEcho, val59)
+		for i := 0; i < int(val59); i++ {
+			err = gobtools.DecodeStruct(buf, &unilst59[i])
+			if err != nil {
+				return err
+			}
+		}
+	}
+	r.f20 = uniquelist.Make(unilst59)
+
+	var unilst61 []TestEchoInterface
+	var val61 int32
+	err = gobtools.DecodeSimple[int32](buf, &val61)
+	if err != nil {
+		return err
+	}
+	if val61 > 0 {
+		unilst61 = make([]TestEchoInterface, val61)
+		for i := 0; i < int(val61); i++ {
+			err = gobtools.DecodeStruct(buf, &unilst61[i])
+			if err != nil {
+				return err
+			}
+		}
+	}
+	r.f21 = uniquelist.Make(unilst61)
 
 	return nil
 }
