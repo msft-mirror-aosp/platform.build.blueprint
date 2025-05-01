@@ -32,6 +32,7 @@ var (
 	goTestMainCmd   = pctx.StaticVariable("goTestMainCmd", filepath.Join("$ToolDir", "gotestmain"))
 	goTestRunnerCmd = pctx.StaticVariable("goTestRunnerCmd", filepath.Join("$ToolDir", "gotestrunner"))
 	pluginGenSrcCmd = pctx.StaticVariable("pluginGenSrcCmd", filepath.Join("$ToolDir", "loadplugins"))
+	gobGenCmd       = pctx.StaticVariable("gobGenCmd", filepath.Join("$ToolDir", "gob_gen"))
 
 	parallelCompile = pctx.StaticVariable("parallelCompile", func() string {
 		numCpu := runtime.NumCPU()
@@ -81,6 +82,13 @@ var (
 			Description: "create $out",
 		},
 		"pkg", "plugins")
+
+	verifySerializers = pctx.StaticRule("generateSerializers",
+		blueprint.RuleParams{
+			Command:     "rm -f $out && $gobGenCmd -verify $in && touch $out",
+			CommandDeps: []string{"$gobGenCmd"},
+			Description: "generate serializers $out",
+		})
 
 	test = pctx.StaticRule("test",
 		blueprint.RuleParams{
@@ -381,6 +389,19 @@ func (g *GoPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	})
 }
 
+func buildVerifySerializers(ctx blueprint.ModuleContext, outputFile string, srcs []string) {
+	var srcPaths []string
+	for _, src := range srcs {
+		srcPaths = append(srcPaths, filepath.Join(moduleSrcDir(ctx), src))
+	}
+
+	ctx.Build(pctx, blueprint.BuildParams{
+		Rule:    verifySerializers,
+		Inputs:  srcPaths,
+		Outputs: []string{outputFile},
+	})
+}
+
 // A GoBinary is a module for building executable binaries from Go sources.
 type GoBinary struct {
 	blueprint.ModuleBase
@@ -624,12 +645,17 @@ func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
 		deps = append(deps, embedcfgFile)
 	}
 
+	verifySerializers := archiveFile + ".verify_serializers"
+	buildVerifySerializers(ctx, verifySerializers, srcs)
+	validations := []string{verifySerializers}
+
 	ctx.Build(pctx, blueprint.BuildParams{
-		Rule:      compile,
-		Outputs:   []string{archiveFile},
-		Inputs:    srcFiles,
-		Implicits: deps,
-		Args:      compileArgs,
+		Rule:        compile,
+		Outputs:     []string{archiveFile},
+		Inputs:      srcFiles,
+		Implicits:   deps,
+		Args:        compileArgs,
+		Validations: validations,
 	})
 }
 

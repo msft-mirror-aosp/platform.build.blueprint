@@ -26,6 +26,7 @@ import (
 	"go/token"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -119,6 +120,8 @@ import (
 //      and call its `GobDecode` method to populate its fields.
 //   3. The newly decoded `*ConcreteExtra` will be assigned to `data.Extra`.
 //
+
+var verify = flag.Bool("verify", false, "verify existing outputs")
 
 var fieldId int
 
@@ -355,15 +358,30 @@ func main() {
 			os.Exit(1)
 		}
 
-		if len(out) == 0 {
-			continue
-		}
-
 		outputFile := strings.TrimSuffix(s, ".go") + "_gob_enc.go"
-		err = os.WriteFile(outputFile, out, 0666)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to write output for %s to %s: %s\n", s, outputFile, err)
-			os.Exit(1)
+		if *verify {
+			if len(out) == 0 {
+				err := expectNotExist(outputFile)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "verification error: %s\n", err)
+					os.Exit(1)
+				}
+			} else {
+				if err := expectContents(outputFile, out); err != nil {
+					fmt.Fprintf(os.Stderr, "verification error: %s\n", err)
+					os.Exit(1)
+				}
+				if !slices.Contains(sources, outputFile) {
+					fmt.Fprintf(os.Stderr, "verification error: generated file %s is not in srcs\n", outputFile)
+					os.Exit(1)
+				}
+			}
+		} else if len(out) > 0 {
+			err = os.WriteFile(outputFile, out, 0666)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "failed to write output for %s to %s: %s\n", s, outputFile, err)
+				os.Exit(1)
+			}
 		}
 	}
 }
@@ -418,4 +436,41 @@ func generate(source string) ([]byte, error) {
 	}
 
 	return out, nil
+}
+
+// expectContents verifies the that file contains the given bytes, returning an error that describes
+// how to fix the problem if it does not.
+func expectContents(file string, expected []byte) error {
+	actual, err := os.ReadFile(file)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("generated file %s does not exist, rerun `go generate` in %s",
+			file, filepath.Dir(file))
+	}
+	if err != nil {
+		return err
+	}
+
+	if len(expected) == 0 {
+		return fmt.Errorf("found unexpected generated file %s, delete it", file)
+	}
+
+	if !bytes.Equal(actual, expected) {
+		return fmt.Errorf("generated file %s has out of date contents, rerun `go generate` in %s",
+			file, filepath.Dir(file))
+	}
+
+	return nil
+}
+
+// expectNotExist verifies that the file does not exist, returning an error that describes how to
+// fix the problem if it does.
+func expectNotExist(file string) error {
+	_, err := os.Stat(file)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("expected %s to not exist, delete it", file)
 }
