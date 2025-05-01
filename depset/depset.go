@@ -16,13 +16,13 @@ package depset
 
 import (
 	"bytes"
-	"encoding/gob"
 	"errors"
 	"fmt"
 	"iter"
 	"slices"
 	"unique"
 
+	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/uniquelist"
 )
 
@@ -93,24 +93,16 @@ func (d DepSet[T]) order() Order {
 	return impl.order
 }
 
-type depSetGob[T depSettableType] struct {
-	Preorder   bool
-	Reverse    bool
-	Order      Order
-	Direct     []T
-	Transitive []DepSet[T]
-}
-
-var DepSetMapToGob = make(map[any]int)
-var DepSetMapFromGob = make(map[int]any)
-var depsetId = 0
+var DepSetMapToGob = make(map[any]int32)
+var DepSetMapFromGob = make(map[int32]any)
+var depsetId int32 = 0
 
 // Since the Gob decoding and encoding logic uses these two global maps to store
 // the depsets that have been processed, each time the whole encoding and decoding process
 // runs, these maps need to be cleared.
 func resetGobMaps() {
-	DepSetMapToGob = make(map[any]int)
-	DepSetMapFromGob = make(map[int]any)
+	DepSetMapToGob = make(map[any]int32)
+	DepSetMapFromGob = make(map[int32]any)
 }
 
 // The Gob encoding and decoding logic below only works in a single thread environment,
@@ -118,7 +110,6 @@ func resetGobMaps() {
 // needs to be revisited.
 func (d DepSet[T]) GobEncode() ([]byte, error) {
 	w := new(bytes.Buffer)
-	encoder := gob.NewEncoder(w)
 	impl := d.impl()
 	var err error
 	// Below we first check if the given depset has been encoded, if no we encode the
@@ -127,51 +118,103 @@ func (d DepSet[T]) GobEncode() ([]byte, error) {
 	if id, ok := DepSetMapToGob[d]; !ok {
 		depsetId++
 		DepSetMapToGob[d] = depsetId
-		err = errors.Join(
-			encoder.Encode(true),
-			encoder.Encode(depsetId),
-			encoder.Encode(impl.preorder),
-			encoder.Encode(impl.reverse),
-			encoder.Encode(impl.order),
-			encoder.Encode(impl.direct.ToSlice()),
-			encoder.Encode(impl.transitive.ToSlice()))
+		if err = errors.Join(
+			gobtools.EncodeSimple(w, true),
+			gobtools.EncodeSimple(w, depsetId),
+			gobtools.EncodeSimple(w, impl.preorder),
+			gobtools.EncodeSimple(w, impl.reverse),
+			gobtools.EncodeSimple(w, int16(impl.order))); err != nil {
+			return nil, err
+		}
+
+		dlist := impl.direct.ToSlice()
+		if err = gobtools.EncodeSimple(w, int32(len(dlist))); err != nil {
+			return nil, err
+		}
+		for i := 0; i < len(dlist); i++ {
+			if err = gobtools.EncodeStruct(w, &dlist[i]); err != nil {
+				return nil, err
+			}
+		}
+
+		tlist := impl.transitive.ToSlice()
+		if err = gobtools.EncodeSimple(w, int32(len(tlist))); err != nil {
+			return nil, err
+		}
+		for i := 0; i < len(tlist); i++ {
+			if err = gobtools.EncodeStruct(w, &tlist[i]); err != nil {
+				return nil, err
+			}
+		}
 	} else {
 		err = errors.Join(
-			encoder.Encode(false),
-			encoder.Encode(id))
+			gobtools.EncodeSimple(w, false),
+			gobtools.EncodeSimple(w, id))
 	}
 
 	return w.Bytes(), err
 }
 
 func (d *DepSet[T]) GobDecode(data []byte) error {
-	r := bytes.NewBuffer(data)
+	buf := bytes.NewReader(data)
+	return d.Decode(buf)
+}
+
+func (d *DepSet[T]) Decode(buf *bytes.Reader) error {
 	var embedded bool
 	var err error
-	var depsetId int
-	decoder := gob.NewDecoder(r)
+	var depsetId int32
 	if err = errors.Join(
-		decoder.Decode(&embedded),
-		decoder.Decode(&depsetId)); err != nil {
+		gobtools.DecodeSimple[bool](buf, &embedded),
+		gobtools.DecodeSimple[int32](buf, &depsetId)); err != nil {
 		return err
 	}
 	if embedded {
-		var fromGob depSetGob[T]
+		var fromGob depSet[T]
+		var order int16
 		if err = errors.Join(
-			decoder.Decode(&fromGob.Preorder),
-			decoder.Decode(&fromGob.Reverse),
-			decoder.Decode(&fromGob.Order),
-			decoder.Decode(&fromGob.Direct),
-			decoder.Decode(&fromGob.Transitive)); err != nil {
+			gobtools.DecodeSimple[bool](buf, &fromGob.preorder),
+			gobtools.DecodeSimple[bool](buf, &fromGob.reverse),
+			gobtools.DecodeSimple[int16](buf, &order)); err != nil {
 			return err
 		}
-		d.handle = unique.Make(depSet[T]{
-			preorder:   fromGob.Preorder,
-			reverse:    fromGob.Reverse,
-			order:      fromGob.Order,
-			direct:     uniquelist.Make(fromGob.Direct),
-			transitive: uniquelist.Make(fromGob.Transitive),
-		})
+		fromGob.order = Order(order)
+
+		var dlist []T
+		var dlen int32
+		err = gobtools.DecodeSimple[int32](buf, &dlen)
+		if err != nil {
+			return err
+		}
+		if dlen > 0 {
+			dlist = make([]T, dlen)
+			for i := 0; i < int(dlen); i++ {
+				err = gobtools.DecodeStruct(buf, &dlist[i])
+				if err != nil {
+					return err
+				}
+			}
+		}
+		fromGob.direct = uniquelist.Make(dlist)
+
+		var tlist []DepSet[T]
+		var tlen int32
+		err = gobtools.DecodeSimple[int32](buf, &tlen)
+		if err != nil {
+			return err
+		}
+		if tlen > 0 {
+			tlist = make([]DepSet[T], tlen)
+			for i := 0; i < int(tlen); i++ {
+				err = gobtools.DecodeStruct(buf, &tlist[i])
+				if err != nil {
+					return err
+				}
+			}
+		}
+		fromGob.transitive = uniquelist.Make(tlist)
+
+		d.handle = unique.Make(fromGob)
 		DepSetMapFromGob[depsetId] = d
 	} else {
 		if v, ok := DepSetMapFromGob[depsetId].(*DepSet[T]); ok {

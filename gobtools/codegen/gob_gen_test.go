@@ -21,12 +21,12 @@ import (
 	"testing"
 
 	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/uniquelist"
 )
 
 func TestPathGobEncDec(t *testing.T) {
 	strValue := "string value for test"
 	defaultEcho := TestEcho{"111111111"}
-	// auto generate this
 	gob.Register(&TestEcho{})
 	testCases := []struct {
 		name    string
@@ -63,6 +63,8 @@ func TestPathGobEncDec(t *testing.T) {
 				f17: &defaultEcho,
 				f18: &TestEcho{"aaaa"},
 				f19: testStrings{"bbbb", "cccc", "dddd"},
+				f20: uniquelist.Make([]TestEcho{defaultEcho}),
+				f21: uniquelist.Make([]TestEchoInterface{&defaultEcho}),
 			},
 			decoded: &TestStruct{},
 		},

@@ -776,8 +776,8 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		}
 		cacheInput := new(BuildActionCacheInput)
 		cacheInput.PropertiesHash = hash
-		var deps []Module
-		m.VisitDirectDeps(func(module Module) {
+		var deps []ModuleProxy
+		m.VisitDirectDepsProxy(func(module ModuleProxy) {
 			cacheInput.ProvidersHash =
 				append(cacheInput.ProvidersHash, module.info().providerInitialValueHashes)
 			if m.context.incrementalDebugFile != "" {
@@ -869,7 +869,7 @@ type depProviders struct {
 	Providers []string `json:"dep_provider_hash"`
 }
 
-func incrementalDebugData(m *moduleContext, deps []Module, inputHash *BuildActionCacheInput) []byte {
+func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *BuildActionCacheInput) []byte {
 	info := struct {
 		Name      string         `json:"name"`
 		CacheKey  string         `json:"cache_key"`
