@@ -16,11 +16,13 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"go/ast"
 	"go/format"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"maps"
 	"os"
@@ -118,14 +120,9 @@ import (
 //   3. The newly decoded `*ConcreteExtra` will be assigned to `data.Extra`.
 //
 
-var sourceFile = flag.String("source", "", "source file")
 var fieldId int
 
 const genGobAnnotation = "@auto-generate: gob"
-
-var imports = map[string]bool{
-	"\"bytes\"": true,
-}
 
 func findStructs(node *ast.File) []*ast.TypeSpec {
 	var ret []*ast.TypeSpec
@@ -143,81 +140,85 @@ func findStructs(node *ast.File) []*ast.TypeSpec {
 	return ret
 }
 
-func generateEncodeForType(encodeBody *strings.Builder, field ast.Expr, fieldName string) {
+func generateEncodeForType(encodeBody *strings.Builder, field ast.Expr, fieldName string, imports map[string]bool) {
 	fieldId++
+
+	imports[`"bytes"`] = true
 
 	switch t := field.(type) {
 	case *ast.Ident:
 		switch t.Name {
 		case "string":
 			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeString(buf, %s); err != nil { return nil, err }\n", fieldName))
-			imports["\"github.com/google/blueprint/gobtools\""] = true
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		case "int":
 			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int64(%s)); err != nil { return nil, err }\n", fieldName))
-			imports["\"github.com/google/blueprint/gobtools\""] = true
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		case "bool", "int16", "int32", "int64", "uint16", "uint32", "uint64":
 			//typ := strings.ToUpper(string(t.Name[0])) + t.Name[1:]
 			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, %s); err != nil { return nil, err }\n", fieldName))
-			imports["\"github.com/google/blueprint/gobtools\""] = true
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		default:
 			if fieldName == "" {
 				fieldName = "r." + t.Name
 			}
 			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return nil, err }\n", fieldName))
-			imports["\"github.com/google/blueprint/gobtools\""] = true
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		}
 	case *ast.MapType:
 		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return nil, err }\n", fieldName))
 		encodeBody.WriteString(fmt.Sprintf("\tfor k, v := range %s {\n", fieldName))
-		generateEncodeForType(encodeBody, t.Key, "k")
-		generateEncodeForType(encodeBody, t.Value, "v")
+		generateEncodeForType(encodeBody, t.Key, "k", imports)
+		generateEncodeForType(encodeBody, t.Value, "v", imports)
 		encodeBody.WriteString("\t}\n")
 	case *ast.ArrayType:
-		encodeArray(encodeBody, t.Elt, fieldName)
+		encodeArray(encodeBody, t.Elt, fieldName, imports)
 	case *ast.StarExpr:
 		encodeBody.WriteString(fmt.Sprintf("\tisNil%d := %s == nil\n", fieldId, fieldName))
 		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, isNil%d); err != nil { return nil, err }\n", fieldId))
 		encodeBody.WriteString(fmt.Sprintf("\tif !isNil%d {\n", fieldId))
-		generateEncodeForType(encodeBody, t.X, "*"+fieldName)
+		generateEncodeForType(encodeBody, t.X, "*"+fieldName, imports)
 		encodeBody.WriteString("\t}\n")
 	case *ast.IndexExpr:
 		if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "UniqueList" {
 			listName := fmt.Sprintf("unilst%d", fieldId)
 			encodeBody.WriteString(fmt.Sprintf("\t%s := %s.ToSlice()\n", listName, fieldName))
-			encodeArray(encodeBody, t.Index, listName)
+			encodeArray(encodeBody, t.Index, listName, imports)
 		} else {
 			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return nil, err }\n", fieldName))
-			imports["\"github.com/google/blueprint/gobtools\""] = true
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		}
 	default:
 		panic(fmt.Errorf("unknown data type: %v", t))
 	}
 }
 
-func generateDecodeForType(decodeBody *strings.Builder, field ast.Expr, fieldName string) {
+func generateDecodeForType(decodeBody *strings.Builder, field ast.Expr, fieldName string, imports map[string]bool) {
 	fieldId++
 	valId := fmt.Sprintf("val%d", fieldId)
+
+	imports[`"bytes"`] = true
 
 	switch t := field.(type) {
 	case *ast.Ident:
 		switch t.Name {
 		case "string":
 			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeString(buf, &%s); if err != nil { return err }\n", fieldName))
-			imports["\"github.com/google/blueprint/gobtools\""] = true
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		case "int":
 			decodeBody.WriteString(fmt.Sprintf("\tvar %s int64\n", valId))
 			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int64](buf, &%s); if err != nil { return err }\n", valId))
 			decodeBody.WriteString(fmt.Sprintf("\t%s = int(%s)\n", fieldName, valId))
-			imports["\"github.com/google/blueprint/gobtools\""] = true
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		case "bool", "int16", "int32", "int64", "uint16", "uint32", "uint64":
 			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[%s](buf, &%s); if err != nil { return err }\n", t.Name, fieldName))
-			imports["\"github.com/google/blueprint/gobtools\""] = true
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		default:
 			if fieldName == "" {
 				fieldName = "r." + t.Name
 			}
 			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeStruct(buf, &%s); if err != nil { return err }\n", fieldName))
-			imports["\"github.com/google/blueprint/gobtools\""] = true
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		}
 	case *ast.MapType:
 		kName := t.Key.(*ast.Ident).Name
@@ -229,57 +230,57 @@ func generateDecodeForType(decodeBody *strings.Builder, field ast.Expr, fieldNam
 		decodeBody.WriteString(fmt.Sprintf("\tfor i := 0; i < int(%s); i++ {\n", valId))
 		decodeBody.WriteString(fmt.Sprintf("\tvar k %s\n", kName))
 		decodeBody.WriteString(fmt.Sprintf("\tvar v %s\n", vName))
-		generateDecodeForType(decodeBody, t.Key, "k")
-		generateDecodeForType(decodeBody, t.Value, "v")
+		generateDecodeForType(decodeBody, t.Key, "k", imports)
+		generateDecodeForType(decodeBody, t.Value, "v", imports)
 		decodeBody.WriteString(fmt.Sprintf("\t%s[k] = v\n", fieldName))
 		decodeBody.WriteString("\t}\n")
 		decodeBody.WriteString("\t}\n")
 	case *ast.ArrayType:
-		decodeArray(decodeBody, t.Elt, fieldName)
+		decodeArray(decodeBody, t.Elt, fieldName, imports)
 	case *ast.StarExpr:
 		decodeBody.WriteString(fmt.Sprintf("\tvar isNil%d bool\n", fieldId))
 		decodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.DecodeSimple(buf, &isNil%d); err != nil { return err }\n", fieldId))
 		decodeBody.WriteString(fmt.Sprintf("\tif !isNil%d {\n", fieldId))
 		decodeBody.WriteString(fmt.Sprintf("\tvar %s %s\n", valId, t.X.(*ast.Ident).Name))
-		generateDecodeForType(decodeBody, t.X, valId)
+		generateDecodeForType(decodeBody, t.X, valId, imports)
 		decodeBody.WriteString(fmt.Sprintf("\t%s = &%s\n", fieldName, valId))
 		decodeBody.WriteString("\t}\n")
 	case *ast.IndexExpr:
 		if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "UniqueList" {
 			listName := fmt.Sprintf("unilst%d", fieldId)
 			decodeBody.WriteString(fmt.Sprintf("\tvar %s []%s\n", listName, t.Index.(*ast.Ident).Name))
-			decodeArray(decodeBody, t.Index, listName)
+			decodeArray(decodeBody, t.Index, listName, imports)
 			decodeBody.WriteString(fmt.Sprintf("\t%s = uniquelist.Make(%s)\n", fieldName, listName))
-			imports["\"github.com/google/blueprint/uniquelist\""] = true
+			imports[`"github.com/google/blueprint/uniquelist"`] = true
 		} else {
 			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeStruct(buf, &%s); if err != nil { return err }\n", fieldName))
-			imports["\"github.com/google/blueprint/gobtools\""] = true
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		}
 	default:
 		panic(fmt.Errorf("unknown data type: %T", t))
 	}
 }
 
-func encodeArray(encodeBody *strings.Builder, t ast.Expr, fieldName string) {
+func encodeArray(encodeBody *strings.Builder, t ast.Expr, fieldName string, imports map[string]bool) {
 	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return nil, err }\n", fieldName))
 	encodeBody.WriteString(fmt.Sprintf("\tfor i := 0; i < len(%s); i++ {\n", fieldName))
-	generateEncodeForType(encodeBody, t, fieldName+"[i]")
+	generateEncodeForType(encodeBody, t, fieldName+"[i]", imports)
 	encodeBody.WriteString("\t}\n")
 }
 
-func decodeArray(decodeBody *strings.Builder, t ast.Expr, fieldName string) {
+func decodeArray(decodeBody *strings.Builder, t ast.Expr, fieldName string, imports map[string]bool) {
 	valId := fmt.Sprintf("val%d", fieldId)
 	decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
 	decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int32](buf, &%s); if err != nil { return err }\n", valId))
 	decodeBody.WriteString(fmt.Sprintf("\tif %s > 0 {\n", valId))
 	decodeBody.WriteString(fmt.Sprintf("\t%s = make([]%s, %s)\n", fieldName, t.(*ast.Ident).Name, valId))
 	decodeBody.WriteString(fmt.Sprintf("\tfor i := 0; i < int(%s); i++ {\n", valId))
-	generateDecodeForType(decodeBody, t, fieldName+"[i]")
+	generateDecodeForType(decodeBody, t, fieldName+"[i]", imports)
 	decodeBody.WriteString("\t}\n")
 	decodeBody.WriteString("\t}\n")
 }
 
-func generateEncode(structDecl *ast.TypeSpec, encodeBody *strings.Builder) {
+func generateEncode(structDecl *ast.TypeSpec, encodeBody *strings.Builder, imports map[string]bool) {
 	structType, ok := structDecl.Type.(*ast.StructType)
 	if !ok {
 		return
@@ -296,14 +297,14 @@ func generateEncode(structDecl *ast.TypeSpec, encodeBody *strings.Builder) {
 			fieldName = "r." + field.Names[0].Name
 		}
 		encodeBody.WriteString("\n")
-		generateEncodeForType(encodeBody, field.Type, fieldName)
+		generateEncodeForType(encodeBody, field.Type, fieldName, imports)
 	}
 
 	encodeBody.WriteString("\n\treturn buf.Bytes(), nil\n")
 	encodeBody.WriteString("}\n")
 }
 
-func generateDecode(structDecl *ast.TypeSpec, decodeBody *strings.Builder) {
+func generateDecode(structDecl *ast.TypeSpec, decodeBody *strings.Builder, imports map[string]bool) {
 	structType, ok := structDecl.Type.(*ast.StructType)
 	if !ok {
 		return
@@ -324,7 +325,7 @@ func generateDecode(structDecl *ast.TypeSpec, decodeBody *strings.Builder) {
 			fieldName = "r." + field.Names[0].Name
 		}
 		decodeBody.WriteString("\n")
-		generateDecodeForType(decodeBody, field.Type, fieldName)
+		generateDecodeForType(decodeBody, field.Type, fieldName, imports)
 	}
 
 	decodeBody.WriteString("\n\treturn nil\n")
@@ -332,31 +333,76 @@ func generateDecode(structDecl *ast.TypeSpec, decodeBody *strings.Builder) {
 }
 
 func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [sources]\n", os.Args[0])
+		flag.PrintDefaults()
+	}
 	flag.Parse()
-	if flag.NArg() != 0 {
-		panic("usage: gob_gen [--source source]")
+	sources := slices.Clone(flag.Args())
+
+	if f := os.Getenv("GOFILE"); f != "" {
+		sources = append(sources, f)
 	}
 
+	if len(sources) == 0 {
+		flag.Usage()
+	}
+
+	for _, s := range sources {
+		out, err := generate(s)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to generate output for %s: %s\n", s, err)
+			os.Exit(1)
+		}
+
+		if len(out) == 0 {
+			continue
+		}
+
+		outputFile := strings.TrimSuffix(s, ".go") + "_gob_enc.go"
+		err = os.WriteFile(outputFile, out, 0666)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write output for %s to %s: %s\n", s, outputFile, err)
+			os.Exit(1)
+		}
+	}
+}
+
+func generate(source string) ([]byte, error) {
 	fset := token.NewFileSet()
-	node, err := parser.ParseFile(fset, *sourceFile, nil, parser.ParseComments) // Find the file containing the struct
+	node, err := parser.ParseFile(fset, source, nil, parser.ParseComments) // Find the file containing the struct
 	if err != nil {
-		panic(err)
+		// ParseFile might return multiple errors in the form of a scanner.ErrorList.  By default printing the error
+		// only shows the first error.  Verification may happen very early during the build, so this may be the first
+		// time syntax errors are reported.  Use scanner.PrintError to convert them into a single error that contains
+		// all the error lines to make the errors more actionable.
+		if errorList, ok := err.(scanner.ErrorList); ok {
+			var buf bytes.Buffer
+			scanner.PrintError(&buf, errorList)
+			err = errors.New(buf.String())
+		}
+		return nil, fmt.Errorf("failed to parse:\n%w", err)
 	}
 
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "// Code generated by go run gob_gen.go -source %s; DO NOT EDIT.\n\n", *sourceFile)
+	fmt.Fprintf(&b, "// Code generated by go run gob_gen.go; DO NOT EDIT.\n\n")
 	fmt.Fprintf(&b, "package %s\n", node.Name.Name)
 	fmt.Fprintln(&b, "import (")
 
 	var codeBodies []*strings.Builder
+	imports := map[string]bool{}
 	structDecls := findStructs(node)
 	for _, structDecl := range structDecls {
 		fieldId = 0
 		codeBody := &strings.Builder{}
-		generateEncode(structDecl, codeBody)
+		generateEncode(structDecl, codeBody, imports)
 		codeBody.WriteString("\n")
-		generateDecode(structDecl, codeBody)
+		generateDecode(structDecl, codeBody, imports)
 		codeBodies = append(codeBodies, codeBody)
+	}
+
+	if len(codeBodies) == 0 {
+		return nil, nil
 	}
 
 	fmt.Fprintln(&b, strings.Join(slices.Sorted(maps.Keys(imports)), "\n"))
@@ -366,19 +412,10 @@ func main() {
 		fmt.Fprintln(&b)
 	}
 
-	source, err := format.Source(b.Bytes())
+	out, err := format.Source(b.Bytes())
 	if err != nil {
-		panic(fmt.Errorf("source format error: %s", err))
+		return nil, fmt.Errorf("source format error: %w", err)
 	}
-	output := strings.TrimSuffix(*sourceFile, ".go") + "_gob_enc.go"
-	fd, err := os.Create(output)
-	if err != nil {
-		panic(err)
-	}
-	if _, err := fd.Write(source); err != nil {
-		panic(err)
-	}
-	if err := fd.Close(); err != nil {
-		panic(err)
-	}
+
+	return out, nil
 }

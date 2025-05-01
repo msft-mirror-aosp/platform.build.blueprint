@@ -16,7 +16,7 @@ package main
 
 import "github.com/google/blueprint/uniquelist"
 
-//go:generate go run gob_gen.go -source gob_test_data.go
+//go:generate go run gob_gen.go
 
 type TestEchoInterface interface {
 	EchoTest(string) string
