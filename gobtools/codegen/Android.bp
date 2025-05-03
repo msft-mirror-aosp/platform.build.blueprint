@@ -1,0 +1,17 @@
+blueprint_go_binary {
+    name: "gob_gen",
+    srcs: ["gob_gen.go"],
+    testSrcs: [
+        "gob_gen_test.go",
+        "gob_test_data.go",
+        "gob_test_data_gob_enc.go",
+    ],
+    visibility: [
+        // used by plugins
+        "//visibility:private",
+    ],
+    deps: [
+        "blueprint-gobtools",
+        "blueprint-uniquelist",
+    ],
+}

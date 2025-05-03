@@ -346,6 +346,12 @@ type BaseModuleContext interface {
 	// only done once for all variants of a module.
 	PrimaryModule() Module
 
+	// IsPrimaryModule returns if the current module is the first variant.  Variants of a module are always visited in
+	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
+	// Module returned by PrimaryModule without data races.  This can be used to perform singleton actions that are
+	// only done once for all variants of a module.
+	IsPrimaryModule(module ModuleOrProxy) bool
+
 	// FinalModule returns the last variant of the current module.  Variants of a module are always visited in
 	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
 	// variants using VisitAllModuleVariants if the current module == FinalModule().  This can be used to perform
@@ -770,8 +776,8 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		}
 		cacheInput := new(BuildActionCacheInput)
 		cacheInput.PropertiesHash = hash
-		var deps []Module
-		m.VisitDirectDeps(func(module Module) {
+		var deps []ModuleProxy
+		m.VisitDirectDepsProxy(func(module ModuleProxy) {
 			cacheInput.ProvidersHash =
 				append(cacheInput.ProvidersHash, module.info().providerInitialValueHashes)
 			if m.context.incrementalDebugFile != "" {
@@ -863,7 +869,7 @@ type depProviders struct {
 	Providers []string `json:"dep_provider_hash"`
 }
 
-func incrementalDebugData(m *moduleContext, deps []Module, inputHash *BuildActionCacheInput) []byte {
+func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *BuildActionCacheInput) []byte {
 	info := struct {
 		Name      string         `json:"name"`
 		CacheKey  string         `json:"cache_key"`
@@ -1067,6 +1073,10 @@ func (m *baseModuleContext) WalkDepsProxy(visit func(child, parent ModuleProxy) 
 
 func (m *baseModuleContext) PrimaryModule() Module {
 	return m.module.group.modules.firstModule().logicModule
+}
+
+func (m *baseModuleContext) IsPrimaryModule(module ModuleOrProxy) bool {
+	return m.module.group.modules.firstModule() == module.info()
 }
 
 func (m *baseModuleContext) FinalModule() Module {

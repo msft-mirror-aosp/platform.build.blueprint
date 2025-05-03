@@ -13,5 +13,6 @@ bootstrap_go_package {
     visibility: [
         "//build/blueprint",
         "//build/blueprint/depset",
+        "//build/blueprint/gobtools/codegen",
     ],
 }

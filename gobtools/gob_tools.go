@@ -16,8 +16,19 @@ package gobtools
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/gob"
+	"io"
 )
+
+type CustomEnc interface {
+	GobEncode() ([]byte, error)
+}
+
+type CustomDec interface {
+	GobDecode(b []byte) error
+	Decode(buf *bytes.Reader) error
+}
 
 type CustomGob[T any] interface {
 	ToGob() *T
@@ -46,4 +57,64 @@ func CustomGobDecode[T any](data []byte, cg CustomGob[T]) error {
 	cg.FromGob(&value)
 
 	return nil
+}
+
+func EncodeString(buf *bytes.Buffer, s string) error {
+	b := []byte(s)
+	err := binary.Write(buf, binary.BigEndian, int32(len(b)))
+	if err != nil {
+		return err
+	}
+	_, err = buf.Write(b)
+	return err
+}
+
+func DecodeString(buf *bytes.Reader, s *string) error {
+	var length int32
+	err := binary.Read(buf, binary.BigEndian, &length)
+	if err != nil {
+		return err
+	}
+	b := make([]byte, length)
+	_, err = io.ReadFull(buf, b)
+	if err == nil {
+		*s = string(b)
+	}
+
+	return err
+}
+
+// These two methods can be further optimized using primitive specific encoding
+// and decoding methods if it becomes necessary.
+func EncodeSimple[T any](buf *bytes.Buffer, b T) error {
+	return binary.Write(buf, binary.BigEndian, b)
+}
+
+func DecodeSimple[T any](buf *bytes.Reader, data *T) error {
+	return binary.Read(buf, binary.BigEndian, data)
+}
+
+func EncodeStruct(buf *bytes.Buffer, val any) error {
+	var err error
+	if encdec, ok := val.(CustomEnc); ok {
+		var data []byte
+		data, err = encdec.GobEncode()
+		if err != nil {
+			return err
+		}
+		_, err = buf.Write(data)
+		return err
+	} else {
+		encoder := gob.NewEncoder(buf)
+		return encoder.Encode(val)
+	}
+}
+
+func DecodeStruct(buf *bytes.Reader, data any) error {
+	if encdec, ok := data.(CustomDec); ok {
+		return encdec.Decode(buf)
+	} else {
+		decoder := gob.NewDecoder(buf)
+		return decoder.Decode(data)
+	}
 }
