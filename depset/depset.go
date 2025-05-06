@@ -105,11 +105,20 @@ func resetGobMaps() {
 	DepSetMapFromGob = make(map[int32]any)
 }
 
+func (d DepSet[T]) GobEncode() ([]byte, error) {
+	buf := new(bytes.Buffer)
+
+	if err := d.Encode(buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
 // The Gob encoding and decoding logic below only works in a single thread environment,
 // which is currently the case. When parallel Gob cache processing is necessary the logic
 // needs to be revisited.
-func (d DepSet[T]) GobEncode() ([]byte, error) {
-	w := new(bytes.Buffer)
+func (d DepSet[T]) Encode(buf *bytes.Buffer) error {
 	impl := d.impl()
 	var err error
 	// Below we first check if the given depset has been encoded, if no we encode the
@@ -119,40 +128,40 @@ func (d DepSet[T]) GobEncode() ([]byte, error) {
 		depsetId++
 		DepSetMapToGob[d] = depsetId
 		if err = errors.Join(
-			gobtools.EncodeSimple(w, true),
-			gobtools.EncodeSimple(w, depsetId),
-			gobtools.EncodeSimple(w, impl.preorder),
-			gobtools.EncodeSimple(w, impl.reverse),
-			gobtools.EncodeSimple(w, int16(impl.order))); err != nil {
-			return nil, err
+			gobtools.EncodeSimple(buf, true),
+			gobtools.EncodeSimple(buf, depsetId),
+			gobtools.EncodeSimple(buf, impl.preorder),
+			gobtools.EncodeSimple(buf, impl.reverse),
+			gobtools.EncodeSimple(buf, int16(impl.order))); err != nil {
+			return err
 		}
 
 		dlist := impl.direct.ToSlice()
-		if err = gobtools.EncodeSimple(w, int32(len(dlist))); err != nil {
-			return nil, err
+		if err = gobtools.EncodeSimple(buf, int32(len(dlist))); err != nil {
+			return err
 		}
 		for i := 0; i < len(dlist); i++ {
-			if err = gobtools.EncodeStruct(w, &dlist[i]); err != nil {
-				return nil, err
+			if err = gobtools.EncodeStruct(buf, &dlist[i]); err != nil {
+				return err
 			}
 		}
 
 		tlist := impl.transitive.ToSlice()
-		if err = gobtools.EncodeSimple(w, int32(len(tlist))); err != nil {
-			return nil, err
+		if err = gobtools.EncodeSimple(buf, int32(len(tlist))); err != nil {
+			return err
 		}
 		for i := 0; i < len(tlist); i++ {
-			if err = gobtools.EncodeStruct(w, &tlist[i]); err != nil {
-				return nil, err
+			if err = gobtools.EncodeStruct(buf, &tlist[i]); err != nil {
+				return err
 			}
 		}
 	} else {
 		err = errors.Join(
-			gobtools.EncodeSimple(w, false),
-			gobtools.EncodeSimple(w, id))
+			gobtools.EncodeSimple(buf, false),
+			gobtools.EncodeSimple(buf, id))
 	}
 
-	return w.Bytes(), err
+	return nil
 }
 
 func (d *DepSet[T]) GobDecode(data []byte) error {
@@ -163,10 +172,10 @@ func (d *DepSet[T]) GobDecode(data []byte) error {
 func (d *DepSet[T]) Decode(buf *bytes.Reader) error {
 	var embedded bool
 	var err error
-	var depsetId int32
+	var id int32
 	if err = errors.Join(
 		gobtools.DecodeSimple[bool](buf, &embedded),
-		gobtools.DecodeSimple[int32](buf, &depsetId)); err != nil {
+		gobtools.DecodeSimple[int32](buf, &id)); err != nil {
 		return err
 	}
 	if embedded {
@@ -215,9 +224,9 @@ func (d *DepSet[T]) Decode(buf *bytes.Reader) error {
 		fromGob.transitive = uniquelist.Make(tlist)
 
 		d.handle = unique.Make(fromGob)
-		DepSetMapFromGob[depsetId] = d
+		DepSetMapFromGob[id] = d
 	} else {
-		if v, ok := DepSetMapFromGob[depsetId].(*DepSet[T]); ok {
+		if v, ok := DepSetMapFromGob[id].(*DepSet[T]); ok {
 			d.handle = v.handle
 		} else {
 			// This shouldn't happen in non-parallel processing of the gob cache file.

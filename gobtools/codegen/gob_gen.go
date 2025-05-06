@@ -152,24 +152,24 @@ func generateEncodeForType(encodeBody *strings.Builder, field ast.Expr, fieldNam
 	case *ast.Ident:
 		switch t.Name {
 		case "string":
-			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeString(buf, %s); err != nil { return nil, err }\n", fieldName))
+			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeString(buf, %s); err != nil { return err }\n", fieldName))
 			imports[`"github.com/google/blueprint/gobtools"`] = true
 		case "int":
-			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int64(%s)); err != nil { return nil, err }\n", fieldName))
+			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int64(%s)); err != nil { return err }\n", fieldName))
 			imports[`"github.com/google/blueprint/gobtools"`] = true
 		case "bool", "int16", "int32", "int64", "uint16", "uint32", "uint64":
 			//typ := strings.ToUpper(string(t.Name[0])) + t.Name[1:]
-			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, %s); err != nil { return nil, err }\n", fieldName))
+			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, %s); err != nil { return err }\n", fieldName))
 			imports[`"github.com/google/blueprint/gobtools"`] = true
 		default:
 			if fieldName == "" {
 				fieldName = "r." + t.Name
 			}
-			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return nil, err }\n", fieldName))
+			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return err }\n", fieldName))
 			imports[`"github.com/google/blueprint/gobtools"`] = true
 		}
 	case *ast.MapType:
-		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return nil, err }\n", fieldName))
+		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return err }\n", fieldName))
 		encodeBody.WriteString(fmt.Sprintf("\tfor k, v := range %s {\n", fieldName))
 		generateEncodeForType(encodeBody, t.Key, "k", imports)
 		generateEncodeForType(encodeBody, t.Value, "v", imports)
@@ -178,7 +178,7 @@ func generateEncodeForType(encodeBody *strings.Builder, field ast.Expr, fieldNam
 		encodeArray(encodeBody, t.Elt, fieldName, imports)
 	case *ast.StarExpr:
 		encodeBody.WriteString(fmt.Sprintf("\tisNil%d := %s == nil\n", fieldId, fieldName))
-		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, isNil%d); err != nil { return nil, err }\n", fieldId))
+		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, isNil%d); err != nil { return err }\n", fieldId))
 		encodeBody.WriteString(fmt.Sprintf("\tif !isNil%d {\n", fieldId))
 		generateEncodeForType(encodeBody, t.X, "*"+fieldName, imports)
 		encodeBody.WriteString("\t}\n")
@@ -188,11 +188,15 @@ func generateEncodeForType(encodeBody *strings.Builder, field ast.Expr, fieldNam
 			encodeBody.WriteString(fmt.Sprintf("\t%s := %s.ToSlice()\n", listName, fieldName))
 			encodeArray(encodeBody, t.Index, listName, imports)
 		} else {
-			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return nil, err }\n", fieldName))
+			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return err }\n", fieldName))
 			imports[`"github.com/google/blueprint/gobtools"`] = true
 		}
+	case *ast.SelectorExpr:
+		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return err }\n", fieldName))
+
+		imports["\"github.com/google/blueprint/gobtools\""] = true
 	default:
-		panic(fmt.Errorf("unknown data type: %v", t))
+		panic(fmt.Errorf("unknown data type: %v %T", t, t))
 	}
 }
 
@@ -259,13 +263,16 @@ func generateDecodeForType(decodeBody *strings.Builder, field ast.Expr, fieldNam
 			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeStruct(buf, &%s); if err != nil { return err }\n", fieldName))
 			imports[`"github.com/google/blueprint/gobtools"`] = true
 		}
+	case *ast.SelectorExpr:
+		decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeStruct(buf, &%s); if err != nil { return err }\n", fieldName))
+		imports["\"github.com/google/blueprint/gobtools\""] = true
 	default:
-		panic(fmt.Errorf("unknown data type: %T", t))
+		panic(fmt.Errorf("unknown data type: %v %T", t, t))
 	}
 }
 
 func encodeArray(encodeBody *strings.Builder, t ast.Expr, fieldName string, imports map[string]bool) {
-	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return nil, err }\n", fieldName))
+	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return err }\n", fieldName))
 	encodeBody.WriteString(fmt.Sprintf("\tfor i := 0; i < len(%s); i++ {\n", fieldName))
 	generateEncodeForType(encodeBody, t, fieldName+"[i]", imports)
 	encodeBody.WriteString("\t}\n")
@@ -273,10 +280,18 @@ func encodeArray(encodeBody *strings.Builder, t ast.Expr, fieldName string, impo
 
 func decodeArray(decodeBody *strings.Builder, t ast.Expr, fieldName string, imports map[string]bool) {
 	valId := fmt.Sprintf("val%d", fieldId)
+	var typName string
+	if tt, ok := t.(*ast.Ident); ok {
+		typName = tt.Name
+	} else if tt, ok := t.(*ast.SelectorExpr); ok {
+		typName = tt.X.(*ast.Ident).Name + "." + tt.Sel.Name
+	} else {
+		panic(fmt.Errorf("unknown data type: %v %T", t, t))
+	}
 	decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
 	decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int32](buf, &%s); if err != nil { return err }\n", valId))
 	decodeBody.WriteString(fmt.Sprintf("\tif %s > 0 {\n", valId))
-	decodeBody.WriteString(fmt.Sprintf("\t%s = make([]%s, %s)\n", fieldName, t.(*ast.Ident).Name, valId))
+	decodeBody.WriteString(fmt.Sprintf("\t%s = make([]%s, %s)\n", fieldName, typName, valId))
 	decodeBody.WriteString(fmt.Sprintf("\tfor i := 0; i < int(%s); i++ {\n", valId))
 	generateDecodeForType(decodeBody, t, fieldName+"[i]", imports)
 	decodeBody.WriteString("\t}\n")
@@ -292,6 +307,11 @@ func generateEncode(structDecl *ast.TypeSpec, encodeBody *strings.Builder, impor
 
 	encodeBody.WriteString("func (r " + structName + ") GobEncode() ([]byte, error) {\n")
 	encodeBody.WriteString("\tbuf := new(bytes.Buffer)\n\n")
+	encodeBody.WriteString("\tif err := r.Encode(buf); err != nil { return nil, err }\n")
+	encodeBody.WriteString("\n\treturn buf.Bytes(), nil\n")
+	encodeBody.WriteString("}\n\n")
+
+	encodeBody.WriteString("func (r " + structName + ") Encode(buf *bytes.Buffer) error {\n")
 	encodeBody.WriteString("\tvar err error\n")
 
 	for _, field := range structType.Fields.List {
@@ -303,7 +323,7 @@ func generateEncode(structDecl *ast.TypeSpec, encodeBody *strings.Builder, impor
 		generateEncodeForType(encodeBody, field.Type, fieldName, imports)
 	}
 
-	encodeBody.WriteString("\n\treturn buf.Bytes(), nil\n")
+	encodeBody.WriteString("\treturn nil\n")
 	encodeBody.WriteString("}\n")
 }
 
@@ -316,8 +336,8 @@ func generateDecode(structDecl *ast.TypeSpec, decodeBody *strings.Builder, impor
 
 	decodeBody.WriteString("func (r *" + structName + ") GobDecode(b []byte) error {\n")
 	decodeBody.WriteString("\tbuf := bytes.NewReader(b)\n")
-	decodeBody.WriteString("\terr := r.Decode(buf)\n")
-	decodeBody.WriteString("\treturn err }\n\n")
+	decodeBody.WriteString("\treturn r.Decode(buf)\n")
+	decodeBody.WriteString("}\n\n")
 
 	decodeBody.WriteString("func (r *" + structName + ") Decode(buf *bytes.Reader) error {\n")
 	decodeBody.WriteString("\tvar err error\n")
