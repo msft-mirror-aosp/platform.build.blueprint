@@ -16,7 +16,6 @@ package main
 
 import (
 	"encoding/gob"
-	"fmt"
 	"reflect"
 	"testing"
 
@@ -78,8 +77,6 @@ func TestPathGobEncDec(t *testing.T) {
 		if err := tc.decoded.GobDecode(data); err != nil {
 			t.Errorf("failed to decode %s: %v", tc.name, err)
 		}
-		fmt.Printf("%v\n", tc.origin)
-		fmt.Printf("%v\n", tc.decoded)
 		if !reflect.DeepEqual(tc.origin, tc.decoded) {
 			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.origin, tc.decoded)
 		}
