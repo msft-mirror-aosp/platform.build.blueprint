@@ -110,6 +110,11 @@ func EncodeStruct(buf *bytes.Buffer, val any) error {
 	}
 }
 
+func EncodeInterface(buf *bytes.Buffer, val any) error {
+	encoder := gob.NewEncoder(buf)
+	return encoder.Encode(val)
+}
+
 func DecodeStruct(buf *bytes.Reader, data any) error {
 	if encdec, ok := data.(CustomDec); ok {
 		return encdec.Decode(buf)
@@ -117,4 +122,9 @@ func DecodeStruct(buf *bytes.Reader, data any) error {
 		decoder := gob.NewDecoder(buf)
 		return decoder.Decode(data)
 	}
+}
+
+func DecodeInterface(buf *bytes.Reader, data any) error {
+	decoder := gob.NewDecoder(buf)
+	return decoder.Decode(data)
 }
