@@ -12,6 +12,7 @@ blueprint_go_binary {
     ],
     deps: [
         "blueprint-gobtools",
+        "blueprint-gobtools-test",
         "blueprint-uniquelist",
     ],
 }
