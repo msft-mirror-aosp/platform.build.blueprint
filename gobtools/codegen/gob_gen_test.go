@@ -16,7 +16,6 @@ package main
 
 import (
 	"encoding/gob"
-	"fmt"
 	"reflect"
 	"testing"
 
@@ -28,6 +27,7 @@ func TestPathGobEncDec(t *testing.T) {
 	strValue := "string value for test"
 	defaultEcho := TestEcho{"111111111"}
 	gob.Register(&TestEcho{})
+	gob.Register(&gobtools.TypeStruct{})
 	testCases := []struct {
 		name    string
 		origin  gobtools.CustomEnc
@@ -65,6 +65,19 @@ func TestPathGobEncDec(t *testing.T) {
 				f19: testStrings{"bbbb", "cccc", "dddd"},
 				f20: uniquelist.Make([]TestEcho{defaultEcho}),
 				f21: uniquelist.Make([]TestEchoInterface{&defaultEcho}),
+				f22: gobtools.TypeStruct{Name: "aaaaaaaaa"},
+				f23: []gobtools.TypeAlias{
+					{
+						{Name: "bbbbbbbbb"},
+						{Name: "ccccccccc"},
+					},
+					{
+						{Name: "ddddddddd"},
+						{Name: "eeeeeeeee"},
+					},
+				},
+				f24: &gobtools.TypeStruct{Name: "fffffffff"},
+				f25: gobtools.TypeIdent{Name: "ggggggggg"},
 			},
 			decoded: &TestStruct{},
 		},
@@ -78,8 +91,6 @@ func TestPathGobEncDec(t *testing.T) {
 		if err := tc.decoded.GobDecode(data); err != nil {
 			t.Errorf("failed to decode %s: %v", tc.name, err)
 		}
-		fmt.Printf("%v\n", tc.origin)
-		fmt.Printf("%v\n", tc.decoded)
 		if !reflect.DeepEqual(tc.origin, tc.decoded) {
 			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.origin, tc.decoded)
 		}

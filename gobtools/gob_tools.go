@@ -23,6 +23,7 @@ import (
 
 type CustomEnc interface {
 	GobEncode() ([]byte, error)
+	Encode(buf *bytes.Buffer) error
 }
 
 type CustomDec interface {
@@ -95,19 +96,23 @@ func DecodeSimple[T any](buf *bytes.Reader, data *T) error {
 }
 
 func EncodeStruct(buf *bytes.Buffer, val any) error {
-	var err error
+	// val is pointer to either a struct or an interface{}. If it is the latter the
+	// type assert below will fail even if the underlying concrete type implements
+	// the CustomEnc interface. This is intentional in order for ob to handle the
+	// interface case, where it will store the interface info and is albe to properly
+	// deserialize it later. Otherwise, it will be serialized as a concrete type,
+	// then later it can't be deserialized back to an interface field.
 	if encdec, ok := val.(CustomEnc); ok {
-		var data []byte
-		data, err = encdec.GobEncode()
-		if err != nil {
-			return err
-		}
-		_, err = buf.Write(data)
-		return err
+		return encdec.Encode(buf)
 	} else {
 		encoder := gob.NewEncoder(buf)
 		return encoder.Encode(val)
 	}
+}
+
+func EncodeInterface(buf *bytes.Buffer, val any) error {
+	encoder := gob.NewEncoder(buf)
+	return encoder.Encode(val)
 }
 
 func DecodeStruct(buf *bytes.Reader, data any) error {
@@ -117,4 +122,9 @@ func DecodeStruct(buf *bytes.Reader, data any) error {
 		decoder := gob.NewDecoder(buf)
 		return decoder.Decode(data)
 	}
+}
+
+func DecodeInterface(buf *bytes.Reader, data any) error {
+	decoder := gob.NewDecoder(buf)
+	return decoder.Decode(data)
 }

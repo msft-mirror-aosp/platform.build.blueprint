@@ -140,8 +140,9 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 	}
 
 	if ctx.GetIncrementalAnalysis() {
-		var err error = nil
-		err = ctx.RestoreAllBuildActions(config.(BootstrapConfig).SoongOutDir())
+		ctx.BeginEvent("restore_build_actions")
+		err := ctx.RestoreAllBuildActions(config.(BootstrapConfig).SoongOutDir())
+		ctx.EndEvent("restore_build_actions")
 		if err != nil {
 			return nil, colorizeErrs([]error{err})
 		}
@@ -198,7 +199,10 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 
 	// TODO(b/357140398): parallelize this with other ninja file writing work.
 	if ctx.GetIncrementalEnabled() {
-		if err := ctx.CacheAllBuildActions(config.(BootstrapConfig).SoongOutDir()); err != nil {
+		ctx.BeginEvent("cache_build_actions")
+		err := ctx.CacheAllBuildActions(config.(BootstrapConfig).SoongOutDir())
+		ctx.EndEvent("cache_build_actions")
+		if err != nil {
 			return nil, fmt.Errorf("error cache build actions: %s", err)
 		}
 	}

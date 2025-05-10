@@ -143,7 +143,7 @@ func (l *liveTracker) innerAddRule(r Rule) (def *ruleDef, err error) {
 func (l *liveTracker) addPool(p Pool) error {
 	l.Lock()
 	defer l.Unlock()
-	return l.addPool(p)
+	return l.innerAddPool(p)
 }
 
 func (l *liveTracker) innerAddPool(p Pool) error {
