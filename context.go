@@ -2015,7 +2015,7 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 // and applies the OutgoingTransition and IncomingTransition methods of each completed TransitionMutator to
 // modify the requested variation.  It finds a variant that existed before the TransitionMutator ran that is
 // a subset of the requested variant to use as the module context for IncomingTransition.
-func (c *Context) applyTransitions(config any, module *moduleInfo, group *moduleGroup, variant variationMap,
+func (c *Context) applyTransitions(config any, module *moduleInfo, depTag DependencyTag, group *moduleGroup, variant variationMap,
 	requestedVariations []Variation, far bool) (variationMap, []error) {
 	for _, transitionMutator := range c.transitionMutators[:c.completedTransitionMutators] {
 		explicitlyRequested := slices.ContainsFunc(requestedVariations, func(variation Variation) bool {
@@ -2035,7 +2035,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 			ctx := outgoingTransitionContextPool.Get()
 			*ctx = outgoingTransitionContextImpl{
 				transitionContextImpl{context: c, source: module, dep: nil,
-					depTag: nil, postMutator: true, config: config},
+					depTag: depTag, postMutator: true, config: config},
 			}
 			outgoingTransitionInfo = transitionMutator.mutator.OutgoingTransition(ctx, srcTransitionInfo)
 			errs := ctx.errs
@@ -2064,7 +2064,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 			ctx := incomingTransitionContextPool.Get()
 			*ctx = incomingTransitionContextImpl{
 				transitionContextImpl{context: c, source: nil, dep: matchingInputVariant,
-					depTag: nil, postMutator: true, config: config},
+					depTag: depTag, postMutator: true, config: config},
 			}
 
 			finalTransitionInfo := transitionMutator.mutator.IncomingTransition(ctx, outgoingTransitionInfo)
@@ -2091,7 +2091,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, group *module
 	return variant, nil
 }
 
-func (c *Context) findVariant(module *moduleInfo, config any,
+func (c *Context) findVariant(config any, module *moduleInfo, depTag DependencyTag,
 	possibleDeps *moduleGroup, requestedVariations []Variation, far bool, reverse bool) (*moduleInfo, variationMap, []error) {
 
 	// We can't just append variant.Variant to module.dependencyVariant.variantName and
@@ -2113,7 +2113,7 @@ func (c *Context) findVariant(module *moduleInfo, config any,
 
 	if !reverse {
 		var errs []error
-		newVariant, errs = c.applyTransitions(config, module, possibleDeps, newVariant, requestedVariations, far)
+		newVariant, errs = c.applyTransitions(config, module, depTag, possibleDeps, newVariant, requestedVariations, far)
 		if len(errs) > 0 {
 			return nil, variationMap{}, errs
 		}
@@ -2163,7 +2163,7 @@ func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInf
 		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
-	foundDep, newVariant, errs := c.findVariant(module, config, possibleDeps, variations, far, false)
+	foundDep, newVariant, errs := c.findVariant(config, module, tag, possibleDeps, variations, far, false)
 	if errs != nil {
 		return nil, errs
 	}
