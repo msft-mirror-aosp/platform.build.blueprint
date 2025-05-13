@@ -11,6 +11,7 @@ blueprint_go_binary {
         "//visibility:private",
     ],
     deps: [
+        "blueprint-depset",
         "blueprint-gobtools",
         "blueprint-gobtools-test",
         "blueprint-uniquelist",

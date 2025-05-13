@@ -192,6 +192,14 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 	if err = gobtools.EncodeStruct(buf, &r.f25); err != nil {
 		return err
 	}
+
+	if err = r.f26.Encode(buf); err != nil {
+		return err
+	}
+
+	if err = r.f27.EncodeInterface(buf); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -454,6 +462,14 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 	}
 
 	if err = gobtools.DecodeStruct(buf, &r.f25); err != nil {
+		return err
+	}
+
+	if err = r.f26.Decode(buf); err != nil {
+		return err
+	}
+
+	if err = r.f27.DecodeInterface(buf); err != nil {
 		return err
 	}
 

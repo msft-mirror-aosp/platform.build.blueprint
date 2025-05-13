@@ -152,7 +152,12 @@ var importPkgs = make(map[string]string)
 var curPackage string
 var sourceDir string
 
-func findType(ts *ast.TypeSpec) typeDefTypes {
+func findType(pkgName string, typeName string, imports map[string]bool) typeDefTypes {
+	if _, ok := pkgStructs[pkgName]; !ok {
+		importPackage(pkgName, findPackagePath(pkgName, imports))
+	}
+
+	ts := pkgStructs[pkgName][typeName]
 	if ts == nil {
 		return Unknown
 	}
@@ -278,6 +283,17 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 			listName := nextVar()
 			encodeBody.WriteString(fmt.Sprintf("\t%s := %s.ToSlice()\n", listName, fieldName))
 			encodeArray(encodeBody, pkgName, t.Index, listName, imports)
+		} else if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "DepSet" {
+			typName := findStructName(t.Index)
+			if parts := strings.Split(typName, "."); len(parts) == 2 {
+				pkgName = parts[0]
+				typName = parts[1]
+			}
+			if findType(pkgName, typName, imports) == Interface {
+				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.EncodeInterface(buf); err != nil { return err }\n", fieldName))
+			} else {
+				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.Encode(buf); err != nil { return err }\n", fieldName))
+			}
 		} else {
 			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return err }\n", fieldName))
 			imports[`"github.com/google/blueprint/gobtools"`] = true
@@ -293,11 +309,7 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 }
 
 func generateEncodeForCustomType(encodeBody *strings.Builder, fieldName string, pkgName string, typeName string, imports map[string]bool) {
-	if _, ok := pkgStructs[pkgName]; !ok {
-		importPackage(pkgName, findPackagePath(pkgName, imports))
-	}
-
-	typ := findType(pkgStructs[pkgName][typeName])
+	typ := findType(pkgName, typeName, imports)
 	if fieldName == "" {
 		fieldName = "r." + typeName
 	}
@@ -314,11 +326,7 @@ func generateEncodeForCustomType(encodeBody *strings.Builder, fieldName string, 
 }
 
 func generateDecodeForCustomType(decodeBody *strings.Builder, fieldName string, pkgName string, typeName string, imports map[string]bool) {
-	if _, ok := pkgStructs[pkgName]; !ok {
-		importPackage(pkgName, findPackagePath(pkgName, imports))
-	}
-
-	typ := findType(pkgStructs[pkgName][typeName])
+	typ := findType(pkgName, typeName, imports)
 	if fieldName == "" {
 		fieldName = "r." + typeName
 	}
@@ -405,6 +413,17 @@ func generateDecodeForType(decodeBody *strings.Builder, pkgName string, field as
 			decodeArray(decodeBody, pkgName, t.Index, listName, imports)
 			decodeBody.WriteString(fmt.Sprintf("\t%s = uniquelist.Make(%s)\n", fieldName, listName))
 			imports[`"github.com/google/blueprint/uniquelist"`] = true
+		} else if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "DepSet" {
+			typName := findStructName(t.Index)
+			if parts := strings.Split(typName, "."); len(parts) == 2 {
+				pkgName = parts[0]
+				typName = parts[1]
+			}
+			if findType(pkgName, typName, imports) == Interface {
+				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.DecodeInterface(buf); err != nil { return err }\n", fieldName))
+			} else {
+				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.Decode(buf); err != nil { return err }\n", fieldName))
+			}
 		} else {
 			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeStruct(buf, &%s); if err != nil { return err }\n", fieldName))
 			imports[`"github.com/google/blueprint/gobtools"`] = true
