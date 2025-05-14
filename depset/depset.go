@@ -105,6 +105,11 @@ func resetGobMaps() {
 	DepSetMapFromGob = make(map[int32]any)
 }
 
+// This method is required for DepSet to implement CustomEnc
+func (d DepSet[T]) GetTypeId() int16 {
+	return -1
+}
+
 func (d DepSet[T]) GobEncode() ([]byte, error) {
 	buf := new(bytes.Buffer)
 
@@ -119,8 +124,16 @@ func (d DepSet[T]) GobEncode() ([]byte, error) {
 // which is currently the case. When parallel Gob cache processing is necessary the logic
 // needs to be revisited.
 func (d DepSet[T]) Encode(buf *bytes.Buffer) error {
-	impl := d.impl()
 	var err error
+	var zeroDepSet DepSet[T]
+	if d == zeroDepSet {
+		return gobtools.EncodeSimple(buf, false)
+	} else {
+		if err = gobtools.EncodeSimple(buf, true); err != nil {
+			return err
+		}
+	}
+	impl := d.impl()
 	// Below we first check if the given depset has been encoded, if no we encode the
 	// actual content of the depset, otherwise we just encode a reference number of it
 	// to avoid duplicating the same depset multiple times.
@@ -151,7 +164,7 @@ func (d DepSet[T]) Encode(buf *bytes.Buffer) error {
 			return err
 		}
 		for i := 0; i < len(tlist); i++ {
-			if err = gobtools.EncodeStruct(buf, &tlist[i]); err != nil {
+			if err = tlist[i].Encode(buf); err != nil {
 				return err
 			}
 		}
@@ -173,6 +186,10 @@ func (d *DepSet[T]) Decode(buf *bytes.Reader) error {
 	var embedded bool
 	var err error
 	var id int32
+	var valueSet bool
+	if err = gobtools.DecodeSimple[bool](buf, &valueSet); err != nil || !valueSet {
+		return err
+	}
 	if err = errors.Join(
 		gobtools.DecodeSimple[bool](buf, &embedded),
 		gobtools.DecodeSimple[int32](buf, &id)); err != nil {
@@ -215,7 +232,7 @@ func (d *DepSet[T]) Decode(buf *bytes.Reader) error {
 		if tlen > 0 {
 			tlist = make([]DepSet[T], tlen)
 			for i := 0; i < int(tlen); i++ {
-				err = gobtools.DecodeStruct(buf, &tlist[i])
+				err = tlist[i].Decode(buf)
 				if err != nil {
 					return err
 				}
