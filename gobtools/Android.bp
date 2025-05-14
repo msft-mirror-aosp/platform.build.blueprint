@@ -3,7 +3,6 @@ bootstrap_go_package {
     pkgPath: "github.com/google/blueprint/gobtools",
     srcs: [
         "gob_tools.go",
-        "test_package.go",
     ],
     visibility: [
         // used by plugins

@@ -1,4 +1,6 @@
-package gobtools
+package test
+
+//go:generate go run ../codegen/gob_gen.go
 
 type TypeAlias = []TypeStruct
 
@@ -8,6 +10,7 @@ type TypeInterface interface {
 	print(value string) string
 }
 
+// @auto-generate: gob
 type TypeStruct struct {
 	Name string
 }

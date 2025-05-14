@@ -105,6 +105,11 @@ func resetGobMaps() {
 	DepSetMapFromGob = make(map[int32]any)
 }
 
+// This method is required for DepSet to implement CustomEnc
+func (d DepSet[T]) GetTypeId() int16 {
+	return -1
+}
+
 func (d DepSet[T]) GobEncode() ([]byte, error) {
 	buf := new(bytes.Buffer)
 
