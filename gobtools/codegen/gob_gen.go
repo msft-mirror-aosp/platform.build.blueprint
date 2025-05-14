@@ -275,7 +275,7 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 		encodeBody.WriteString(fmt.Sprintf("\t%s := %s == nil\n", isNil, fieldName))
 		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, %s); err != nil { return err }\n", isNil))
 		encodeBody.WriteString(fmt.Sprintf("\tif !%s {\n", isNil))
-		generateEncodeForType(encodeBody, pkgName, t.X, "*"+fieldName, imports)
+		generateEncodeForType(encodeBody, pkgName, t.X, "(*"+fieldName+")", imports)
 		encodeBody.WriteString("\t}\n")
 	// generic types.
 	case *ast.IndexExpr:
@@ -295,14 +295,23 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.Encode(buf); err != nil { return err }\n", fieldName))
 			}
 		} else {
-			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return err }\n", fieldName))
-			imports[`"github.com/google/blueprint/gobtools"`] = true
+			encodeBody.WriteString(fmt.Sprintf("\tif err = %s.Encode(buf); err != nil { return err }\n", fieldName))
 		}
 	// type from other package such as "path android.Path".
 	case *ast.SelectorExpr:
 		pkgName = findStructName(t.X)
 		typName := findStructName(t.Sel)
 		generateEncodeForCustomType(encodeBody, fieldName, pkgName, typName, imports)
+	// anonymous struct
+	case *ast.StructType:
+		for _, f := range t.Fields.List {
+			encodeBody.WriteString("\n")
+			fName := fieldName + "."
+			if len(f.Names) > 0 {
+				fName += f.Names[0].Name
+			}
+			generateEncodeForType(encodeBody, pkgName, f.Type, fName, imports)
+		}
 	default:
 		panic(fmt.Errorf("unknown data type: %v %T", t, t))
 	}
@@ -310,13 +319,12 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 
 func generateEncodeForCustomType(encodeBody *strings.Builder, fieldName string, pkgName string, typeName string, imports map[string]bool) {
 	typ := findType(pkgName, typeName, imports)
-	if fieldName == "" {
-		fieldName = "r." + typeName
+	if fieldName[len(fieldName)-1] == '.' {
+		fieldName += typeName
 	}
 	switch typ {
 	case Struct:
-		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeStruct(buf, &%s); err != nil { return err }\n", fieldName))
-		imports[`"github.com/google/blueprint/gobtools"`] = true
+		encodeBody.WriteString(fmt.Sprintf("\tif err = %s.Encode(buf); err != nil { return err }\n", fieldName))
 	case Interface:
 		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeInterface(buf, %s); err != nil { return err }\n", fieldName))
 		imports[`"github.com/google/blueprint/gobtools"`] = true
@@ -327,13 +335,12 @@ func generateEncodeForCustomType(encodeBody *strings.Builder, fieldName string, 
 
 func generateDecodeForCustomType(decodeBody *strings.Builder, fieldName string, pkgName string, typeName string, imports map[string]bool) {
 	typ := findType(pkgName, typeName, imports)
-	if fieldName == "" {
-		fieldName = "r." + typeName
+	if fieldName[len(fieldName)-1] == '.' {
+		fieldName += typeName
 	}
 	switch typ {
 	case Struct:
-		decodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.DecodeStruct(buf, &%s); err != nil { return err }\n", fieldName))
-		imports[`"github.com/google/blueprint/gobtools"`] = true
+		decodeBody.WriteString(fmt.Sprintf("\tif err = %s.Decode(buf); err != nil { return err }\n", fieldName))
 	case Interface:
 		interfaceName := typeName
 		if pkgName != curPackage {
@@ -425,13 +432,22 @@ func generateDecodeForType(decodeBody *strings.Builder, pkgName string, field as
 				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.Decode(buf); err != nil { return err }\n", fieldName))
 			}
 		} else {
-			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeStruct(buf, &%s); if err != nil { return err }\n", fieldName))
-			imports[`"github.com/google/blueprint/gobtools"`] = true
+			decodeBody.WriteString(fmt.Sprintf("\tif err = %s.Decode(buf); err != nil { return err }\n", fieldName))
 		}
 	case *ast.SelectorExpr:
 		pkgName = findStructName(t.X)
 		typName := findStructName(t.Sel)
 		generateDecodeForCustomType(decodeBody, fieldName, pkgName, typName, imports)
+	// anonymous struct
+	case *ast.StructType:
+		for _, f := range t.Fields.List {
+			decodeBody.WriteString("\n")
+			fName := fieldName + "."
+			if len(f.Names) > 0 {
+				fName += f.Names[0].Name
+			}
+			generateDecodeForType(decodeBody, pkgName, f.Type, fName, imports)
+		}
 	default:
 		panic(fmt.Errorf("unknown data type: %v %T", t, t))
 	}
@@ -480,15 +496,15 @@ func generateEncode(pkgName string, structDecl *ast.TypeSpec, encodeBody *string
 	encodeBody.WriteString("\tvar err error\n")
 
 	for _, field := range structType.Fields.List {
-		var fieldName string
+		fieldName := "r."
 		if len(field.Names) > 0 {
-			fieldName = "r." + field.Names[0].Name
+			fieldName += field.Names[0].Name
 		}
 		encodeBody.WriteString("\n")
 		generateEncodeForType(encodeBody, pkgName, field.Type, fieldName, imports)
 	}
 
-	encodeBody.WriteString("\treturn nil\n")
+	encodeBody.WriteString("\treturn err\n")
 	encodeBody.WriteString("}\n")
 }
 
@@ -508,15 +524,15 @@ func generateDecode(pkgName string, structDecl *ast.TypeSpec, decodeBody *string
 	decodeBody.WriteString("\tvar err error\n")
 
 	for _, field := range structType.Fields.List {
-		var fieldName string
+		fieldName := "r."
 		if len(field.Names) > 0 {
-			fieldName = "r." + field.Names[0].Name
+			fieldName += field.Names[0].Name
 		}
 		decodeBody.WriteString("\n")
 		generateDecodeForType(decodeBody, pkgName, field.Type, fieldName, imports)
 	}
 
-	decodeBody.WriteString("\n\treturn nil\n")
+	decodeBody.WriteString("\n\treturn err\n")
 	decodeBody.WriteString("}\n")
 }
 

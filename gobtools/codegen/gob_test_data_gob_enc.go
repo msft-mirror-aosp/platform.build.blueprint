@@ -27,7 +27,7 @@ func (r TestStruct) GobEncode() ([]byte, error) {
 func (r TestStruct) Encode(buf *bytes.Buffer) error {
 	var err error
 
-	if err = gobtools.EncodeStruct(buf, &r.TestEcho); err != nil {
+	if err = r.TestEcho.Encode(buf); err != nil {
 		return err
 	}
 
@@ -55,7 +55,7 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 
-	if err = gobtools.EncodeStruct(buf, &r.f7); err != nil {
+	if err = r.f7.Encode(buf); err != nil {
 		return err
 	}
 
@@ -97,7 +97,7 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 	if !val2 {
-		if err = gobtools.EncodeString(buf, *r.f13); err != nil {
+		if err = gobtools.EncodeString(buf, (*r.f13)); err != nil {
 			return err
 		}
 	}
@@ -119,7 +119,7 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 	for val4 := 0; val4 < len(r.f16); val4++ {
-		if err = gobtools.EncodeStruct(buf, &r.f16[val4]); err != nil {
+		if err = r.f16[val4].Encode(buf); err != nil {
 			return err
 		}
 	}
@@ -129,7 +129,7 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 	if !val5 {
-		if err = gobtools.EncodeStruct(buf, &*r.f17); err != nil {
+		if err = (*r.f17).Encode(buf); err != nil {
 			return err
 		}
 	}
@@ -152,7 +152,7 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 	for val8 := 0; val8 < len(val7); val8++ {
-		if err = gobtools.EncodeStruct(buf, &val7[val8]); err != nil {
+		if err = val7[val8].Encode(buf); err != nil {
 			return err
 		}
 	}
@@ -167,7 +167,7 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 		}
 	}
 
-	if err = gobtools.EncodeStruct(buf, &r.f22); err != nil {
+	if err = r.f22.Encode(buf); err != nil {
 		return err
 	}
 
@@ -179,7 +179,7 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 			return err
 		}
 		for val12 := 0; val12 < len(r.f23[val11]); val12++ {
-			if err = gobtools.EncodeStruct(buf, &r.f23[val11][val12]); err != nil {
+			if err = r.f23[val11][val12].Encode(buf); err != nil {
 				return err
 			}
 		}
@@ -189,7 +189,7 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 
-	if err = gobtools.EncodeStruct(buf, &r.f25); err != nil {
+	if err = r.f25.Encode(buf); err != nil {
 		return err
 	}
 
@@ -200,7 +200,7 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 	if err = r.f27.EncodeInterface(buf); err != nil {
 		return err
 	}
-	return nil
+	return err
 }
 
 func (r *TestStruct) GobDecode(b []byte) error {
@@ -211,7 +211,7 @@ func (r *TestStruct) GobDecode(b []byte) error {
 func (r *TestStruct) Decode(buf *bytes.Reader) error {
 	var err error
 
-	if err = gobtools.DecodeStruct(buf, &r.TestEcho); err != nil {
+	if err = r.TestEcho.Decode(buf); err != nil {
 		return err
 	}
 
@@ -245,7 +245,7 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 		return err
 	}
 
-	if err = gobtools.DecodeStruct(buf, &r.f7); err != nil {
+	if err = r.f7.Decode(buf); err != nil {
 		return err
 	}
 
@@ -348,7 +348,7 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 	if val29 > 0 {
 		r.f16 = make([]TestEcho, val29)
 		for val30 := 0; val30 < int(val29); val30++ {
-			if err = gobtools.DecodeStruct(buf, &r.f16[val30]); err != nil {
+			if err = r.f16[val30].Decode(buf); err != nil {
 				return err
 			}
 		}
@@ -360,7 +360,7 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 	}
 	if !val33 {
 		var val32 TestEcho
-		if err = gobtools.DecodeStruct(buf, &val32); err != nil {
+		if err = val32.Decode(buf); err != nil {
 			return err
 		}
 		r.f17 = &val32
@@ -398,7 +398,7 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 	if val44 > 0 {
 		val43 = make([]TestEcho, val44)
 		for val45 := 0; val45 < int(val44); val45++ {
-			if err = gobtools.DecodeStruct(buf, &val43[val45]); err != nil {
+			if err = val43[val45].Decode(buf); err != nil {
 				return err
 			}
 		}
@@ -425,7 +425,7 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 	}
 	r.f21 = uniquelist.Make(val48)
 
-	if err = gobtools.DecodeStruct(buf, &r.f22); err != nil {
+	if err = r.f22.Decode(buf); err != nil {
 		return err
 	}
 
@@ -445,7 +445,7 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 			if val59 > 0 {
 				r.f23[val56] = make([]test.TypeStruct, val59)
 				for val60 := 0; val60 < int(val59); val60++ {
-					if err = gobtools.DecodeStruct(buf, &r.f23[val56][val60]); err != nil {
+					if err = r.f23[val56][val60].Decode(buf); err != nil {
 						return err
 					}
 				}
@@ -461,7 +461,7 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 		r.f24 = val63.(test.TypeInterface)
 	}
 
-	if err = gobtools.DecodeStruct(buf, &r.f25); err != nil {
+	if err = r.f25.Decode(buf); err != nil {
 		return err
 	}
 
@@ -473,7 +473,7 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 		return err
 	}
 
-	return nil
+	return err
 }
 
 var TestStructGobRegId int16
@@ -498,7 +498,7 @@ func (r TestEcho) Encode(buf *bytes.Buffer) error {
 	if err = gobtools.EncodeString(buf, r.EchoStr); err != nil {
 		return err
 	}
-	return nil
+	return err
 }
 
 func (r *TestEcho) GobDecode(b []byte) error {
@@ -514,7 +514,7 @@ func (r *TestEcho) Decode(buf *bytes.Reader) error {
 		return err
 	}
 
-	return nil
+	return err
 }
 
 var TestEchoGobRegId int16
