@@ -428,7 +428,10 @@ func extendPropertiesRecursive(dstValues []reflect.Value, srcValue reflect.Value
 				return err
 			}
 		} else if !found {
-			return extendPropertyErrorf(propertyName, "failed to find property to extend")
+			// Sanitizers are removed for Cuttlefish. Skip the sanitizer errors
+			if propertyName != "sanitize" {
+				return extendPropertyErrorf(propertyName, "failed to find property to extend")
+			}
 		}
 	}
 

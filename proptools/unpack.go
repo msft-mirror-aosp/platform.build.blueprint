@@ -121,6 +121,10 @@ func (ctx *unpackContext) reportUnusedNames(unusedNames []string) []error {
 	sort.Strings(unusedNames)
 	var lastReported string
 	for _, name := range unusedNames {
+		// Sanitizers are removed for Cuttlefish. Skip the sanitizer errors
+		if strings.Contains(name, "sanitize") {
+			continue
+		}
 		// if 'foo' has been reported, ignore 'foo\..*' and 'foo\[.*'
 		if lastReported != "" {
 			trimmed := strings.TrimPrefix(name, lastReported)
