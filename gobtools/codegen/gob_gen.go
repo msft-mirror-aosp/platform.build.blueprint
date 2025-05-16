@@ -194,6 +194,9 @@ func findStructName(expr ast.Expr, pkgName string) (string, string, string) {
 	case *ast.SelectorExpr:
 		pkgName = t.X.(*ast.Ident).Name
 		typeName = t.Sel.Name
+	case *ast.ArrayType:
+		pkgName, typeName, _ = findStructName(t.Elt, pkgName)
+		typeName = "[]" + typeName
 	default:
 		panic(fmt.Errorf("unknown type to find name: %T", expr))
 	}

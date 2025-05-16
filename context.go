@@ -53,6 +53,8 @@ import (
 	"github.com/google/blueprint/uniquelist"
 )
 
+//go:generate go run gobtools/codegen/gob_gen.go
+
 var ErrBuildActionsNotReady = errors.New("build actions are not ready")
 
 const maxErrors = 10
@@ -493,6 +495,7 @@ func (c *Context) setModuleTransitionInfo(module *moduleInfo, t *transitionMutat
 // A Variation is a way that a variant of a module differs from other variants of the same module.
 // For example, two variants of the same module might have Variation{"arch","arm"} and
 // Variation{"arch","arm64"}
+// @auto-generate: gob
 type Variation struct {
 	// Mutator is the axis on which this variation applies, i.e. "arch" or "link"
 	Mutator string

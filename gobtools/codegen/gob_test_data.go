@@ -56,6 +56,8 @@ type TestStruct struct {
 	f25 test.TypeIdent
 	f26 depset.DepSet[TestEcho]
 	f27 depset.DepSet[TestEchoInterface]
+	f28 map[int][]string
+	f29 [][]string
 }
 
 type testStrings []string

@@ -51,14 +51,6 @@ func TestPathGobEncDec(t *testing.T) {
 			decoded: &TestStruct{},
 		},
 		{
-			name: "TestStruct with depset values",
-			origin: &TestStruct{
-				f26: depsetTestEcho,
-				f27: depsetTestEchoInterface,
-			},
-			decoded: &TestStruct{},
-		},
-		{
 			name: "TestStruct",
 			origin: &TestStruct{
 				TestEcho: TestEcho{"222222222"},
@@ -103,6 +95,16 @@ func TestPathGobEncDec(t *testing.T) {
 				},
 				f24: &test.TypeStruct{Name: "fffffffff"},
 				f25: test.TypeIdent{Name: "ggggggggg"},
+				f26: depsetTestEcho,
+				f27: depsetTestEchoInterface,
+				f28: map[int][]string{
+					1: {"aaaaaaaaa", "bbbbbbbbb"},
+					2: {"ccccccccc", "ddddddddd"},
+				},
+				f29: [][]string{
+					{"aaaaaaaaa", "bbbbbbbbb"},
+					{"ccccccccc", "ddddddddd"},
+				},
 			},
 			decoded: &TestStruct{},
 		},
