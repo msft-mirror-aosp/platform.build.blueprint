@@ -189,7 +189,7 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 
-	if err = r.f25.Encode(buf); err != nil {
+	if err = test.TypeStruct(r.f25).Encode(buf); err != nil {
 		return err
 	}
 
@@ -461,9 +461,11 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 		r.f24 = val63.(test.TypeInterface)
 	}
 
-	if err = r.f25.Decode(buf); err != nil {
+	var val65 test.TypeStruct
+	if err = val65.Decode(buf); err != nil {
 		return err
 	}
+	r.f25 = test.TypeIdent(val65)
 
 	if err = r.f26.Decode(buf); err != nil {
 		return err

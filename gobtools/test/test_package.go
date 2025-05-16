@@ -4,7 +4,7 @@ package test
 
 type TypeAlias = []TypeStruct
 
-type TypeIdent = TypeStruct
+type TypeIdent TypeStruct
 
 type TypeInterface interface {
 	print(value string) string
