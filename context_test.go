@@ -656,11 +656,6 @@ func Test_findVariant(t *testing.T) {
 		},
 	}
 
-	type alias struct {
-		variant variant
-		target  int
-	}
-
 	makeDependencyGroup := func(in ...*moduleInfo) *moduleGroup {
 		group := &moduleGroup{
 			name: "dep",
@@ -751,7 +746,7 @@ func Test_findVariant(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := NewContext()
-			got, _, errs := ctx.findVariant(module, nil, tt.possibleDeps, tt.variations, tt.far, tt.reverse)
+			got, _, errs := ctx.findVariant(nil, module, nil, tt.possibleDeps, tt.variations, tt.far, tt.reverse)
 			if errs != nil {
 				t.Fatal(errs)
 			}
@@ -1560,7 +1555,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 	} {
 		hash, err := proptools.CalculateHash(v)
 		if err != nil {
-			panic(fmt.Sprintf("Can't hash value of providers"))
+			panic("Can't hash value of providers")
 		}
 		providerHashes[k.id] = hash
 	}

@@ -1,0 +1,14 @@
+bootstrap_go_package {
+    name: "blueprint-gobtools-test",
+    pkgPath: "github.com/google/blueprint/gobtools/test",
+    srcs: [
+        "test_package.go",
+        "test_package_gob_enc.go",
+    ],
+    visibility: [
+        "//visibility:public",
+    ],
+    deps: [
+        "blueprint-gobtools",
+    ],
+}
