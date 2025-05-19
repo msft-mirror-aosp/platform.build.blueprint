@@ -120,10 +120,18 @@ func (d DepSet[T]) GobEncode() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+func (d DepSet[T]) Encode(buf *bytes.Buffer) error {
+	return d.encodeInternal(buf, false)
+}
+
+func (d DepSet[T]) EncodeInterface(buf *bytes.Buffer) error {
+	return d.encodeInternal(buf, true)
+}
+
 // The Gob encoding and decoding logic below only works in a single thread environment,
 // which is currently the case. When parallel Gob cache processing is necessary the logic
 // needs to be revisited.
-func (d DepSet[T]) Encode(buf *bytes.Buffer) error {
+func (d DepSet[T]) encodeInternal(buf *bytes.Buffer, isInterface bool) error {
 	var err error
 	var zeroDepSet DepSet[T]
 	if d == zeroDepSet {
@@ -154,7 +162,12 @@ func (d DepSet[T]) Encode(buf *bytes.Buffer) error {
 			return err
 		}
 		for i := 0; i < len(dlist); i++ {
-			if err = gobtools.EncodeStruct(buf, &dlist[i]); err != nil {
+			if isInterface {
+				err = gobtools.EncodeInterface(buf, dlist[i])
+			} else {
+				err = gobtools.EncodeStruct(buf, &dlist[i])
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -164,7 +177,12 @@ func (d DepSet[T]) Encode(buf *bytes.Buffer) error {
 			return err
 		}
 		for i := 0; i < len(tlist); i++ {
-			if err = tlist[i].Encode(buf); err != nil {
+			if isInterface {
+				err = tlist[i].EncodeInterface(buf)
+			} else {
+				err = tlist[i].Encode(buf)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -183,6 +201,14 @@ func (d *DepSet[T]) GobDecode(data []byte) error {
 }
 
 func (d *DepSet[T]) Decode(buf *bytes.Reader) error {
+	return d.decodeInternal(buf, false)
+}
+
+func (d *DepSet[T]) DecodeInterface(buf *bytes.Reader) error {
+	return d.decodeInternal(buf, true)
+}
+
+func (d *DepSet[T]) decodeInternal(buf *bytes.Reader, isInterface bool) error {
 	var embedded bool
 	var err error
 	var id int32
@@ -215,7 +241,16 @@ func (d *DepSet[T]) Decode(buf *bytes.Reader) error {
 		if dlen > 0 {
 			dlist = make([]T, dlen)
 			for i := 0; i < int(dlen); i++ {
-				err = gobtools.DecodeStruct(buf, &dlist[i])
+				if isInterface {
+					var tmpVal any
+					if tmpVal, err = gobtools.DecodeInterface(buf); err != nil {
+						return err
+					} else {
+						dlist[i] = tmpVal.(T)
+					}
+				} else {
+					err = gobtools.DecodeStruct(buf, &dlist[i])
+				}
 				if err != nil {
 					return err
 				}
@@ -232,7 +267,11 @@ func (d *DepSet[T]) Decode(buf *bytes.Reader) error {
 		if tlen > 0 {
 			tlist = make([]DepSet[T], tlen)
 			for i := 0; i < int(tlen); i++ {
-				err = tlist[i].Decode(buf)
+				if isInterface {
+					err = tlist[i].DecodeInterface(buf)
+				} else {
+					err = tlist[i].Decode(buf)
+				}
 				if err != nil {
 					return err
 				}

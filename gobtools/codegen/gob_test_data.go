@@ -15,6 +15,7 @@
 package main
 
 import (
+	"github.com/google/blueprint/depset"
 	"github.com/google/blueprint/gobtools/test"
 	"github.com/google/blueprint/uniquelist"
 )
@@ -53,6 +54,8 @@ type TestStruct struct {
 	f23 []test.TypeAlias
 	f24 test.TypeInterface
 	f25 test.TypeIdent
+	f26 depset.DepSet[TestEcho]
+	f27 depset.DepSet[TestEchoInterface]
 }
 
 type testStrings []string

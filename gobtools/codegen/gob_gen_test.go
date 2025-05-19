@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/blueprint/depset"
 	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/gobtools/test"
 	"github.com/google/blueprint/uniquelist"
@@ -26,6 +27,10 @@ import (
 func TestPathGobEncDec(t *testing.T) {
 	strValue := "string value for test"
 	defaultEcho := TestEcho{"111111111"}
+	transTestEcho := depset.New(depset.PREORDER, []TestEcho{defaultEcho}, nil)
+	depsetTestEcho := depset.New(depset.PREORDER, []TestEcho{defaultEcho}, []depset.DepSet[TestEcho]{transTestEcho})
+	transTestEchoInterface := depset.New(depset.PREORDER, []TestEchoInterface{defaultEcho}, nil)
+	depsetTestEchoInterface := depset.New(depset.PREORDER, []TestEchoInterface{defaultEcho}, []depset.DepSet[TestEchoInterface]{transTestEchoInterface})
 	testCases := []struct {
 		name    string
 		origin  gobtools.CustomEnc
@@ -42,6 +47,14 @@ func TestPathGobEncDec(t *testing.T) {
 				f18: TestEcho{"aaaa"},
 				f21: uniquelist.Make([]TestEchoInterface{defaultEcho}),
 				f24: test.TypeStruct{Name: "fffffffff"},
+			},
+			decoded: &TestStruct{},
+		},
+		{
+			name: "TestStruct with depset values",
+			origin: &TestStruct{
+				f26: depsetTestEcho,
+				f27: depsetTestEchoInterface,
 			},
 			decoded: &TestStruct{},
 		},

@@ -27,7 +27,7 @@ func (r TypeStruct) Encode(buf *bytes.Buffer) error {
 	if err = gobtools.EncodeString(buf, r.Name); err != nil {
 		return err
 	}
-	return nil
+	return err
 }
 
 func (r *TypeStruct) GobDecode(b []byte) error {
@@ -43,7 +43,7 @@ func (r *TypeStruct) Decode(buf *bytes.Reader) error {
 		return err
 	}
 
-	return nil
+	return err
 }
 
 var TypeStructGobRegId int16
