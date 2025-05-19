@@ -231,6 +231,10 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 			}
 		}
 	}
+
+	if err = r.f30.EncodeString(buf); err != nil {
+		return err
+	}
 	return err
 }
 
@@ -563,6 +567,10 @@ func (r *TestStruct) Decode(buf *bytes.Reader) error {
 				}
 			}
 		}
+	}
+
+	if err = r.f30.DecodeString(buf); err != nil {
+		return err
 	}
 
 	return err

@@ -27,6 +27,8 @@ import (
 func TestPathGobEncDec(t *testing.T) {
 	strValue := "string value for test"
 	defaultEcho := TestEcho{"111111111"}
+	transString := depset.New(depset.PREORDER, []string{"111111111"}, nil)
+	depsetString := depset.New(depset.PREORDER, []string{"222222222"}, []depset.DepSet[string]{transString})
 	transTestEcho := depset.New(depset.PREORDER, []TestEcho{defaultEcho}, nil)
 	depsetTestEcho := depset.New(depset.PREORDER, []TestEcho{defaultEcho}, []depset.DepSet[TestEcho]{transTestEcho})
 	transTestEchoInterface := depset.New(depset.PREORDER, []TestEchoInterface{defaultEcho}, nil)
@@ -105,6 +107,7 @@ func TestPathGobEncDec(t *testing.T) {
 					{"aaaaaaaaa", "bbbbbbbbb"},
 					{"ccccccccc", "ddddddddd"},
 				},
+				f30: depsetString,
 			},
 			decoded: &TestStruct{},
 		},
