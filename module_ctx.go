@@ -457,6 +457,13 @@ type BaseModuleContext interface {
 
 	EarlyGetMissingDependencies() []string
 
+	// RegisterConfigurableEvaluator registers the evaluator used for the proptools.Configurable's in
+	// the module properties. It is used to dump their values in the json debug file
+	// (out/soong/soong-debug-info.json), if it's enabled. This should be called from
+	// GenerateBuildActions, but doing so is optional; if no evaluator has been registered then
+	// configurable values are dumped as placeholder strings.
+	RegisterConfigurableEvaluator(evaluator proptools.ConfigurableEvaluator)
+
 	base() *baseModuleContext
 }
 
@@ -502,6 +509,7 @@ type baseModuleContext struct {
 	visitingParent *moduleInfo
 	visitingDep    depInfo
 	ninjaFileDeps  []string
+	evaluator      proptools.ConfigurableEvaluator
 }
 
 func (d *baseModuleContext) moduleInfo() *moduleInfo {
@@ -1186,6 +1194,10 @@ func (m *moduleContext) FreeModuleAfterGenerateBuildActions() {
 
 func (m *baseModuleContext) EarlyGetMissingDependencies() []string {
 	return m.module.missingDeps
+}
+
+func (m *baseModuleContext) RegisterConfigurableEvaluator(evaluator proptools.ConfigurableEvaluator) {
+	m.evaluator = evaluator
 }
 
 //
