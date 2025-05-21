@@ -148,14 +148,15 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 		}
 	}
 
+	if args.ModuleDebugFile != "" {
+		finishFunc := ctx.InitializeModuleDebugInfoCollection(args.ModuleDebugFile)
+		defer finishFunc()
+	}
+
 	if buildActionsDeps, errs := ctx.PrepareBuildActions(config); len(errs) > 0 {
 		return nil, colorizeErrs(errs)
 	} else {
 		ninjaDeps = append(ninjaDeps, buildActionsDeps...)
-	}
-
-	if args.ModuleDebugFile != "" {
-		ctx.GenerateModuleDebugInfo(args.ModuleDebugFile)
 	}
 
 	if stopBefore == StopBeforeWriteNinja {

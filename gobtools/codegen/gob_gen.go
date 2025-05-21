@@ -194,6 +194,9 @@ func findStructName(expr ast.Expr, pkgName string) (string, string, string) {
 	case *ast.SelectorExpr:
 		pkgName = t.X.(*ast.Ident).Name
 		typeName = t.Sel.Name
+	case *ast.ArrayType:
+		pkgName, typeName, _ = findStructName(t.Elt, pkgName)
+		typeName = "[]" + typeName
 	default:
 		panic(fmt.Errorf("unknown type to find name: %T", expr))
 	}
@@ -292,7 +295,9 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 			encodeArray(encodeBody, pkgName, t.Index, listName, imports)
 		} else if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "DepSet" {
 			pkgName, typName, _ := findStructName(t.Index, pkgName)
-			if findType(pkgName, typName, imports) == Interface {
+			if typName == "string" {
+				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.EncodeString(buf); err != nil { return err }\n", fieldName))
+			} else if findType(pkgName, typName, imports) == Interface {
 				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.EncodeInterface(buf); err != nil { return err }\n", fieldName))
 			} else {
 				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.Encode(buf); err != nil { return err }\n", fieldName))
@@ -440,12 +445,10 @@ func generateDecodeForType(decodeBody *strings.Builder, pkgName string, field as
 			decodeBody.WriteString(fmt.Sprintf("\t%s = uniquelist.Make(%s)\n", fieldName, listName))
 			imports[`"github.com/google/blueprint/uniquelist"`] = true
 		} else if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "DepSet" {
-			_, _, typName := findStructName(t.Index, pkgName)
-			if parts := strings.Split(typName, "."); len(parts) == 2 {
-				pkgName = parts[0]
-				typName = parts[1]
-			}
-			if findType(pkgName, typName, imports) == Interface {
+			pkgName, typName, _ := findStructName(t.Index, pkgName)
+			if typName == "string" {
+				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.DecodeString(buf); err != nil { return err }\n", fieldName))
+			} else if findType(pkgName, typName, imports) == Interface {
 				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.DecodeInterface(buf); err != nil { return err }\n", fieldName))
 			} else {
 				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.Decode(buf); err != nil { return err }\n", fieldName))

@@ -47,6 +47,7 @@ bootstrap_go_package {
     pkgPath: "github.com/google/blueprint",
     srcs: [
         "context.go",
+        "context_gob_enc.go",
         "incremental.go",
         "levenshtein.go",
         "glob.go",

@@ -27,6 +27,8 @@ import (
 func TestPathGobEncDec(t *testing.T) {
 	strValue := "string value for test"
 	defaultEcho := TestEcho{"111111111"}
+	transString := depset.New(depset.PREORDER, []string{"111111111"}, nil)
+	depsetString := depset.New(depset.PREORDER, []string{"222222222"}, []depset.DepSet[string]{transString})
 	transTestEcho := depset.New(depset.PREORDER, []TestEcho{defaultEcho}, nil)
 	depsetTestEcho := depset.New(depset.PREORDER, []TestEcho{defaultEcho}, []depset.DepSet[TestEcho]{transTestEcho})
 	transTestEchoInterface := depset.New(depset.PREORDER, []TestEchoInterface{defaultEcho}, nil)
@@ -47,14 +49,6 @@ func TestPathGobEncDec(t *testing.T) {
 				f18: TestEcho{"aaaa"},
 				f21: uniquelist.Make([]TestEchoInterface{defaultEcho}),
 				f24: test.TypeStruct{Name: "fffffffff"},
-			},
-			decoded: &TestStruct{},
-		},
-		{
-			name: "TestStruct with depset values",
-			origin: &TestStruct{
-				f26: depsetTestEcho,
-				f27: depsetTestEchoInterface,
 			},
 			decoded: &TestStruct{},
 		},
@@ -103,6 +97,17 @@ func TestPathGobEncDec(t *testing.T) {
 				},
 				f24: &test.TypeStruct{Name: "fffffffff"},
 				f25: test.TypeIdent{Name: "ggggggggg"},
+				f26: depsetTestEcho,
+				f27: depsetTestEchoInterface,
+				f28: map[int][]string{
+					1: {"aaaaaaaaa", "bbbbbbbbb"},
+					2: {"ccccccccc", "ddddddddd"},
+				},
+				f29: [][]string{
+					{"aaaaaaaaa", "bbbbbbbbb"},
+					{"ccccccccc", "ddddddddd"},
+				},
+				f30: depsetString,
 			},
 			decoded: &TestStruct{},
 		},
