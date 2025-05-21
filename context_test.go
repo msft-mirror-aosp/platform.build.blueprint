@@ -27,7 +27,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"text/scanner"
 	"time"
 
 	"github.com/google/blueprint/parser"
@@ -1563,12 +1562,6 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 	var providerValue any = IncrementalTestProvider{Value: "MyIncrementalModule"}
 	toCache := BuildActionCache{
 		cacheKey: &BuildActionCachedData{
-			Pos: &scanner.Position{
-				Filename: "Android.bp",
-				Line:     2,
-				Column:   4,
-				Offset:   4,
-			},
 			Providers: []CachedProvider{{
 				Id:    &IncrementalTestProviderKey.providerKey,
 				Value: &providerValue,
@@ -1649,12 +1642,6 @@ func TestCacheBuildActions(t *testing.T) {
 	}
 	var providerValue any = IncrementalTestProvider{Value: "MyIncrementalModule"}
 	expectedCache := BuildActionCachedData{
-		Pos: &scanner.Position{
-			Filename: "Android.bp",
-			Line:     2,
-			Column:   4,
-			Offset:   4,
-		},
 		Providers: []CachedProvider{{
 			Id:    &IncrementalTestProviderKey.providerKey,
 			Value: &providerValue,

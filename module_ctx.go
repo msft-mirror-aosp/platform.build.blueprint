@@ -819,40 +819,36 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 			}
 		}
 
-		relPos := m.module.pos
-		relPos.Filename = m.module.relBlueprintsFile
-		if data.Pos != nil && relPos == *data.Pos {
-			for _, provider := range data.Providers {
-				m.context.setProvider(m.module, provider.Id, *provider.Value)
+		for _, provider := range data.Providers {
+			m.context.setProvider(m.module, provider.Id, *provider.Value)
+		}
+		m.module.incrementalRestored = true
+		m.module.orderOnlyStrings = data.OrderOnlyStrings
+		m.module.globCache = data.GlobCache
+		restored = true
+		for _, str := range data.OrderOnlyStrings {
+			if !strings.HasPrefix(str, "dedup-") {
+				continue
 			}
-			m.module.incrementalRestored = true
-			m.module.orderOnlyStrings = data.OrderOnlyStrings
-			m.module.globCache = data.GlobCache
-			restored = true
-			for _, str := range data.OrderOnlyStrings {
-				if !strings.HasPrefix(str, "dedup-") {
-					continue
-				}
-				orderOnlyStrings, ok := m.context.orderOnlyStringsCache[str]
-				if !ok {
-					panic(fmt.Errorf("no cached value found for order only dep: %s", str))
-				}
-				key := uniquelist.Make(orderOnlyStrings)
-				if info, loaded := m.context.orderOnlyStrings.LoadOrStore(key, &orderOnlyStringsInfo{
-					dedup:       true,
-					incremental: true,
-				}); loaded {
-					for {
-						cpy := *info
-						cpy.dedup = true
-						cpy.incremental = true
-						if m.context.orderOnlyStrings.CompareAndSwap(key, info, &cpy) {
-							break
-						}
-						if info, loaded = m.context.orderOnlyStrings.Load(key); !loaded {
-							// This shouldn't happen
-							panic("order only string was removed unexpectedly")
-						}
+			orderOnlyStrings, ok := m.context.orderOnlyStringsCache[str]
+			if !ok {
+				panic(fmt.Errorf("no cached value found for order only dep: %s", str))
+			}
+			key := uniquelist.Make(orderOnlyStrings)
+			if info, loaded := m.context.orderOnlyStrings.LoadOrStore(key, &orderOnlyStringsInfo{
+				dedup:       true,
+				incremental: true,
+			}); loaded {
+				for {
+					cpy := *info
+					cpy.dedup = true
+					cpy.incremental = true
+					if m.context.orderOnlyStrings.CompareAndSwap(key, info, &cpy) {
+						break
+					}
+					if info, loaded = m.context.orderOnlyStrings.Load(key); !loaded {
+						// This shouldn't happen
+						panic("order only string was removed unexpectedly")
 					}
 				}
 			}

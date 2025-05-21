@@ -108,8 +108,29 @@ func TestPathGobEncDec(t *testing.T) {
 					{"ccccccccc", "ddddddddd"},
 				},
 				f30: depsetString,
+				f31: &defaultEcho,
 			},
 			decoded: &TestStruct{},
+		},
+		{
+			name:    "testEchos",
+			origin:  &testEchos{defaultEcho},
+			decoded: &testEchos{},
+		},
+		{
+			name: "testStringMap",
+			origin: &testStringMap{
+				"111111111": []string{"222222222", "333333333"},
+				"222222222": []string{"444444444", "555555555"},
+			},
+			decoded: &testStringMap{},
+		},
+		{
+			name: "testEchoMap",
+			origin: &testEchoMap{
+				defaultEcho: &TestEcho{"aaaaaaaaa"},
+			},
+			decoded: &testEchoMap{},
 		},
 	}
 
