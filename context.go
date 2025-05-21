@@ -184,6 +184,8 @@ type Context struct {
 	orderOnlyStringsCache   OrderOnlyStringsCache
 	orderOnlyStrings        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
 	incrementalDebugFile    string
+
+	moduleDebugDataChannel chan []byte
 }
 
 type orderOnlyStringsInfo struct {
@@ -3483,6 +3485,16 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				handledMissingDeps: module.missingDeps == nil,
 			}
 
+			// Use a deferred call for this, to avoid errors from trying to evaluate the select()
+			// expressions in the configurable values that mctx.evaluator encounters too early.
+			defer func() {
+				if c.moduleDebugDataChannel != nil {
+					c.moduleDebugDataChannel <- getModuleDebugJson(mctx.evaluator, module)
+				}
+				// The evaluator isn't needed anymore. Avoid possibly cyclic ref that may increase gc load.
+				mctx.evaluator = nil
+			}()
+
 			mctx.module.startedGenerateBuildActions = true
 
 			func() {
@@ -5317,20 +5329,20 @@ type Debuggable interface {
 }
 
 // Convert a slice in a reflect.Value to a value suitable for outputting to json
-func debugSlice(value reflect.Value) interface{} {
+func debugSlice(evaluator proptools.ConfigurableEvaluator, value reflect.Value) interface{} {
 	size := value.Len()
 	if size == 0 {
 		return nil
 	}
 	result := make([]interface{}, size)
 	for i := 0; i < size; i++ {
-		result[i] = debugValue(value.Index(i))
+		result[i] = debugValue(evaluator, value.Index(i))
 	}
 	return result
 }
 
 // Convert a map in a reflect.Value to a value suitable for outputting to json
-func debugMap(value reflect.Value) interface{} {
+func debugMap(evaluator proptools.ConfigurableEvaluator, value reflect.Value) interface{} {
 	if value.IsNil() {
 		return nil
 	}
@@ -5340,7 +5352,7 @@ func debugMap(value reflect.Value) interface{} {
 		// In the (hopefully) rare case of a key collision (which will happen when multiple
 		// go-typed keys have the same string representation, we'll just overwrite the last
 		// value.
-		result[debugKey(iter.Key())] = debugValue(iter.Value())
+		result[debugKey(iter.Key())] = debugValue(evaluator, iter.Value())
 	}
 	return result
 }
@@ -5351,7 +5363,30 @@ func debugKey(value reflect.Value) string {
 }
 
 // Convert a single value (possibly a map or slice too) in a reflect.Value to a value suitable for outputting to json
-func debugValue(value reflect.Value) interface{} {
+func debugValue(evaluator proptools.ConfigurableEvaluator, value reflect.Value) interface{} {
+	if proptools.IsConfigurable(value.Type()) {
+		if evaluator == nil {
+			return "<configurable value>"
+		} else {
+			if value.Kind() == reflect.Interface {
+				value = value.Elem() // Get the underlying value in the interface.
+			}
+			if value.Kind() != reflect.Ptr {
+				value = value.Addr() // The method needs a pointer receiver.
+			}
+			// value is now *proptools.Configurable[<something>]
+			value = value.MethodByName("Get").Call([]reflect.Value{reflect.ValueOf(evaluator)})[0]
+			// value is now an unaddressable proptools.ConfigurableOptional[<something>]
+			ptrVal := reflect.New(value.Type())
+			ptrVal.Elem().Set(value)
+			// ptrVal is now *proptools.ConfigurableOptional[<something>]
+			if ptrVal.MethodByName("IsEmpty").Call(nil)[0].Bool() {
+				return nil
+			}
+			value = ptrVal.MethodByName("Get").Call(nil)[0]
+		}
+	}
+
 	// Remember if we originally received a reflect.Interface.
 	wasInterface := value.Kind() == reflect.Interface
 	// Dereference pointers down to the real type
@@ -5373,7 +5408,7 @@ func debugValue(value reflect.Value) interface{} {
 	case reflect.Uint:
 		return value.Uint()
 	case reflect.Slice:
-		return debugSlice(value)
+		return debugSlice(evaluator, value)
 	case reflect.Struct:
 		// At least some of the private struct fields cause stack overflow here.  Do not include them until
 		// we track the recursion down.
@@ -5385,9 +5420,9 @@ func debugValue(value reflect.Value) interface{} {
 		if s, ok := value.Interface().(interface{ String() string }); wasInterface && ok {
 			return s.String()
 		}
-		return debugStruct(value)
+		return debugStruct(evaluator, value)
 	case reflect.Map:
-		return debugMap(value)
+		return debugMap(evaluator, value)
 	default:
 		// TODO: add cases as we find them.
 		return fmt.Sprintf("debugValue(Kind=%v, wasInterface=%v)", kind, wasInterface)
@@ -5397,9 +5432,9 @@ func debugValue(value reflect.Value) interface{} {
 }
 
 // Convert an object in a reflect.Value to a value suitable for outputting to json
-func debugStruct(value reflect.Value) interface{} {
+func debugStruct(evaluator proptools.ConfigurableEvaluator, value reflect.Value) interface{} {
 	result := make(map[string]interface{})
-	debugStructAppend(value, &result)
+	debugStructAppend(evaluator, value, &result)
 	if len(result) == 0 {
 		return nil
 	}
@@ -5407,7 +5442,7 @@ func debugStruct(value reflect.Value) interface{} {
 }
 
 // Convert an object to a value suiable for outputting to json
-func debugStructAppend(value reflect.Value, result *map[string]interface{}) {
+func debugStructAppend(evaluator proptools.ConfigurableEvaluator, value reflect.Value, result *map[string]interface{}) {
 	for value.Kind() == reflect.Ptr {
 		if value.IsNil() {
 			return
@@ -5425,23 +5460,23 @@ func debugStructAppend(value reflect.Value, result *map[string]interface{}) {
 
 	structType := value.Type()
 	for i := 0; i < value.NumField(); i++ {
-		v := debugValue(value.Field(i))
+		v := debugValue(evaluator, value.Field(i))
 		if v != nil {
 			(*result)[structType.Field(i).Name] = v
 		}
 	}
 }
 
-func debugPropertyStruct(props interface{}, result *map[string]interface{}) {
+func debugPropertyStruct(evaluator proptools.ConfigurableEvaluator, props interface{}, result *map[string]interface{}) {
 	if props == nil {
 		return
 	}
-	debugStructAppend(reflect.ValueOf(props), result)
+	debugStructAppend(evaluator, reflect.ValueOf(props), result)
 }
 
 // Get the debug json for a single module. Returns thae data as
 // flattened json text for easy concatenation by GenerateModuleDebugInfo.
-func getModuleDebugJson(module *moduleInfo) []byte {
+func getModuleDebugJson(evaluator proptools.ConfigurableEvaluator, module *moduleInfo) []byte {
 	info := struct {
 		Name       string                 `json:"name"`
 		SourceFile string                 `json:"source_file"`
@@ -5468,7 +5503,7 @@ func getModuleDebugJson(module *moduleInfo) []byte {
 				t := reflect.TypeOf(dep.tag)
 				if t != nil {
 					result[i].TagType = t.PkgPath() + "." + t.Name()
-					result[i].TagData = debugStruct(reflect.ValueOf(dep.tag))
+					result[i].TagData = debugStruct(nil, reflect.ValueOf(dep.tag))
 				}
 			}
 			return result
@@ -5493,7 +5528,7 @@ func getModuleDebugJson(module *moduleInfo) []byte {
 				}
 
 				if p != nil {
-					pj.Fields = debugValue(reflect.ValueOf(p))
+					pj.Fields = debugValue(nil, reflect.ValueOf(p))
 					include = true
 				}
 
@@ -5513,7 +5548,7 @@ func getModuleDebugJson(module *moduleInfo) []byte {
 		Properties: func() map[string]interface{} {
 			result := make(map[string]interface{})
 			for _, props := range module.properties {
-				debugPropertyStruct(props, &result)
+				debugPropertyStruct(evaluator, props, &result)
 			}
 			return result
 		}(),
@@ -5522,8 +5557,10 @@ func getModuleDebugJson(module *moduleInfo) []byte {
 	return buf
 }
 
-// Generate out/soong/soong-debug-info.json Called if GENERATE_SOONG_DEBUG=true.
-func (this *Context) GenerateModuleDebugInfo(filename string) {
+// InitializeModuleDebugInfoCollection sets up a channel and a receiver to write
+// out/soong/soong-debug-info.json. Called if GENERATE_SOONG_DEBUG=true. Returns a function to be
+// deferred until all modules have been processed.
+func (this *Context) InitializeModuleDebugInfoCollection(filename string) func() {
 	err := os.MkdirAll(filepath.Dir(filename), 0777)
 	if err != nil {
 		// We expect this to be writable
@@ -5535,24 +5572,34 @@ func (this *Context) GenerateModuleDebugInfo(filename string) {
 		// We expect this to be writable
 		panic(fmt.Sprintf("couldn't create soong module debug file %s: %s", filename, err))
 	}
-	defer f.Close()
 
-	needComma := false
-	f.WriteString("{\n\"modules\": [\n")
+	this.moduleDebugDataChannel = make(chan []byte, 10)
+	var wg sync.WaitGroup
+	wg.Add(1)
 
-	// TODO: Optimize this (parallel execution, etc) if it gets slow.
-	this.visitAllModuleInfos(func(module *moduleInfo) {
-		if needComma {
-			f.WriteString(",\n")
-		} else {
-			needComma = true
+	go func() {
+		defer f.Close()
+		defer wg.Done()
+
+		needComma := false
+		f.WriteString("{\n\"modules\": [\n")
+
+		for moduleData := range this.moduleDebugDataChannel {
+			if needComma {
+				f.WriteString(",\n")
+			} else {
+				needComma = true
+			}
+			f.Write(moduleData)
 		}
 
-		moduleData := getModuleDebugJson(module)
-		f.Write(moduleData)
-	})
+		f.WriteString("\n]\n}")
+	}()
 
-	f.WriteString("\n]\n}")
+	return func() {
+		close(this.moduleDebugDataChannel)
+		wg.Wait()
+	}
 }
 
 var fileHeaderTemplate = `******************************************************************************
