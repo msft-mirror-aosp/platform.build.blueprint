@@ -8,7 +8,82 @@ import (
 )
 
 func init() {
+	globResultCacheGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(globResultCache) })
 	VariationGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Variation) })
+}
+
+func (r globResultCache) GobEncode() ([]byte, error) {
+	buf := new(bytes.Buffer)
+
+	if err := r.Encode(buf); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
+func (r globResultCache) Encode(buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.Pattern); err != nil {
+		return err
+	}
+
+	if err = gobtools.EncodeSimple(buf, int32(len(r.Excludes))); err != nil {
+		return err
+	}
+	for val1 := 0; val1 < len(r.Excludes); val1++ {
+		if err = gobtools.EncodeString(buf, r.Excludes[val1]); err != nil {
+			return err
+		}
+	}
+
+	if err = gobtools.EncodeSimple(buf, r.Result); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r *globResultCache) GobDecode(b []byte) error {
+	buf := bytes.NewReader(b)
+	return r.Decode(buf)
+}
+
+func (r *globResultCache) Decode(buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.Pattern)
+	if err != nil {
+		return err
+	}
+
+	var val3 int32
+	err = gobtools.DecodeSimple[int32](buf, &val3)
+	if err != nil {
+		return err
+	}
+	if val3 > 0 {
+		r.Excludes = make([]string, val3)
+		for val4 := 0; val4 < int(val3); val4++ {
+			err = gobtools.DecodeString(buf, &r.Excludes[val4])
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	err = gobtools.DecodeSimple[uint64](buf, &r.Result)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var globResultCacheGobRegId int16
+
+func (r globResultCache) GetTypeId() int16 {
+	return globResultCacheGobRegId
 }
 
 func (r Variation) GobEncode() ([]byte, error) {

@@ -15,6 +15,7 @@
 package depset
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"slices"
@@ -356,12 +357,13 @@ func TestDepSetGob(t *testing.T) {
 		resetGobMaps()
 		t.Run(tt.name, func(t *testing.T) {
 			toGob := tt.depSet(t, POSTORDER)
-			data, err := toGob.GobEncode()
+			buf := new(bytes.Buffer)
+			err := toGob.EncodeString(buf)
 			if err != nil {
 				t.Errorf("failed to serialize depset: %s", err)
 			}
 			var fromGob DepSet[string]
-			err = fromGob.GobDecode(data)
+			err = fromGob.DecodeString(bytes.NewReader(buf.Bytes()))
 
 			if err != nil {
 				t.Errorf("failed to deserialize depset: %s", err)

@@ -197,6 +197,9 @@ func findStructName(expr ast.Expr, pkgName string) (string, string, string) {
 	case *ast.ArrayType:
 		pkgName, typeName, _ = findStructName(t.Elt, pkgName)
 		typeName = "[]" + typeName
+	case *ast.StarExpr:
+		pkgName, typeName, _ = findStructName(t.X, pkgName)
+		typeName = "*" + typeName
 	default:
 		panic(fmt.Errorf("unknown type to find name: %T", expr))
 	}
@@ -267,6 +270,9 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 			imports[`"github.com/google/blueprint/gobtools"`] = true
 		case "bool", "int16", "int32", "int64", "uint16", "uint32", "uint64":
 			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, %s); err != nil { return err }\n", fieldName))
+			imports[`"github.com/google/blueprint/gobtools"`] = true
+		case "any":
+			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeInterface(buf, %s); err != nil { return err }\n", fieldName))
 			imports[`"github.com/google/blueprint/gobtools"`] = true
 		default:
 			generateEncodeForCustomType(encodeBody, fieldName, pkgName, t.Name, imports)
@@ -399,6 +405,12 @@ func generateDecodeForType(decodeBody *strings.Builder, pkgName string, field as
 		case "bool", "int16", "int32", "int64", "uint16", "uint32", "uint64":
 			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[%s](buf, &%s); if err != nil { return err }\n", t.Name, fieldName))
 			imports[`"github.com/google/blueprint/gobtools"`] = true
+		case "any":
+			tmpVar := nextVar()
+			decodeBody.WriteString(fmt.Sprintf("\tif %s, err := gobtools.DecodeInterface(buf); err != nil { return err } else if %s == nil {\n", tmpVar, tmpVar))
+			decodeBody.WriteString(fmt.Sprintf("\t%s = nil } else {\n", fieldName))
+			decodeBody.WriteString(fmt.Sprintf("\t%s = %s }\n", fieldName, tmpVar))
+			imports[`"github.com/google/blueprint/gobtools"`] = true
 		default:
 			generateDecodeForCustomType(decodeBody, fieldName, pkgName, t.Name, imports)
 		}
@@ -498,10 +510,7 @@ func decodeArray(decodeBody *strings.Builder, pkgName string, t ast.Expr, fieldN
 }
 
 func generateEncode(pkgName string, structDecl *ast.TypeSpec, encodeBody *strings.Builder, imports map[string]bool) {
-	structType, ok := structDecl.Type.(*ast.StructType)
-	if !ok {
-		return
-	}
+	structType, isStruct := structDecl.Type.(*ast.StructType)
 	structName := structDecl.Name.Name
 
 	encodeBody.WriteString("func (r " + structName + ") GobEncode() ([]byte, error) {\n")
@@ -513,13 +522,19 @@ func generateEncode(pkgName string, structDecl *ast.TypeSpec, encodeBody *string
 	encodeBody.WriteString("func (r " + structName + ") Encode(buf *bytes.Buffer) error {\n")
 	encodeBody.WriteString("\tvar err error\n")
 
-	for _, field := range structType.Fields.List {
-		fieldName := "r."
-		if len(field.Names) > 0 {
-			fieldName += field.Names[0].Name
+	if isStruct {
+		for _, field := range structType.Fields.List {
+			fieldName := "r."
+			if len(field.Names) > 0 {
+				fieldName += field.Names[0].Name
+			}
+			encodeBody.WriteString("\n")
+			generateEncodeForType(encodeBody, pkgName, field.Type, fieldName, imports)
 		}
+	} else {
+		fieldName := "r"
 		encodeBody.WriteString("\n")
-		generateEncodeForType(encodeBody, pkgName, field.Type, fieldName, imports)
+		generateEncodeForType(encodeBody, pkgName, structDecl.Type, fieldName, imports)
 	}
 
 	encodeBody.WriteString("\treturn err\n")
@@ -527,10 +542,7 @@ func generateEncode(pkgName string, structDecl *ast.TypeSpec, encodeBody *string
 }
 
 func generateDecode(pkgName string, structDecl *ast.TypeSpec, decodeBody *strings.Builder, imports map[string]bool) {
-	structType, ok := structDecl.Type.(*ast.StructType)
-	if !ok {
-		return
-	}
+	structType, isStruct := structDecl.Type.(*ast.StructType)
 	structName := structDecl.Name.Name
 
 	decodeBody.WriteString("func (r *" + structName + ") GobDecode(b []byte) error {\n")
@@ -541,13 +553,19 @@ func generateDecode(pkgName string, structDecl *ast.TypeSpec, decodeBody *string
 	decodeBody.WriteString("func (r *" + structName + ") Decode(buf *bytes.Reader) error {\n")
 	decodeBody.WriteString("\tvar err error\n")
 
-	for _, field := range structType.Fields.List {
-		fieldName := "r."
-		if len(field.Names) > 0 {
-			fieldName += field.Names[0].Name
+	if isStruct {
+		for _, field := range structType.Fields.List {
+			fieldName := "r."
+			if len(field.Names) > 0 {
+				fieldName += field.Names[0].Name
+			}
+			decodeBody.WriteString("\n")
+			generateDecodeForType(decodeBody, pkgName, field.Type, fieldName, imports)
 		}
+	} else {
+		fieldName := "(*r)"
 		decodeBody.WriteString("\n")
-		generateDecodeForType(decodeBody, pkgName, field.Type, fieldName, imports)
+		generateDecodeForType(decodeBody, pkgName, structDecl.Type, fieldName, imports)
 	}
 
 	decodeBody.WriteString("\n\treturn err\n")
@@ -689,9 +707,6 @@ func parseFile(source string) (*ast.File, error) {
 }
 
 func generateRegistry(structDecl *ast.TypeSpec, codeBody *strings.Builder, initCodeBody *strings.Builder, imports map[string]bool) {
-	if _, ok := structDecl.Type.(*ast.StructType); !ok {
-		return
-	}
 	structName := structDecl.Name.Name
 	typeId := structName + "GobRegId"
 	codeBody.WriteString(fmt.Sprintf("\tvar %s int16\n", typeId))
