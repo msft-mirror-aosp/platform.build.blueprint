@@ -12,16 +12,6 @@ func init() {
 	VariationGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Variation) })
 }
 
-func (r globResultCache) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r globResultCache) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -42,11 +32,6 @@ func (r globResultCache) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 	return err
-}
-
-func (r *globResultCache) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *globResultCache) Decode(buf *bytes.Reader) error {
@@ -86,16 +71,6 @@ func (r globResultCache) GetTypeId() int16 {
 	return globResultCacheGobRegId
 }
 
-func (r Variation) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r Variation) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -107,11 +82,6 @@ func (r Variation) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 	return err
-}
-
-func (r *Variation) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *Variation) Decode(buf *bytes.Reader) error {

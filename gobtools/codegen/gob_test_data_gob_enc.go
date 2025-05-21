@@ -17,16 +17,6 @@ func init() {
 	testEchoMapGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(testEchoMap) })
 }
 
-func (r TestStruct) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r TestStruct) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -243,11 +233,6 @@ func (r TestStruct) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 	return err
-}
-
-func (r *TestStruct) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *TestStruct) Decode(buf *bytes.Reader) error {
@@ -597,16 +582,6 @@ func (r TestStruct) GetTypeId() int16 {
 	return TestStructGobRegId
 }
 
-func (r TestEcho) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r TestEcho) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -614,11 +589,6 @@ func (r TestEcho) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 	return err
-}
-
-func (r *TestEcho) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *TestEcho) Decode(buf *bytes.Reader) error {
@@ -638,16 +608,6 @@ func (r TestEcho) GetTypeId() int16 {
 	return TestEchoGobRegId
 }
 
-func (r testEchos) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r testEchos) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -660,11 +620,6 @@ func (r testEchos) Encode(buf *bytes.Buffer) error {
 		}
 	}
 	return err
-}
-
-func (r *testEchos) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *testEchos) Decode(buf *bytes.Reader) error {
@@ -697,16 +652,6 @@ func (r testEchos) GetTypeId() int16 {
 	return testEchosGobRegId
 }
 
-func (r testStringMap) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r testStringMap) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -727,11 +672,6 @@ func (r testStringMap) Encode(buf *bytes.Buffer) error {
 		}
 	}
 	return err
-}
-
-func (r *testStringMap) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *testStringMap) Decode(buf *bytes.Reader) error {
@@ -778,16 +718,6 @@ func (r testStringMap) GetTypeId() int16 {
 	return testStringMapGobRegId
 }
 
-func (r testEchoMap) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r testEchoMap) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -809,11 +739,6 @@ func (r testEchoMap) Encode(buf *bytes.Buffer) error {
 		}
 	}
 	return err
-}
-
-func (r *testEchoMap) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *testEchoMap) Decode(buf *bytes.Reader) error {

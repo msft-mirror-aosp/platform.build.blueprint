@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 
@@ -135,11 +136,11 @@ func TestPathGobEncDec(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		data, err := tc.origin.GobEncode()
-		if err != nil {
+		buf := new(bytes.Buffer)
+		if err := tc.origin.Encode(buf); err != nil {
 			t.Errorf("failed to encode %s: %v", tc.name, err)
 		}
-		if err := tc.decoded.GobDecode(data); err != nil {
+		if err := tc.decoded.Decode(bytes.NewReader(buf.Bytes())); err != nil {
 			t.Errorf("failed to decode %s: %v", tc.name, err)
 		}
 		if !reflect.DeepEqual(tc.origin, tc.decoded) {

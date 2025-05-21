@@ -15,16 +15,6 @@ func init() {
 	OrderOnlyStringsCacheGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(OrderOnlyStringsCache) })
 }
 
-func (r BuildActionCacheKey) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r BuildActionCacheKey) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -36,11 +26,6 @@ func (r BuildActionCacheKey) Encode(buf *bytes.Buffer) error {
 		return err
 	}
 	return err
-}
-
-func (r *BuildActionCacheKey) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *BuildActionCacheKey) Decode(buf *bytes.Reader) error {
@@ -63,16 +48,6 @@ var BuildActionCacheKeyGobRegId int16
 
 func (r BuildActionCacheKey) GetTypeId() int16 {
 	return BuildActionCacheKeyGobRegId
-}
-
-func (r CachedProvider) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
 }
 
 func (r CachedProvider) Encode(buf *bytes.Buffer) error {
@@ -98,11 +73,6 @@ func (r CachedProvider) Encode(buf *bytes.Buffer) error {
 		}
 	}
 	return err
-}
-
-func (r *CachedProvider) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *CachedProvider) Decode(buf *bytes.Reader) error {
@@ -145,16 +115,6 @@ func (r CachedProvider) GetTypeId() int16 {
 	return CachedProviderGobRegId
 }
 
-func (r BuildActionCachedData) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r BuildActionCachedData) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -185,11 +145,6 @@ func (r BuildActionCachedData) Encode(buf *bytes.Buffer) error {
 		}
 	}
 	return err
-}
-
-func (r *BuildActionCachedData) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *BuildActionCachedData) Decode(buf *bytes.Reader) error {
@@ -247,16 +202,6 @@ func (r BuildActionCachedData) GetTypeId() int16 {
 	return BuildActionCachedDataGobRegId
 }
 
-func (r BuildActionCache) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r BuildActionCache) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -278,11 +223,6 @@ func (r BuildActionCache) Encode(buf *bytes.Buffer) error {
 		}
 	}
 	return err
-}
-
-func (r *BuildActionCache) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *BuildActionCache) Decode(buf *bytes.Reader) error {
@@ -325,16 +265,6 @@ func (r BuildActionCache) GetTypeId() int16 {
 	return BuildActionCacheGobRegId
 }
 
-func (r OrderOnlyStringsCache) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := r.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
 func (r OrderOnlyStringsCache) Encode(buf *bytes.Buffer) error {
 	var err error
 
@@ -355,11 +285,6 @@ func (r OrderOnlyStringsCache) Encode(buf *bytes.Buffer) error {
 		}
 	}
 	return err
-}
-
-func (r *OrderOnlyStringsCache) GobDecode(b []byte) error {
-	buf := bytes.NewReader(b)
-	return r.Decode(buf)
 }
 
 func (r *OrderOnlyStringsCache) Decode(buf *bytes.Reader) error {
