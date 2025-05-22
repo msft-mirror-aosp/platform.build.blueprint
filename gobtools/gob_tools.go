@@ -17,7 +17,6 @@ package gobtools
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/gob"
 	"fmt"
 	"io"
 	"reflect"
@@ -73,32 +72,6 @@ type CustomGob[T any] interface {
 	FromGob(data *T)
 }
 
-// Legacy way to provide custom Gob encoding logic.
-func CustomGobEncode[T any](cg CustomGob[T]) ([]byte, error) {
-	w := new(bytes.Buffer)
-	encoder := gob.NewEncoder(w)
-	err := encoder.Encode(cg.ToGob())
-	if err != nil {
-		return nil, err
-	}
-
-	return w.Bytes(), nil
-}
-
-// Legacy way to provide custom Gob decoding and decoding logic.
-func CustomGobDecode[T any](data []byte, cg CustomGob[T]) error {
-	r := bytes.NewBuffer(data)
-	var value T
-	decoder := gob.NewDecoder(r)
-	err := decoder.Decode(&value)
-	if err != nil {
-		return err
-	}
-	cg.FromGob(&value)
-
-	return nil
-}
-
 // Encode a string value.
 func EncodeString(buf *bytes.Buffer, s string) error {
 	b := []byte(s)
@@ -152,8 +125,7 @@ func EncodeStruct(buf *bytes.Buffer, val any) error {
 	if encdec, ok := val.(CustomEnc); ok {
 		return encdec.Encode(buf)
 	} else {
-		encoder := gob.NewEncoder(buf)
-		return encoder.Encode(val)
+		panic(fmt.Errorf("encoding type is not supported: %T", val))
 	}
 }
 
@@ -187,8 +159,7 @@ func DecodeStruct(buf *bytes.Reader, data any) error {
 	if encdec, ok := data.(CustomDec); ok {
 		return encdec.Decode(buf)
 	} else {
-		decoder := gob.NewDecoder(buf)
-		return decoder.Decode(data)
+		panic(fmt.Errorf("decoding type is not supported: %T", data))
 	}
 }
 

@@ -19,7 +19,6 @@ import (
 	"bytes"
 	"cmp"
 	"context"
-	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,6 +43,7 @@ import (
 	"text/template"
 	"unsafe"
 
+	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/metrics"
 	"github.com/google/blueprint/parser"
 	"github.com/google/blueprint/pathtools"
@@ -417,6 +417,7 @@ type moduleInfo struct {
 	incrementalInfo
 }
 
+// @auto-generate: gob
 type globResultCache struct {
 	Pattern  string
 	Excludes []string
@@ -788,7 +789,7 @@ func (c *Context) CacheAllBuildActions(soongOutDir string) error {
 		writeToCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache))
 }
 
-func writeToCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
+func writeToCache(ctx *Context, soongOutDir string, fileName string, data gobtools.CustomEnc) error {
 	file, err := ctx.fs.OpenFile(filepath.Join(ctx.SrcDir(), soongOutDir, fileName),
 		os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 	if err != nil {
@@ -796,8 +797,12 @@ func writeToCache[T any](ctx *Context, soongOutDir string, fileName string, data
 	}
 	defer file.Close()
 
-	encoder := gob.NewEncoder(file)
-	return encoder.Encode(data)
+	buf := new(bytes.Buffer)
+	if err = data.Encode(buf); err != nil {
+		return err
+	}
+	_, err = file.Write(buf.Bytes())
+	return err
 }
 
 func (c *Context) RestoreAllBuildActions(soongOutDir string) error {
@@ -805,18 +810,18 @@ func (c *Context) RestoreAllBuildActions(soongOutDir string) error {
 		restoreFromCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache))
 }
 
-func restoreFromCache[T any](ctx *Context, soongOutDir string, fileName string, data *T) error {
-	file, err := ctx.fs.Open(filepath.Join(ctx.SrcDir(), soongOutDir, fileName))
-	if err != nil {
-		if os.IsNotExist(err) {
-			err = nil
-		}
-		return err
+func restoreFromCache(ctx *Context, soongOutDir string, fileName string, data gobtools.CustomDec) error {
+	file := filepath.Join(ctx.SrcDir(), soongOutDir, fileName)
+	if _, err := os.Stat(file); os.IsNotExist(err) {
+		return nil
 	}
-	defer file.Close()
 
-	decoder := gob.NewDecoder(file)
-	return decoder.Decode(data)
+	if readBytes, err := os.ReadFile(file); err != nil {
+		return err
+	} else {
+		buf := bytes.NewReader(readBytes)
+		return data.Decode(buf)
+	}
 }
 
 func (c *Context) SetSrcDir(path string) {
@@ -5181,13 +5186,8 @@ func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
 		}
 	}
 
-	// These show up in the ninja file, so we need to cache these to ensure we
-	// re-generate ninja file if they changed.
-	relPos := module.pos
-	relPos.Filename = module.relBlueprintsFile
 	data := BuildActionCachedData{
 		Providers:        providers,
-		Pos:              &relPos,
 		OrderOnlyStrings: module.orderOnlyStrings,
 		GlobCache:        module.globCache,
 	}
