@@ -54,7 +54,6 @@ func RegisterType(creator func() CustomDec) int16 {
 // Interface indicates the struct provides custom encoding logic either thru
 // code generation or manual coding.
 type CustomEnc interface {
-	GobEncode() ([]byte, error)
 	Encode(buf *bytes.Buffer) error
 	GetTypeId() int16
 }
@@ -62,7 +61,6 @@ type CustomEnc interface {
 // Interface indicates the struct provides custom decoding logic either thru
 // code generation or manual coding
 type CustomDec interface {
-	GobDecode(b []byte) error
 	Decode(buf *bytes.Reader) error
 }
 
