@@ -24,6 +24,8 @@ import (
 	"reflect"
 	"slices"
 	"unsafe"
+
+	"github.com/google/blueprint/pool"
 )
 
 // byte to insert between elements of lists, fields of structs/maps, etc in order
@@ -31,11 +33,12 @@ import (
 // elements. 36 is arbitrary, but it's the ascii code for a record separator
 var recordSeparator []byte = []byte{36}
 
+var hasherPool = pool.New[hasher]()
+
 func CalculateHash(value interface{}) (uint64, error) {
-	hasher := hasher{
-		Hash64:   fnv.New64(),
-		int64Buf: make([]byte, 8),
-	}
+	hasher := hasherPool.Get()
+	defer hasherPool.Put(hasher)
+	hasher.reset()
 	v := reflect.ValueOf(value)
 	var err error
 	if v.IsValid() {
@@ -46,10 +49,15 @@ func CalculateHash(value interface{}) (uint64, error) {
 
 type hasher struct {
 	hash.Hash64
-	int64Buf      []byte
+	int64Buf      [8]byte
 	ptrs          map[uintptr]bool
 	mapStateCache *mapState
 }
+
+// Preallocate the ptrs map in the hasher to a value slightly larger than the maximum number of pointers
+// seen in a call to CalculateHash to avoid allocations.  The hasher objects are reused in a pool, so the
+// total number of these maps will be small.
+const ptrsMapSize = 16384
 
 type mapState struct {
 	indexes []int
@@ -57,9 +65,19 @@ type mapState struct {
 	values  []reflect.Value
 }
 
+func (hasher *hasher) reset() {
+	if hasher.Hash64 == nil {
+		hasher.Hash64 = fnv.New64()
+	} else {
+		hasher.Hash64.Reset()
+	}
+
+	clear(hasher.ptrs)
+}
+
 func (hasher *hasher) writeUint64(i uint64) {
-	binary.LittleEndian.PutUint64(hasher.int64Buf, i)
-	hasher.Write(hasher.int64Buf)
+	binary.LittleEndian.PutUint64(hasher.int64Buf[:], i)
+	hasher.Write(hasher.int64Buf[:])
 }
 
 func (hasher *hasher) writeInt(i int) {
@@ -153,7 +171,7 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 		hasher.writeInt(0x55)
 		addr := v.Pointer()
 		if hasher.ptrs == nil {
-			hasher.ptrs = make(map[uintptr]bool)
+			hasher.ptrs = make(map[uintptr]bool, ptrsMapSize)
 		}
 		if _, ok := hasher.ptrs[addr]; ok {
 			// We could make this an error if we want to disallow pointer cycles in the future
