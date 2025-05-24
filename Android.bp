@@ -47,7 +47,9 @@ bootstrap_go_package {
     pkgPath: "github.com/google/blueprint",
     srcs: [
         "context.go",
+        "context_gob_enc.go",
         "incremental.go",
+        "incremental_gob_enc.go",
         "levenshtein.go",
         "glob.go",
         "live_tracker.go",
@@ -59,6 +61,7 @@ bootstrap_go_package {
         "ninja_writer.go",
         "package_ctx.go",
         "provider.go",
+        "provider_gob_enc.go",
         "scope.go",
         "singleton_ctx.go",
         "transition.go",

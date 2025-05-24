@@ -14,29 +14,31 @@
 
 package blueprint
 
-import (
-	"text/scanner"
-)
+//go:generate go run gobtools/codegen/gob_gen.go
 
+// @auto-generate: gob
 type BuildActionCacheKey struct {
 	Id        string
 	InputHash uint64
 }
 
+// @auto-generate: gob
 type CachedProvider struct {
 	Id    *providerKey
 	Value *any
 }
 
+// @auto-generate: gob
 type BuildActionCachedData struct {
 	Providers        []CachedProvider
-	Pos              *scanner.Position
 	OrderOnlyStrings []string
 	GlobCache        []globResultCache
 }
 
-type BuildActionCache = map[BuildActionCacheKey]*BuildActionCachedData
+// @auto-generate: gob
+type BuildActionCache map[BuildActionCacheKey]*BuildActionCachedData
 
+// @auto-generate: gob
 type OrderOnlyStringsCache map[string][]string
 
 type BuildActionCacheInput struct {

@@ -15,9 +15,11 @@
 package main
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 
+	"github.com/google/blueprint/depset"
 	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/gobtools/test"
 	"github.com/google/blueprint/uniquelist"
@@ -26,6 +28,12 @@ import (
 func TestPathGobEncDec(t *testing.T) {
 	strValue := "string value for test"
 	defaultEcho := TestEcho{"111111111"}
+	transString := depset.New(depset.PREORDER, []string{"111111111"}, nil)
+	depsetString := depset.New(depset.PREORDER, []string{"222222222"}, []depset.DepSet[string]{transString})
+	transTestEcho := depset.New(depset.PREORDER, []TestEcho{defaultEcho}, nil)
+	depsetTestEcho := depset.New(depset.PREORDER, []TestEcho{defaultEcho}, []depset.DepSet[TestEcho]{transTestEcho})
+	transTestEchoInterface := depset.New(depset.PREORDER, []TestEchoInterface{defaultEcho}, nil)
+	depsetTestEchoInterface := depset.New(depset.PREORDER, []TestEchoInterface{defaultEcho}, []depset.DepSet[TestEchoInterface]{transTestEchoInterface})
 	testCases := []struct {
 		name    string
 		origin  gobtools.CustomEnc
@@ -90,17 +98,49 @@ func TestPathGobEncDec(t *testing.T) {
 				},
 				f24: &test.TypeStruct{Name: "fffffffff"},
 				f25: test.TypeIdent{Name: "ggggggggg"},
+				f26: depsetTestEcho,
+				f27: depsetTestEchoInterface,
+				f28: map[int][]string{
+					1: {"aaaaaaaaa", "bbbbbbbbb"},
+					2: {"ccccccccc", "ddddddddd"},
+				},
+				f29: [][]string{
+					{"aaaaaaaaa", "bbbbbbbbb"},
+					{"ccccccccc", "ddddddddd"},
+				},
+				f30: depsetString,
+				f31: &defaultEcho,
 			},
 			decoded: &TestStruct{},
+		},
+		{
+			name:    "testEchos",
+			origin:  &testEchos{defaultEcho},
+			decoded: &testEchos{},
+		},
+		{
+			name: "testStringMap",
+			origin: &testStringMap{
+				"111111111": []string{"222222222", "333333333"},
+				"222222222": []string{"444444444", "555555555"},
+			},
+			decoded: &testStringMap{},
+		},
+		{
+			name: "testEchoMap",
+			origin: &testEchoMap{
+				defaultEcho: &TestEcho{"aaaaaaaaa"},
+			},
+			decoded: &testEchoMap{},
 		},
 	}
 
 	for _, tc := range testCases {
-		data, err := tc.origin.GobEncode()
-		if err != nil {
+		buf := new(bytes.Buffer)
+		if err := tc.origin.Encode(buf); err != nil {
 			t.Errorf("failed to encode %s: %v", tc.name, err)
 		}
-		if err := tc.decoded.GobDecode(data); err != nil {
+		if err := tc.decoded.Decode(bytes.NewReader(buf.Bytes())); err != nil {
 			t.Errorf("failed to decode %s: %v", tc.name, err)
 		}
 		if !reflect.DeepEqual(tc.origin, tc.decoded) {

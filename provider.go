@@ -15,12 +15,12 @@
 package blueprint
 
 import (
-	"encoding/gob"
 	"fmt"
 
-	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/proptools"
 )
+
+//go:generate go run gobtools/codegen/gob_gen.go
 
 // This file implements Providers, modelled after Bazel
 // (https://docs.bazel.build/versions/master/skylark/rules.html#providers).
@@ -49,38 +49,11 @@ type typedProviderKey[K any] struct {
 	providerKey
 }
 
+// @auto-generate: gob
 type providerKey struct {
 	id      int
 	typ     string
 	mutator string
-}
-
-type providerKeyGob struct {
-	Id      int
-	Typ     string
-	Mutator string
-}
-
-func (m *providerKey) ToGob() *providerKeyGob {
-	return &providerKeyGob{
-		Id:      m.id,
-		Typ:     m.typ,
-		Mutator: m.mutator,
-	}
-}
-
-func (m *providerKey) FromGob(data *providerKeyGob) {
-	m.id = data.Id
-	m.typ = data.Typ
-	m.mutator = data.Mutator
-}
-
-func (m *providerKey) GobEncode() ([]byte, error) {
-	return gobtools.CustomGobEncode[providerKeyGob](m)
-}
-
-func (m *providerKey) GobDecode(data []byte) error {
-	return gobtools.CustomGobDecode[providerKeyGob](data, m)
 }
 
 func (p *providerKey) provider() *providerKey { return p }
@@ -103,8 +76,6 @@ var providerRegistry []*providerKey
 // inside GenerateBuildActions for the module, and to get the value from GenerateBuildActions from
 // any module later in the build graph.
 func NewProvider[K any]() ProviderKey[K] {
-	var defaultValue K
-	gob.Register(defaultValue)
 	return NewMutatorProvider[K]("")
 }
 
