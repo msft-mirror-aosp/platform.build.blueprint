@@ -32,8 +32,8 @@ import (
 	"strings"
 )
 
-// This file provides functionality to auto-generate GobEncode, GobDecode,
-// and a custom Decode method for Go structs.
+// This file provides functionality to auto-generate custom Encode and Decode
+// method for Go structs.
 //
 // # Auto-Generation Trigger
 //
@@ -43,17 +43,11 @@ import (
 //
 // # Generated Methods
 //
-// 1. GobEncode() ([]byte, error):
+// 1. Encode(buf *bytes.Buffer) error:
 //    Encodes each field within the struct into a stream of bytes.
 //
-// 2. GobDecode(b []byte) error:
+// 2. Decode(buf *bytes.Reader) error:
 //    Decodes from a stream of byte and populates each field within the struct.
-//
-// 3. Decode(buf *bytes.Reader) error:
-//    This custom Decode method differs from GobDecode. It takes a bytes.Reader
-//    instead of a []byte so this method can be called sequentially on multiple
-//    fields without the needing to move the cursor on the []byte that represents
-//    the whole struct.
 //
 // # Supported Data Types
 //
@@ -62,65 +56,9 @@ import (
 //   - Pointers to supported types
 //   - Maps (keys and values must be supported types)
 //   - Slices of supported types
-//   - Other structs (which should ideally also have generated or standard gob methods)
-//
-// # Handling of Type Aliases and Interfaces
-//
-// For fields that are type aliases or interface types, the generated methods
-// partially rely on the standard `encoding/gob` package's behavior:
-//
-//   - Type Aliases: The `encoding/gob` package handles type aliases
-//     transparently, the actual encoding and decoding work of the underlying type
-//     will be handled by the generated code.
-//
-//   - Interfaces: When a field of an interface type holds a concrete type,
-//     the `encoding/gob` package handles the registration and instantiation
-//     of the concrete type:
-//       - Encoding: Gob stores metadata about both the interface type and the
-//         actual concrete type of the value assigned to the interface field.
-//       - Decoding: Gob uses the stored metadata to instantiate an object of the
-//         correct concrete type and assign it to the interface field.
-//
-//     The generated GobEncode/GobDecode methods for the struct containing such an
-//     interface field will delegate the encoding/decoding of the field to gob.
-//     If that concrete type itself has generated gob methods
-//     (due to its own `@auto-generate: gob` annotation), those generated methods
-//     will be invoked by gob during the process.
-//
-// # Example Workflow
-//
-// Consider a struct `MyData`:
-//
-//   // @auto-generate: gob
-//   type MyData struct {
-//       ID   int
-//       Name string
-//       Extra interface{}
-//   }
-//
-//   // @auto-generate: gob
-//   type ConcreteExtra struct {
-//       Value int64
-//   }
-//
-//   func main() {
-//       data := MyData{ID: 1, Name: "Test", Extra: &ConcreteExtra{Value: 3}}
-//       // ... encoding/decoding using generated methods ...
-//   }
-//
-// During encoding of `data.Extra`:
-//   1. The generated `MyData.GobEncode` method will encounter the `Extra` field.
-//   2. It will delegate to `gob.Encoder.Encode(data.Extra)`.
-//   3. `gob` will record that `Extra` is of type `interface{}` and holds a `*ConcreteExtra`.
-//   4. `gob` will then call the `GobEncode` method of `*ConcreteExtra` (which would
-//      also be auto-generated in this example) to encode its `Value` field.
-//
-// During decoding:
-//   1. The generated `MyData.GobDecode` method will delegate to `gob.Decoder.Decode(&data.Extra)`.
-//   2. `gob` will read the type information, instantiate a new `*ConcreteExtra`,
-//      and call its `GobDecode` method to populate its fields.
-//   3. The newly decoded `*ConcreteExtra` will be assigned to `data.Extra`.
-//
+//   - Type aliases
+//   - Interfaces.
+//   - Other user defined structs (which should have generated Encode and Decode methods)
 
 var verify = flag.Bool("verify", false, "verify existing outputs")
 
@@ -513,12 +451,6 @@ func generateEncode(pkgName string, structDecl *ast.TypeSpec, encodeBody *string
 	structType, isStruct := structDecl.Type.(*ast.StructType)
 	structName := structDecl.Name.Name
 
-	encodeBody.WriteString("func (r " + structName + ") GobEncode() ([]byte, error) {\n")
-	encodeBody.WriteString("\tbuf := new(bytes.Buffer)\n\n")
-	encodeBody.WriteString("\tif err := r.Encode(buf); err != nil { return nil, err }\n")
-	encodeBody.WriteString("\n\treturn buf.Bytes(), nil\n")
-	encodeBody.WriteString("}\n\n")
-
 	encodeBody.WriteString("func (r " + structName + ") Encode(buf *bytes.Buffer) error {\n")
 	encodeBody.WriteString("\tvar err error\n")
 
@@ -544,11 +476,6 @@ func generateEncode(pkgName string, structDecl *ast.TypeSpec, encodeBody *string
 func generateDecode(pkgName string, structDecl *ast.TypeSpec, decodeBody *strings.Builder, imports map[string]bool) {
 	structType, isStruct := structDecl.Type.(*ast.StructType)
 	structName := structDecl.Name.Name
-
-	decodeBody.WriteString("func (r *" + structName + ") GobDecode(b []byte) error {\n")
-	decodeBody.WriteString("\tbuf := bytes.NewReader(b)\n")
-	decodeBody.WriteString("\treturn r.Decode(buf)\n")
-	decodeBody.WriteString("}\n\n")
 
 	decodeBody.WriteString("func (r *" + structName + ") Decode(buf *bytes.Reader) error {\n")
 	decodeBody.WriteString("\tvar err error\n")
