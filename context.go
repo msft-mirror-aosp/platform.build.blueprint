@@ -143,6 +143,7 @@ type Context struct {
 	globLock sync.Mutex
 
 	srcDir         string
+	soongOutDir    string
 	fs             pathtools.FileSystem
 	moduleListFile string
 
@@ -179,11 +180,12 @@ type Context struct {
 	// latter will depend on the flag above.
 	incrementalEnabled bool
 
-	buildActionsCache       BuildActionCache
+	buildActionsCache       *BuildActionCache
 	buildActionsToCacheLock sync.Mutex
 	orderOnlyStringsCache   OrderOnlyStringsCache
 	orderOnlyStrings        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
 	incrementalDebugFile    string
+	CodecContext            gobtools.EncContext
 
 	moduleDebugDataChannel chan []byte
 }
@@ -427,6 +429,7 @@ type globResultCache struct {
 type incrementalInfo struct {
 	incrementalRestored  bool
 	buildActionCacheKey  *BuildActionCacheKey
+	buildActionInputHash uint64
 	orderOnlyStrings     []string
 	incrementalDebugInfo []byte
 	globCache            []globResultCache
@@ -624,7 +627,6 @@ func newContext() *Context {
 		requiredNinjaMajor:    1,
 		requiredNinjaMinor:    7,
 		requiredNinjaMicro:    0,
-		buildActionsCache:     make(BuildActionCache),
 		orderOnlyStringsCache: make(OrderOnlyStringsCache),
 		orderOnlyStrings:      syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]{},
 	}
@@ -771,25 +773,41 @@ func (c *Context) SetIncrementalDebugFile(file string) {
 
 func (c *Context) updateBuildActionsCache(key *BuildActionCacheKey, data *BuildActionCachedData) {
 	if key != nil {
-		c.buildActionsToCacheLock.Lock()
-		defer c.buildActionsToCacheLock.Unlock()
-		c.buildActionsCache[*key] = data
+		err := c.buildActionsCache.write(c.CodecContext, key, data)
+		if err != nil {
+			panic(err)
+		}
 	}
 }
 
 func (c *Context) getBuildActionsFromCache(key *BuildActionCacheKey) *BuildActionCachedData {
 	if c.buildActionsCache != nil && key != nil {
-		return c.buildActionsCache[*key]
+		v, err := c.buildActionsCache.read(c.CodecContext, key)
+		if err != nil {
+			panic(err)
+		}
+		return v
 	}
 	return nil
 }
 
 func (c *Context) CacheAllBuildActions(soongOutDir string) error {
-	return errors.Join(writeToCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsCache),
-		writeToCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache))
+	c.buildActionsCache.db.Close()
+	if err := cacheEncData(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache); err != nil {
+		return err
+	}
+	return c.CodecContext.EncodeReferences()
 }
 
-func writeToCache(ctx *Context, soongOutDir string, fileName string, data gobtools.CustomEnc) error {
+func cacheEncData(ctx *Context, soongOutDir string, fileName string, data gobtools.CustomEnc) error {
+	buf := new(bytes.Buffer)
+	if err := data.Encode(ctx.CodecContext, buf); err != nil {
+		return err
+	}
+	return writeToCache(ctx, soongOutDir, fileName, buf)
+}
+
+func writeToCache(ctx *Context, soongOutDir string, fileName string, buf *bytes.Buffer) error {
 	file, err := ctx.fs.OpenFile(filepath.Join(ctx.SrcDir(), soongOutDir, fileName),
 		os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 	if err != nil {
@@ -797,31 +815,29 @@ func writeToCache(ctx *Context, soongOutDir string, fileName string, data gobtoo
 	}
 	defer file.Close()
 
-	buf := new(bytes.Buffer)
-	if err = data.Encode(buf); err != nil {
-		return err
-	}
 	_, err = file.Write(buf.Bytes())
 	return err
 }
 
 func (c *Context) RestoreAllBuildActions(soongOutDir string) error {
-	return errors.Join(restoreFromCache(c, soongOutDir, BuildActionsCacheFile, &c.buildActionsCache),
-		restoreFromCache(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache))
+	return restoreEncData(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache)
 }
 
-func restoreFromCache(ctx *Context, soongOutDir string, fileName string, data gobtools.CustomDec) error {
+func restoreEncData(ctx *Context, soongOutDir string, fileName string, data gobtools.CustomDec) error {
+	if stream, err := restoreFromCache(ctx, soongOutDir, fileName); err == nil && stream != nil {
+		return data.Decode(ctx.CodecContext, bytes.NewReader(stream))
+	} else {
+		return err
+	}
+}
+
+func restoreFromCache(ctx *Context, soongOutDir string, fileName string) ([]byte, error) {
 	file := filepath.Join(ctx.SrcDir(), soongOutDir, fileName)
 	if _, err := os.Stat(file); os.IsNotExist(err) {
-		return nil
+		return nil, nil
 	}
 
-	if readBytes, err := os.ReadFile(file); err != nil {
-		return err
-	} else {
-		buf := bytes.NewReader(readBytes)
-		return data.Decode(buf)
-	}
+	return os.ReadFile(file)
 }
 
 func (c *Context) SetSrcDir(path string) {
@@ -2905,6 +2921,15 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 		// TODO(b/356414070): Revisit this logic once we have a clearer picture about
 		// how the incremental build pieces fit together.
 		if c.GetIncrementalEnabled() {
+			if c.buildActionsCache == nil {
+				c.buildActionsCache = &BuildActionCache{}
+				err := c.buildActionsCache.open(JoinPath(c.SrcDir(), "incremental.db"))
+				if err != nil {
+					panic(fmt.Errorf("error opening incremental db: %w", err))
+				}
+				c.CodecContext = gobtools.NewCodecContext(c.SrcDir())
+			}
+
 			for _, p := range packageContexts {
 				for _, v := range p.scope.variables {
 					err := c.liveGlobals.addVariable(v)
@@ -4836,7 +4861,6 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 		return err
 	}
 
-	c.buildActionsCache = make(BuildActionCache)
 	for _, module := range modules {
 		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
 		if !module.incrementalRestored {
@@ -5058,6 +5082,7 @@ func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
 	}
 
 	data := BuildActionCachedData{
+		InputHash:        module.buildActionInputHash,
 		Providers:        providers,
 		OrderOnlyStrings: module.orderOnlyStrings,
 		GlobCache:        module.globCache,

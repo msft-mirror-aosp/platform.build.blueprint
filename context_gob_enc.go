@@ -12,7 +12,7 @@ func init() {
 	VariationGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Variation) })
 }
 
-func (r globResultCache) Encode(buf *bytes.Buffer) error {
+func (r globResultCache) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	var err error
 
 	if err = gobtools.EncodeString(buf, r.Pattern); err != nil {
@@ -34,7 +34,7 @@ func (r globResultCache) Encode(buf *bytes.Buffer) error {
 	return err
 }
 
-func (r *globResultCache) Decode(buf *bytes.Reader) error {
+func (r *globResultCache) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
 	err = gobtools.DecodeString(buf, &r.Pattern)
@@ -71,7 +71,7 @@ func (r globResultCache) GetTypeId() int16 {
 	return globResultCacheGobRegId
 }
 
-func (r Variation) Encode(buf *bytes.Buffer) error {
+func (r Variation) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	var err error
 
 	if err = gobtools.EncodeString(buf, r.Mutator); err != nil {
@@ -84,7 +84,7 @@ func (r Variation) Encode(buf *bytes.Buffer) error {
 	return err
 }
 
-func (r *Variation) Decode(buf *bytes.Reader) error {
+func (r *Variation) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
 	err = gobtools.DecodeString(buf, &r.Mutator)

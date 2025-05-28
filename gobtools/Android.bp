@@ -4,8 +4,15 @@ bootstrap_go_package {
     srcs: [
         "gob_tools.go",
     ],
+    testSrcs: [
+        "gob_tools_test.go",
+    ],
     visibility: [
         // used by plugins
         "//visibility:public",
+    ],
+    deps: [
+        "blueprint-proptools",
+        "blueprint-syncmap",
     ],
 }
