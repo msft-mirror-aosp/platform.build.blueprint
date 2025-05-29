@@ -2829,119 +2829,6 @@ func (c *Context) updateDependencies() (errs []error) {
 	return
 }
 
-type jsonVariations []Variation
-
-type jsonModuleName struct {
-	Name    string
-	Variant string
-}
-
-type jsonDep struct {
-	jsonModuleName
-	Tag string
-}
-
-type JsonModule struct {
-	jsonModuleName
-	Deps      []jsonDep
-	Type      string
-	Blueprint string
-	CreatedBy *string
-	Module    map[string]interface{}
-}
-
-func jsonModuleNameFromModuleInfo(m *moduleInfo) *jsonModuleName {
-	return &jsonModuleName{
-		Name:    m.Name(),
-		Variant: m.variant.name,
-	}
-}
-
-type JSONDataSupplier interface {
-	AddJSONData(d *map[string]interface{})
-}
-
-// JSONAction contains the action-related info we expose to json module graph
-type JSONAction struct {
-	Inputs  []string
-	Outputs []string
-	Desc    string
-}
-
-// JSONActionSupplier allows JSON representation of additional actions that are not registered in
-// Ninja
-type JSONActionSupplier interface {
-	JSONActions() []JSONAction
-}
-
-func jsonModuleFromModuleInfo(m *moduleInfo) *JsonModule {
-	result := &JsonModule{
-		jsonModuleName: *jsonModuleNameFromModuleInfo(m),
-		Deps:           make([]jsonDep, 0),
-		Type:           m.typeName,
-		Blueprint:      m.relBlueprintsFile,
-		Module:         make(map[string]interface{}),
-	}
-	if m.createdBy != nil {
-		n := m.createdBy.Name()
-		result.CreatedBy = &n
-	}
-	if j, ok := m.logicModule.(JSONDataSupplier); ok {
-		j.AddJSONData(&result.Module)
-	}
-	for _, p := range m.providers {
-		if j, ok := p.(JSONDataSupplier); ok {
-			j.AddJSONData(&result.Module)
-		}
-	}
-	return result
-}
-
-func jsonModuleWithActionsFromModuleInfo(m *moduleInfo, nameTracker *nameTracker) *JsonModule {
-	result := &JsonModule{
-		jsonModuleName: jsonModuleName{
-			Name:    m.Name(),
-			Variant: m.variant.name,
-		},
-		Deps:      make([]jsonDep, 0),
-		Type:      m.typeName,
-		Blueprint: m.relBlueprintsFile,
-		Module:    make(map[string]interface{}),
-	}
-	var actions []JSONAction
-	for _, bDef := range m.actionDefs.buildDefs {
-		a := JSONAction{
-			Inputs: append(append(append(
-				bDef.InputStrings,
-				bDef.ImplicitStrings...),
-				getNinjaStrings(bDef.Inputs, nameTracker)...),
-				getNinjaStrings(bDef.Implicits, nameTracker)...),
-
-			Outputs: append(append(append(
-				bDef.OutputStrings,
-				bDef.ImplicitOutputStrings...),
-				getNinjaStrings(bDef.Outputs, nameTracker)...),
-				getNinjaStrings(bDef.ImplicitOutputs, nameTracker)...),
-		}
-		if d, ok := bDef.Variables["description"]; ok {
-			a.Desc = d.Value(nameTracker)
-		}
-		actions = append(actions, a)
-	}
-
-	if j, ok := m.logicModule.(JSONActionSupplier); ok {
-		actions = append(actions, j.JSONActions()...)
-	}
-	for _, p := range m.providers {
-		if j, ok := p.(JSONActionSupplier); ok {
-			actions = append(actions, j.JSONActions()...)
-		}
-	}
-
-	result.Module["Actions"] = actions
-	return result
-}
-
 // Gets a list of strings from the given list of ninjaStrings by invoking ninjaString.Value on each.
 func getNinjaStrings(nStrs []*ninjaString, nameTracker *nameTracker) []string {
 	var strs []string
@@ -2951,56 +2838,40 @@ func getNinjaStrings(nStrs []*ninjaString, nameTracker *nameTracker) []string {
 	return strs
 }
 
-func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*JsonModule) (bool, int)) map[string]int {
+type WeightedOutputsModuleInfo struct {
+	Type      string
+	DepsCount int
+	SrcsCount int
+	Outputs   []string
+}
+
+func (c *Context) GetWeightedOutputsFromPredicate(predicate func(*WeightedOutputsModuleInfo) (bool, int)) map[string]int {
 	outputToWeight := make(map[string]int)
 	for m := range c.iterateAllVariants() {
-		jmWithActions := jsonModuleWithActionsFromModuleInfo(m, c.nameTracker)
-		if ok, weight := predicate(jmWithActions); ok {
-			for _, a := range jmWithActions.Module["Actions"].([]JSONAction) {
-				for _, o := range a.Outputs {
-					if val, ok := outputToWeight[o]; ok {
-						if val > weight {
-							continue
-						}
+		info := WeightedOutputsModuleInfo{
+			Type:      m.typeName,
+			DepsCount: len(m.directDeps),
+			SrcsCount: 0,
+		}
+		for _, bDef := range m.actionDefs.buildDefs {
+			info.SrcsCount += len(bDef.InputStrings) + len(bDef.Inputs) + len(bDef.ImplicitStrings) + len(bDef.Implicits)
+			info.Outputs = append(info.Outputs, bDef.OutputStrings...)
+			info.Outputs = append(info.Outputs, bDef.ImplicitOutputStrings...)
+			info.Outputs = append(info.Outputs, getNinjaStrings(bDef.Outputs, c.nameTracker)...)
+			info.Outputs = append(info.Outputs, getNinjaStrings(bDef.ImplicitOutputs, c.nameTracker)...)
+		}
+		if ok, weight := predicate(&info); ok {
+			for _, o := range info.Outputs {
+				if val, ok := outputToWeight[o]; ok {
+					if val > weight {
+						continue
 					}
-					outputToWeight[o] = weight
 				}
+				outputToWeight[o] = weight
 			}
 		}
 	}
 	return outputToWeight
-}
-
-// PrintJSONGraph prints info of modules in a JSON file.
-func (c *Context) PrintJSONGraphAndActions(wGraph io.Writer, wActions io.Writer) {
-	modulesToGraph := make([]*JsonModule, 0)
-	modulesToActions := make([]*JsonModule, 0)
-	for m := range c.iterateAllVariants() {
-		jm := jsonModuleFromModuleInfo(m)
-		jmWithActions := jsonModuleWithActionsFromModuleInfo(m, c.nameTracker)
-		for _, d := range m.directDeps {
-			jm.Deps = append(jm.Deps, jsonDep{
-				jsonModuleName: *jsonModuleNameFromModuleInfo(d.module),
-				Tag:            fmt.Sprintf("%T %+v", d.tag, d.tag),
-			})
-			jmWithActions.Deps = append(jmWithActions.Deps, jsonDep{
-				jsonModuleName: jsonModuleName{
-					Name: d.module.Name(),
-				},
-			})
-
-		}
-		modulesToGraph = append(modulesToGraph, jm)
-		modulesToActions = append(modulesToActions, jmWithActions)
-	}
-	writeJson(wGraph, modulesToGraph)
-	writeJson(wActions, modulesToActions)
-}
-
-func writeJson(w io.Writer, modules []*JsonModule) {
-	e := json.NewEncoder(w)
-	e.SetIndent("", "\t")
-	e.Encode(modules)
 }
 
 // PrepareBuildActions generates an internal representation of all the build
