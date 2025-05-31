@@ -189,6 +189,9 @@ type SingletonContext interface {
 	OtherModuleDependencyTag(module ModuleOrProxy) DependencyTag
 
 	GetIncrementalAnalysis() bool
+
+	// OtherModuleNamespace returns the namespace of the module.
+	OtherModuleNamespace(module ModuleOrProxy) Namespace
 }
 
 var _ SingletonContext = (*singletonContext)(nil)
@@ -494,4 +497,8 @@ func visitProxyAdaptor(visit func(proxy ModuleProxy)) func(module ModuleProxy) {
 
 func (s *singletonContext) GetIncrementalAnalysis() bool {
 	return s.context.GetIncrementalAnalysis()
+}
+
+func (s *singletonContext) OtherModuleNamespace(module ModuleOrProxy) Namespace {
+	return s.context.nameInterface.GetNamespace(newNamespaceContext(module.info()))
 }
