@@ -645,9 +645,13 @@ func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
 		deps = append(deps, embedcfgFile)
 	}
 
-	verifySerializers := archiveFile + ".verify_serializers"
-	buildVerifySerializers(ctx, verifySerializers, srcs)
-	validations := []string{verifySerializers}
+	var validations []string
+
+	if ctx.Config().(BootstrapConfig).IsBootstrap() {
+		verifySerializers := archiveFile + ".verify_serializers"
+		buildVerifySerializers(ctx, verifySerializers, srcs)
+		validations = append(validations, verifySerializers)
+	}
 
 	ctx.Build(pctx, blueprint.BuildParams{
 		Rule:        compile,
