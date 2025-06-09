@@ -11,7 +11,7 @@ func init() {
 	TypeStructGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(TypeStruct) })
 }
 
-func (r TypeStruct) Encode(buf *bytes.Buffer) error {
+func (r TypeStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	var err error
 
 	if err = gobtools.EncodeString(buf, r.Name); err != nil {
@@ -20,7 +20,7 @@ func (r TypeStruct) Encode(buf *bytes.Buffer) error {
 	return err
 }
 
-func (r *TypeStruct) Decode(buf *bytes.Reader) error {
+func (r *TypeStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
 	err = gobtools.DecodeString(buf, &r.Name)

@@ -11,7 +11,7 @@ func init() {
 	providerKeyGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(providerKey) })
 }
 
-func (r providerKey) Encode(buf *bytes.Buffer) error {
+func (r providerKey) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	var err error
 
 	if err = gobtools.EncodeSimple(buf, int64(r.id)); err != nil {
@@ -28,7 +28,7 @@ func (r providerKey) Encode(buf *bytes.Buffer) error {
 	return err
 }
 
-func (r *providerKey) Decode(buf *bytes.Reader) error {
+func (r *providerKey) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
 	var val1 int64

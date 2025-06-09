@@ -93,55 +93,39 @@ func (d DepSet[T]) order() Order {
 	return impl.order
 }
 
-var DepSetMapToGob = make(map[any]int32)
-var DepSetMapFromGob = make(map[int32]any)
-var depsetId int32 = 0
-
-// Since the Gob decoding and encoding logic uses these two global maps to store
-// the depsets that have been processed, each time the whole encoding and decoding process
-// runs, these maps need to be cleared.
-func resetGobMaps() {
-	DepSetMapToGob = make(map[any]int32)
-	DepSetMapFromGob = make(map[int32]any)
-}
-
 // This method is required for DepSet to implement CustomEnc
 func (d DepSet[T]) GetTypeId() int16 {
 	return -1
 }
 
-func (d DepSet[T]) GobEncode() ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	if err := d.Encode(buf); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
-func (d DepSet[T]) Encode(buf *bytes.Buffer) error {
-	return d.encodeInternal(buf, func(buffer *bytes.Buffer, data T) error {
-		return gobtools.EncodeStruct(buf, data)
+func (d DepSet[T]) Encode(c gobtools.EncContext, buf *bytes.Buffer) error {
+	return gobtools.EncodeReference(c, d, buf, func(value DepSet[T], buf *bytes.Buffer) error {
+		return value.encodeInternal(c, buf, func(buffer *bytes.Buffer, data T) error {
+			return gobtools.EncodeStruct(c, buffer, data)
+		})
 	})
 }
 
-func (d DepSet[T]) EncodeInterface(buf *bytes.Buffer) error {
-	return d.encodeInternal(buf, func(buffer *bytes.Buffer, data T) error {
-		return gobtools.EncodeInterface(buf, data)
+func (d DepSet[T]) EncodeInterface(c gobtools.EncContext, buf *bytes.Buffer) error {
+	return gobtools.EncodeReference(c, d, buf, func(value DepSet[T], buf *bytes.Buffer) error {
+		return value.encodeInternal(c, buf, func(buffer *bytes.Buffer, data T) error {
+			return gobtools.EncodeInterface(c, buffer, data)
+		})
 	})
 }
 
-func (d DepSet[T]) EncodeString(buf *bytes.Buffer) error {
-	return d.encodeInternal(buf, func(buffer *bytes.Buffer, data T) error {
-		return gobtools.EncodeString(buf, any(data).(string))
+func (d DepSet[T]) EncodeString(c gobtools.EncContext, buf *bytes.Buffer) error {
+	return gobtools.EncodeReference(c, d, buf, func(value DepSet[T], buf *bytes.Buffer) error {
+		return value.encodeInternal(c, buf, func(buffer *bytes.Buffer, data T) error {
+			return gobtools.EncodeString(buffer, any(data).(string))
+		})
 	})
 }
 
 // The Gob encoding and decoding logic below only works in a single thread environment,
 // which is currently the case. When parallel Gob cache processing is necessary the logic
 // needs to be revisited.
-func (d DepSet[T]) encodeInternal(buf *bytes.Buffer, encode func(buffer *bytes.Buffer, data T) error) error {
+func (d DepSet[T]) encodeInternal(c gobtools.EncContext, buf *bytes.Buffer, encode func(buffer *bytes.Buffer, data T) error) error {
 	var err error
 	var zeroDepSet DepSet[T]
 	if d == zeroDepSet {
@@ -152,148 +136,137 @@ func (d DepSet[T]) encodeInternal(buf *bytes.Buffer, encode func(buffer *bytes.B
 		}
 	}
 	impl := d.impl()
-	// Below we first check if the given depset has been encoded, if no we encode the
-	// actual content of the depset, otherwise we just encode a reference number of it
-	// to avoid duplicating the same depset multiple times.
-	if id, ok := DepSetMapToGob[d]; !ok {
-		depsetId++
-		DepSetMapToGob[d] = depsetId
-		if err = errors.Join(
-			gobtools.EncodeSimple(buf, true),
-			gobtools.EncodeSimple(buf, depsetId),
-			gobtools.EncodeSimple(buf, impl.preorder),
-			gobtools.EncodeSimple(buf, impl.reverse),
-			gobtools.EncodeSimple(buf, int16(impl.order))); err != nil {
-			return err
-		}
+	if err = errors.Join(
+		gobtools.EncodeSimple(buf, impl.preorder),
+		gobtools.EncodeSimple(buf, impl.reverse),
+		gobtools.EncodeSimple(buf, int16(impl.order))); err != nil {
+		return err
+	}
 
-		dlist := impl.direct.ToSlice()
-		if err = gobtools.EncodeSimple(buf, int32(len(dlist))); err != nil {
+	dlist := impl.direct.ToSlice()
+	if err = gobtools.EncodeSimple(buf, int32(len(dlist))); err != nil {
+		return err
+	}
+	for i := 0; i < len(dlist); i++ {
+		if err = encode(buf, dlist[i]); err != nil {
 			return err
 		}
-		for i := 0; i < len(dlist); i++ {
-			if err = encode(buf, dlist[i]); err != nil {
-				return err
-			}
-		}
+	}
 
-		tlist := impl.transitive.ToSlice()
-		if err = gobtools.EncodeSimple(buf, int32(len(tlist))); err != nil {
+	tlist := impl.transitive.ToSlice()
+	if err = gobtools.EncodeSimple(buf, int32(len(tlist))); err != nil {
+		return err
+	}
+	for i := 0; i < len(tlist); i++ {
+		if err = gobtools.EncodeReference(c, tlist[i], buf, func(value DepSet[T], buf *bytes.Buffer) error {
+			return value.encodeInternal(c, buf, encode)
+		}); err != nil {
 			return err
 		}
-		for i := 0; i < len(tlist); i++ {
-			if err = tlist[i].encodeInternal(buf, encode); err != nil {
-				return err
-			}
-		}
-	} else {
-		err = errors.Join(
-			gobtools.EncodeSimple(buf, false),
-			gobtools.EncodeSimple(buf, id))
 	}
 
 	return nil
 }
 
-func (d *DepSet[T]) GobDecode(data []byte) error {
-	buf := bytes.NewReader(data)
-	return d.Decode(buf)
-}
-
-func (d *DepSet[T]) Decode(buf *bytes.Reader) error {
-	return d.decodeInternal(buf, func(reader *bytes.Reader, value *T) error {
-		return gobtools.DecodeStruct(buf, value)
+func (d *DepSet[T]) Decode(c gobtools.EncContext, buf *bytes.Reader) error {
+	tmp, err := gobtools.DecodeReference(c, d, buf, func(value *DepSet[T], buf *bytes.Reader) error {
+		return value.decodeInternal(c, buf, func(reader *bytes.Reader, data *T) error {
+			return gobtools.DecodeStruct(c, reader, data)
+		})
 	})
+	if err == nil {
+		*d = *tmp
+	}
+	return err
 }
 
-func (d *DepSet[T]) DecodeInterface(buf *bytes.Reader) error {
-	return d.decodeInternal(buf, func(reader *bytes.Reader, value *T) error {
-		var err error
-		if tmpVal, err := gobtools.DecodeInterface(buf); err == nil {
-			*value = tmpVal.(T)
-		}
-		return err
-	})
-}
-
-func (d *DepSet[T]) DecodeString(buf *bytes.Reader) error {
-	return d.decodeInternal(buf, func(reader *bytes.Reader, value *T) error {
-		var sValue string
-		if err := gobtools.DecodeString(buf, &sValue); err != nil {
+func (d *DepSet[T]) DecodeInterface(c gobtools.EncContext, buf *bytes.Reader) error {
+	tmp, err := gobtools.DecodeReference(c, d, buf, func(value *DepSet[T], buf *bytes.Reader) error {
+		return value.decodeInternal(c, buf, func(reader *bytes.Reader, data *T) error {
+			var err error
+			if tmpVal, err := gobtools.DecodeInterface(c, reader); err == nil && tmpVal != nil {
+				*data = tmpVal.(T)
+			}
 			return err
-		}
-		*value = any(sValue).(T)
-		return nil
+		})
 	})
+	if err == nil {
+		*d = *tmp
+	}
+	return err
 }
 
-func (d *DepSet[T]) decodeInternal(buf *bytes.Reader, decode func(reader *bytes.Reader, value *T) error) error {
-	var embedded bool
+func (d *DepSet[T]) DecodeString(c gobtools.EncContext, buf *bytes.Reader) error {
+	tmp, err := gobtools.DecodeReference(c, d, buf, func(value *DepSet[T], buf *bytes.Reader) error {
+		return value.decodeInternal(c, buf, func(reader *bytes.Reader, data *T) error {
+			var sValue string
+			if err := gobtools.DecodeString(reader, &sValue); err != nil {
+				return err
+			}
+			*data = any(sValue).(T)
+			return nil
+		})
+	})
+	if err == nil {
+		*d = *tmp
+	}
+	return err
+}
+
+func (d *DepSet[T]) decodeInternal(c gobtools.EncContext, buf *bytes.Reader, decode func(reader *bytes.Reader, value *T) error) error {
 	var err error
-	var id int32
 	var valueSet bool
 	if err = gobtools.DecodeSimple[bool](buf, &valueSet); err != nil || !valueSet {
 		return err
 	}
+
+	var fromGob depSet[T]
+	var order int16
 	if err = errors.Join(
-		gobtools.DecodeSimple[bool](buf, &embedded),
-		gobtools.DecodeSimple[int32](buf, &id)); err != nil {
+		gobtools.DecodeSimple[bool](buf, &fromGob.preorder),
+		gobtools.DecodeSimple[bool](buf, &fromGob.reverse),
+		gobtools.DecodeSimple[int16](buf, &order)); err != nil {
 		return err
 	}
-	if embedded {
-		var fromGob depSet[T]
-		var order int16
-		if err = errors.Join(
-			gobtools.DecodeSimple[bool](buf, &fromGob.preorder),
-			gobtools.DecodeSimple[bool](buf, &fromGob.reverse),
-			gobtools.DecodeSimple[int16](buf, &order)); err != nil {
-			return err
-		}
-		fromGob.order = Order(order)
+	fromGob.order = Order(order)
 
-		var dlist []T
-		var dlen int32
-		err = gobtools.DecodeSimple[int32](buf, &dlen)
-		if err != nil {
-			return err
-		}
-		if dlen > 0 {
-			dlist = make([]T, dlen)
-			for i := 0; i < int(dlen); i++ {
-				if err = decode(buf, &dlist[i]); err != nil {
-					return err
-				}
+	var dlist []T
+	var dlen int32
+	err = gobtools.DecodeSimple[int32](buf, &dlen)
+	if err != nil {
+		return err
+	}
+	if dlen > 0 {
+		dlist = make([]T, dlen)
+		for i := 0; i < int(dlen); i++ {
+			if err = decode(buf, &dlist[i]); err != nil {
+				return err
 			}
-		}
-		fromGob.direct = uniquelist.Make(dlist)
-
-		var tlist []DepSet[T]
-		var tlen int32
-		err = gobtools.DecodeSimple[int32](buf, &tlen)
-		if err != nil {
-			return err
-		}
-		if tlen > 0 {
-			tlist = make([]DepSet[T], tlen)
-			for i := 0; i < int(tlen); i++ {
-				if err = tlist[i].decodeInternal(buf, decode); err != nil {
-					return err
-				}
-			}
-		}
-		fromGob.transitive = uniquelist.Make(tlist)
-
-		d.handle = unique.Make(fromGob)
-		DepSetMapFromGob[id] = d
-	} else {
-		if v, ok := DepSetMapFromGob[id].(*DepSet[T]); ok {
-			d.handle = v.handle
-		} else {
-			// This shouldn't happen in non-parallel processing of the gob cache file.
-			panic("Failed to find the referenced depset during Gob decoding")
 		}
 	}
+	fromGob.direct = uniquelist.Make(dlist)
 
+	var tlist []DepSet[T]
+	var tlen int32
+	err = gobtools.DecodeSimple[int32](buf, &tlen)
+	if err != nil {
+		return err
+	}
+	if tlen > 0 {
+		tlist = make([]DepSet[T], tlen)
+		for i := 0; i < int(tlen); i++ {
+			tmp, err := gobtools.DecodeReference(c, &tlist[i], buf, func(value *DepSet[T], buf *bytes.Reader) error {
+				return value.decodeInternal(c, buf, decode)
+			})
+			if err == nil {
+				tlist[i] = *tmp
+			} else {
+				return err
+			}
+		}
+	}
+	fromGob.transitive = uniquelist.Make(tlist)
+	d.handle = unique.Make(fromGob)
 	return err
 }
 
