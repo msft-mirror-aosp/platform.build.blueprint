@@ -94,6 +94,10 @@ type BootstrapConfig interface {
 
 	Subninjas() []string
 	PrimaryBuilderInvocations() []PrimaryBuilderInvocation
+
+	// IsBootstrap returns true if this is a bootstrap invocation, false if
+	// it is the primary builder.
+	IsBootstrap() bool
 }
 
 type StopBefore int
