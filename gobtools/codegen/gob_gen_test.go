@@ -25,7 +25,7 @@ import (
 	"github.com/google/blueprint/uniquelist"
 )
 
-func TestPathGobEncDec(t *testing.T) {
+func TestEncDec(t *testing.T) {
 	strValue := "string value for test"
 	defaultEcho := TestEcho{"111111111"}
 	transString := depset.New(depset.PREORDER, []string{"111111111"}, nil)
@@ -137,10 +137,14 @@ func TestPathGobEncDec(t *testing.T) {
 
 	for _, tc := range testCases {
 		buf := new(bytes.Buffer)
-		if err := tc.origin.Encode(buf); err != nil {
+		ctx := gobtools.NewReferencesEncoderForTest()
+		if err := tc.origin.Encode(ctx, buf); err != nil {
 			t.Errorf("failed to encode %s: %v", tc.name, err)
 		}
-		if err := tc.decoded.Decode(bytes.NewReader(buf.Bytes())); err != nil {
+		if err := ctx.EncodeReferences(); err != nil {
+			t.Errorf("failed to encode references: %v", err)
+		}
+		if err := tc.decoded.Decode(ctx, bytes.NewReader(buf.Bytes())); err != nil {
 			t.Errorf("failed to decode %s: %v", tc.name, err)
 		}
 		if !reflect.DeepEqual(tc.origin, tc.decoded) {

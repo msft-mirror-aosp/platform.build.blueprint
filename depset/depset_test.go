@@ -21,6 +21,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/google/blueprint/gobtools"
 )
 
 func ExampleDepSet_ToList_postordered() {
@@ -271,8 +273,6 @@ func TestDepSet(t *testing.T) {
 	}
 }
 
-// The following test cases are modifying a global variable, so the test cases can't be run in parallel
-// and the test itself can't be run in parallel with any other tests.
 func TestDepSetGob(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -354,16 +354,19 @@ func TestDepSetGob(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		resetGobMaps()
 		t.Run(tt.name, func(t *testing.T) {
 			toGob := tt.depSet(t, POSTORDER)
 			buf := new(bytes.Buffer)
-			err := toGob.EncodeString(buf)
+			ctx := gobtools.NewReferencesEncoderForTest()
+			err := toGob.EncodeString(ctx, buf)
 			if err != nil {
 				t.Errorf("failed to serialize depset: %s", err)
 			}
+			if err = ctx.EncodeReferences(); err != nil {
+				t.Errorf("failed to encode references: %v", err)
+			}
 			var fromGob DepSet[string]
-			err = fromGob.DecodeString(bytes.NewReader(buf.Bytes()))
+			err = fromGob.DecodeString(ctx, bytes.NewReader(buf.Bytes()))
 
 			if err != nil {
 				t.Errorf("failed to deserialize depset: %s", err)
@@ -372,6 +375,198 @@ func TestDepSetGob(t *testing.T) {
 				t.Errorf("depsets are different: %v %v", toGob.ToList(), fromGob.ToList())
 			}
 		})
+	}
+}
+
+type testInterface interface {
+	getName() string
+}
+
+func init() {
+	testStructGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(testStruct) })
+}
+
+var testStructGobRegId int16
+
+func (r testStruct) GetTypeId() int16 {
+	return testStructGobRegId
+}
+
+type testStruct struct {
+	name string
+}
+
+func (r testStruct) getName() string {
+	return r.name
+}
+
+func (r testStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.name); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r *testStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.name)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+func TestEncDecReferencesDepsetStruct(t *testing.T) {
+	defTestStruct := testStruct{name: "string value for test"}
+	transTestStruct := New(PREORDER, []testStruct{defTestStruct}, nil)
+	depsetTesStruct := New(PREORDER, []testStruct{defTestStruct}, []DepSet[testStruct]{transTestStruct})
+	testCases := []struct {
+		name     string
+		encoded  DepSet[testStruct]
+		decoded1 DepSet[testStruct]
+		decoded2 DepSet[testStruct]
+	}{
+		{
+			name:     "depset reference",
+			encoded:  depsetTesStruct,
+			decoded1: DepSet[testStruct]{},
+			decoded2: DepSet[testStruct]{},
+		},
+	}
+
+	for _, tc := range testCases {
+		var err error
+		buf := new(bytes.Buffer)
+		ctx := gobtools.NewReferencesEncoderForTest()
+		if err = tc.encoded.Encode(ctx, buf); err != nil {
+			t.Errorf("failed to encode reference: %v", err)
+		}
+		if err = tc.encoded.Encode(ctx, buf); err != nil {
+			t.Errorf("failed to encode reference: %v", err)
+		}
+		if err = ctx.EncodeReferences(); err != nil {
+			t.Errorf("failed to encode references: %v", err)
+		}
+		reader := bytes.NewReader(buf.Bytes())
+		if tc.decoded1.Decode(ctx, reader); err != nil {
+			t.Errorf("failed to decode references: %v", err)
+		}
+		if tc.decoded2.Decode(ctx, reader); err != nil {
+			t.Errorf("failed to decode references: %v", err)
+		}
+		if !reflect.DeepEqual(tc.encoded, tc.decoded1) {
+			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.encoded, tc.decoded1)
+		}
+		if !reflect.DeepEqual(tc.encoded, tc.decoded2) {
+			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.encoded, tc.decoded2)
+		}
+		if tc.decoded1 != tc.decoded2 {
+			t.Errorf("should decode to the same reference: \n  %#v\n %#v", tc.decoded1, tc.decoded2)
+		}
+	}
+}
+
+func TestEncDecReferencesDepsetString(t *testing.T) {
+	defTestString := "string value for test"
+	transTestString := New(PREORDER, []string{defTestString}, nil)
+	depsetTesString := New(PREORDER, []string{defTestString}, []DepSet[string]{transTestString})
+	testCases := []struct {
+		name     string
+		encoded  DepSet[string]
+		decoded1 DepSet[string]
+		decoded2 DepSet[string]
+	}{
+		{
+			name:     "depset reference",
+			encoded:  depsetTesString,
+			decoded1: DepSet[string]{},
+			decoded2: DepSet[string]{},
+		},
+	}
+
+	for _, tc := range testCases {
+		var err error
+		buf := new(bytes.Buffer)
+		ctx := gobtools.NewReferencesEncoderForTest()
+		if err = tc.encoded.EncodeString(ctx, buf); err != nil {
+			t.Errorf("failed to encode reference: %v", err)
+		}
+		if err = tc.encoded.EncodeString(ctx, buf); err != nil {
+			t.Errorf("failed to encode reference: %v", err)
+		}
+		if err = ctx.EncodeReferences(); err != nil {
+			t.Errorf("failed to encode references: %v", err)
+		}
+		reader := bytes.NewReader(buf.Bytes())
+		if tc.decoded1.DecodeString(ctx, reader); err != nil {
+			t.Errorf("failed to decode references: %v", err)
+		}
+		if tc.decoded2.DecodeString(ctx, reader); err != nil {
+			t.Errorf("failed to decode references: %v", err)
+		}
+		if !reflect.DeepEqual(tc.encoded, tc.decoded1) {
+			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.encoded, tc.decoded1)
+		}
+		if !reflect.DeepEqual(tc.encoded, tc.decoded2) {
+			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.encoded, tc.decoded2)
+		}
+		if tc.decoded1 != tc.decoded2 {
+			t.Errorf("should decode to the same reference: \n  %#v\n %#v", tc.decoded1, tc.decoded2)
+		}
+	}
+}
+
+func TestEncDecReferencesDepsetInterface(t *testing.T) {
+	defTestStruct := testStruct{name: "string value for test"}
+	transTestStructInterface := New(POSTORDER, []testInterface{defTestStruct}, nil)
+	depsetTesStructInterface := New(POSTORDER, []testInterface{defTestStruct}, []DepSet[testInterface]{transTestStructInterface})
+	testCases := []struct {
+		name     string
+		encoded  DepSet[testInterface]
+		decoded1 DepSet[testInterface]
+		decoded2 DepSet[testInterface]
+	}{
+		{
+			name:     "depset reference",
+			encoded:  depsetTesStructInterface,
+			decoded1: DepSet[testInterface]{},
+			decoded2: DepSet[testInterface]{},
+		},
+	}
+
+	for _, tc := range testCases {
+		var err error
+		buf := new(bytes.Buffer)
+		ctx := gobtools.NewReferencesEncoderForTest()
+		if err = tc.encoded.EncodeInterface(ctx, buf); err != nil {
+			t.Errorf("failed to encode reference: %v", err)
+		}
+		if err = tc.encoded.EncodeInterface(ctx, buf); err != nil {
+			t.Errorf("failed to encode reference: %v", err)
+		}
+		if err = ctx.EncodeReferences(); err != nil {
+			t.Errorf("failed to encode references: %v", err)
+		}
+		reader := bytes.NewReader(buf.Bytes())
+		if tc.decoded1.DecodeInterface(ctx, reader); err != nil {
+			t.Errorf("failed to decode references: %v", err)
+		}
+		if tc.decoded2.DecodeInterface(ctx, reader); err != nil {
+			t.Errorf("failed to decode references: %v", err)
+		}
+		if !reflect.DeepEqual(tc.encoded, tc.decoded1) {
+			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.encoded, tc.decoded1)
+		}
+		if !reflect.DeepEqual(tc.encoded, tc.decoded2) {
+			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.encoded, tc.decoded2)
+		}
+		if tc.decoded1 != tc.decoded2 {
+			t.Errorf("should decode to the same reference: \n  %#v\n %#v", tc.decoded1, tc.decoded2)
+		}
 	}
 }
 

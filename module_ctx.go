@@ -797,10 +797,10 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
 		}
 		cacheKey = &BuildActionCacheKey{
-			Id:        m.ModuleCacheKey(),
-			InputHash: hash,
+			Id: m.ModuleCacheKey(),
 		}
 		m.module.buildActionCacheKey = cacheKey
+		m.module.buildActionInputHash = hash
 		if m.context.incrementalDebugFile != "" {
 			m.module.incrementalDebugInfo = incrementalDebugData(m, deps, cacheInput)
 		}
@@ -810,7 +810,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 	if incrementalAnalysis && cacheKey != nil {
 		// Try to restore from cache if there is a cache hit
 		data := m.context.getBuildActionsFromCache(cacheKey)
-		if data == nil {
+		if data == nil || m.module.buildActionInputHash != data.InputHash {
 			return false
 		}
 		for _, glob := range data.GlobCache {
