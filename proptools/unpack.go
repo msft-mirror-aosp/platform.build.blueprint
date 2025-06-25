@@ -307,7 +307,11 @@ func (ctx *unpackContext) unpackToStruct(namePrefix string, structValue reflect.
 			configurableType := fieldValue.Type()
 			configuredType := fieldValue.Interface().(configurableReflection).configuredType()
 			if unpackedValue, ok := ctx.unpackToConfigurable(propertyName, property, configurableType, configuredType); ok {
-				ExtendBasicType(fieldValue, unpackedValue.Elem(), Append)
+				if HasTag(field, "android", "replace_instead_of_append") {
+					ExtendBasicType(fieldValue, unpackedValue.Elem(), Replace)
+				} else {
+					ExtendBasicType(fieldValue, unpackedValue.Elem(), Append)
+				}
 			}
 			if len(ctx.errs) >= maxUnpackErrors {
 				return
