@@ -43,6 +43,7 @@ bootstrap_go_package {
         "blueprint-proptools",
         "blueprint-syncmap",
         "blueprint-uniquelist",
+        "pogreb",
     ],
     pkgPath: "github.com/google/blueprint",
     srcs: [

@@ -19,8 +19,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"path/filepath"
 	"reflect"
 
+	"github.com/akrylysov/pogreb"
 	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/syncmap"
 )
@@ -104,19 +106,15 @@ func (b *ReferencesEncoder) openForTests() error {
 }
 
 func (b *ReferencesEncoder) open(dbPath string) error {
-	// Uncomment the code below once we support pogreb.
-	/*
-		if b.db != nil {
-			panic(fmt.Errorf("db is already open"))
-		}
-		db, err := pogreb.Open(filepath.Join(dbPath, dbName), nil)
-		if err != nil {
-			return err
-		}
-		b.db = db
-		return nil
-	*/
-	panic(fmt.Errorf("db support is not ready yet"))
+	if b.db != nil {
+		panic(fmt.Errorf("db is already open"))
+	}
+	db, err := pogreb.Open(filepath.Join(dbPath, dbName), nil)
+	if err != nil {
+		return err
+	}
+	b.db = db
+	return nil
 }
 
 func (b *ReferencesEncoder) Close() {

@@ -311,6 +311,9 @@ func (p *GoPackage) findDeps(config *Config, path string, allPackages *linkedDep
 
 	for filename, astFile := range foundPkg.Files {
 		ignore := false
+		if ignoreFileByName(filename) {
+			continue
+		}
 		for _, commentGroup := range astFile.Comments {
 			for _, comment := range commentGroup.List {
 				if matches, ok := parseBuildComment(comment.Text); ok && !matches {
@@ -377,6 +380,76 @@ func (p *GoPackage) findDeps(config *Config, path string, allPackages *linkedDep
 	}
 
 	return nil
+}
+
+func ignoreFileByName(filename string) bool {
+	goOses := []string{
+		"aix",
+		"android",
+		"darwin",
+		"dragonfly",
+		"freebsd",
+		"hurd",
+		"illumos",
+		"ios",
+		"js",
+		"linux",
+		"nacl",
+		"netbsd",
+		"openbsd",
+		"plan9",
+		"solaris",
+		"wasip1",
+		"windows",
+		"zos",
+	}
+	goArches := []string{
+		"386",
+		"amd64",
+		"amd64p32",
+		"arm",
+		"armbe",
+		"arm64",
+		"arm64be",
+		"loong64",
+		"mips",
+		"mipsle",
+		"mips64",
+		"mips64le",
+		"mips64p32",
+		"mips64p32le",
+		"ppc",
+		"ppc64",
+		"ppc64le",
+		"riscv",
+		"riscv64",
+		"s390",
+		"s390x",
+		"sparc",
+		"sparc64",
+		"wasm",
+	}
+
+	for _, goArch := range goArches {
+		if goArch == runtime.GOARCH {
+			continue
+		}
+		if strings.HasSuffix(filename, "_"+goArch+".go") {
+			return true
+		}
+		for _, goOs := range goOses {
+			if goOs == runtime.GOOS {
+				continue
+			}
+			if strings.HasSuffix(filename, "_"+goOs+".go") {
+				return true
+			}
+			if strings.HasSuffix(filename, "_"+goOs+"_"+goArch+".go") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *GoPackage) Compile(config *Config, outDir string) error {
