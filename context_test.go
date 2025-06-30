@@ -1600,7 +1600,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 	}
 	cacheKey, hash := calculateHashKey(incInfo, [][]uint64{providerHashes})
 	var providerValue any = IncrementalTestProvider{Value: "MyIncrementalModule"}
-	ctx.buildActionsCache.write(ctx.CodecContext, &cacheKey, &BuildActionCachedData{
+	ctx.buildActionsCache.write(ctx.EncContext, &cacheKey, &BuildActionCachedData{
 		InputHash: hash,
 		Providers: []CachedProvider{{
 			Id:    &IncrementalTestProviderKey.providerKey,
@@ -1673,7 +1673,7 @@ func TestCacheBuildActions(t *testing.T) {
 	//	t.Errorf("build actions are not cached for the incremental module")
 	//}
 	cacheKey, hash := calculateHashKey(incInfo, [][]uint64{barInfo.providerInitialValueHashes})
-	cache, err := ctx.buildActionsCache.read(ctx.CodecContext, &cacheKey)
+	cache, err := ctx.buildActionsCache.read(ctx.EncContext, &cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}
@@ -2053,7 +2053,7 @@ func verifyOrderOnlyStringsCache(t *testing.T, ctx *Context, incInfo, barInfo *m
 	// Verify that the dedup-* order only strings used by MyIncrementalModule is
 	// cached along with its other cached values
 	cacheKey, _ := calculateHashKey(incInfo, [][]uint64{barInfo.providerInitialValueHashes})
-	cache, err := ctx.buildActionsCache.read(ctx.CodecContext, &cacheKey)
+	cache, err := ctx.buildActionsCache.read(ctx.EncContext, &cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}

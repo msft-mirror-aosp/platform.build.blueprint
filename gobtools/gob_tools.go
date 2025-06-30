@@ -60,11 +60,12 @@ type EncContext interface {
 
 type ReferenceEnc interface {
 	EncodeReferences() error
+	Close()
 	EncodeReference(value any, buf *bytes.Buffer, typ string, encode func(value any, buf *bytes.Buffer) error) error
 	DecodeReference(buf *bytes.Reader, decode func(buf *bytes.Reader) (any, error)) (any, error)
 }
 
-func NewCodecContext(dbPath string) EncContext {
+func NewEncContext(dbPath string) EncContext {
 	return NewReferencesEncoder(dbPath)
 }
 
@@ -116,6 +117,10 @@ func (b *ReferencesEncoder) open(dbPath string) error {
 		return nil
 	*/
 	panic(fmt.Errorf("db support is not ready yet"))
+}
+
+func (b *ReferencesEncoder) Close() {
+	b.db.Close()
 }
 
 func (c *ReferencesEncoder) EncodeReferences() error {

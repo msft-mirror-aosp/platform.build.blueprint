@@ -142,10 +142,10 @@ type Context struct {
 	globs    map[globKey]pathtools.GlobResult
 	globLock sync.Mutex
 
-	srcDir         string
-	soongOutDir    string
-	fs             pathtools.FileSystem
-	moduleListFile string
+	srcDir           string
+	incrementalDBDir string
+	fs               pathtools.FileSystem
+	moduleListFile   string
 
 	// Mutators indexed by the ID of the provider associated with them.  Not all mutators will
 	// have providers, and not all providers will have a mutator, or if they do the mutator may
@@ -185,7 +185,7 @@ type Context struct {
 	orderOnlyStringsCache   OrderOnlyStringsCache
 	orderOnlyStrings        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
 	incrementalDebugFile    string
-	CodecContext            gobtools.EncContext
+	EncContext              gobtools.EncContext
 
 	moduleDebugDataChannel chan []byte
 }
@@ -773,7 +773,7 @@ func (c *Context) SetIncrementalDebugFile(file string) {
 
 func (c *Context) updateBuildActionsCache(key *BuildActionCacheKey, data *BuildActionCachedData) {
 	if key != nil {
-		err := c.buildActionsCache.write(c.CodecContext, key, data)
+		err := c.buildActionsCache.write(c.EncContext, key, data)
 		if err != nil {
 			panic(err)
 		}
@@ -782,7 +782,7 @@ func (c *Context) updateBuildActionsCache(key *BuildActionCacheKey, data *BuildA
 
 func (c *Context) getBuildActionsFromCache(key *BuildActionCacheKey) *BuildActionCachedData {
 	if c.buildActionsCache != nil && key != nil {
-		v, err := c.buildActionsCache.read(c.CodecContext, key)
+		v, err := c.buildActionsCache.read(c.EncContext, key)
 		if err != nil {
 			panic(err)
 		}
@@ -796,12 +796,13 @@ func (c *Context) CacheAllBuildActions(soongOutDir string) error {
 	if err := cacheEncData(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache); err != nil {
 		return err
 	}
-	return c.CodecContext.EncodeReferences()
+	defer c.EncContext.Close()
+	return c.EncContext.EncodeReferences()
 }
 
 func cacheEncData(ctx *Context, soongOutDir string, fileName string, data gobtools.CustomEnc) error {
 	buf := new(bytes.Buffer)
-	if err := data.Encode(ctx.CodecContext, buf); err != nil {
+	if err := data.Encode(ctx.EncContext, buf); err != nil {
 		return err
 	}
 	return writeToCache(ctx, soongOutDir, fileName, buf)
@@ -825,7 +826,7 @@ func (c *Context) RestoreAllBuildActions(soongOutDir string) error {
 
 func restoreEncData(ctx *Context, soongOutDir string, fileName string, data gobtools.CustomDec) error {
 	if stream, err := restoreFromCache(ctx, soongOutDir, fileName); err == nil && stream != nil {
-		return data.Decode(ctx.CodecContext, bytes.NewReader(stream))
+		return data.Decode(ctx.EncContext, bytes.NewReader(stream))
 	} else {
 		return err
 	}
@@ -847,6 +848,14 @@ func (c *Context) SetSrcDir(path string) {
 
 func (c *Context) SrcDir() string {
 	return c.srcDir
+}
+
+func (c *Context) SetIncrementalDBDir(path string) {
+	c.incrementalDBDir = path
+}
+
+func (c *Context) IncrementalDBDir() string {
+	return c.incrementalDBDir
 }
 
 func singletonPkgPath(singleton Singleton) string {
@@ -2923,11 +2932,11 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 		if c.GetIncrementalEnabled() {
 			if c.buildActionsCache == nil {
 				c.buildActionsCache = &BuildActionCache{}
-				err := c.buildActionsCache.open(JoinPath(c.SrcDir(), "incremental.db"))
+				err := c.buildActionsCache.open(filepath.Join(c.SrcDir(), c.IncrementalDBDir()))
 				if err != nil {
 					panic(fmt.Errorf("error opening incremental db: %w", err))
 				}
-				c.CodecContext = gobtools.NewCodecContext(c.SrcDir())
+				c.EncContext = gobtools.NewEncContext(filepath.Join(c.SrcDir(), c.IncrementalDBDir()))
 			}
 
 			for _, p := range packageContexts {
@@ -4847,6 +4856,8 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 }
 
 func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
+	c.BeginEvent("write_incremental_modules")
+	defer c.EndEvent("write_incremental_modules")
 	bf, err := c.fs.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
 	if err != nil {
 		return err
@@ -4878,10 +4889,11 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 			if err != nil {
 				return err
 			}
+			if module.buildActionCacheKey != nil {
+				c.cacheModuleBuildActions(module)
+			}
 		}
-		if module.buildActionCacheKey != nil {
-			c.cacheModuleBuildActions(module)
-		}
+
 		bWriter.Subninja(moduleFile)
 	}
 	return nil

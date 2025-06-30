@@ -23,6 +23,8 @@ import (
 
 //go:generate go run gobtools/codegen/gob_gen.go
 
+const dbName = "incremental.db"
+
 // @auto-generate: gob
 type BuildActionCacheKey struct {
 	Id string
@@ -69,7 +71,7 @@ func (b *BuildActionCache) open(dbPath string) error {
 		if b.db != nil {
 			panic(fmt.Errorf("db is already open"))
 		}
-		db, err := pogreb.Open(dbPath, nil)
+		db, err := pogreb.Open(filepath.Join(dbPath, dbName), nil)
 		if err != nil {
 			return err
 		}
