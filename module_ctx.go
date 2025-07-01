@@ -809,7 +809,10 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 	restored := false
 	if incrementalAnalysis && cacheKey != nil {
 		// Try to restore from cache if there is a cache hit
-		data := m.context.getBuildActionsFromCache(cacheKey)
+		data, err := m.context.buildActionsCache.readBuildAction(m.context.EncContext, cacheKey)
+		if err != nil {
+			panic(err)
+		}
 		if data == nil || m.module.buildActionInputHash != data.InputHash {
 			return false
 		}
@@ -827,9 +830,14 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 			}
 		}
 
-		for _, provider := range data.Providers {
-			m.context.setProvider(m.module, provider.Id, *provider.Value)
+		if m.module.providerInitialValueHashes == nil {
+			m.module.providerInitialValueHashes = make([]uint64, len(providerRegistry))
 		}
+
+		for _, provider := range data.ProviderHashes {
+			m.module.providerInitialValueHashes[provider.Id.id] = provider.Hash
+		}
+
 		m.module.incrementalRestored = true
 		m.module.orderOnlyStrings = data.OrderOnlyStrings
 		m.module.globCache = data.GlobCache
