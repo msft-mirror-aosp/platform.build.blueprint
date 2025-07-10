@@ -1,0 +1,10 @@
+go 1.23
+
+use (
+	.
+	../../external/pogreb
+)
+
+replace (
+	github.com/akrylysov/pogreb v0.10.0 => ../../external/pogreb
+)

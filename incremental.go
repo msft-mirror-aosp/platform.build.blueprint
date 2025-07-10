@@ -17,11 +17,15 @@ package blueprint
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 
+	"github.com/akrylysov/pogreb"
 	"github.com/google/blueprint/gobtools"
 )
 
 //go:generate go run gobtools/codegen/gob_gen.go
+
+const dbName = "incremental.db"
 
 // @auto-generate: gob
 type BuildActionCacheKey struct {
@@ -64,19 +68,15 @@ func (b *BuildActionCache) openForTests() error {
 }
 
 func (b *BuildActionCache) open(dbPath string) error {
-	// Uncomment the code below once we support pogreb.
-	/*
-		if b.db != nil {
-			panic(fmt.Errorf("db is already open"))
-		}
-		db, err := pogreb.Open(dbPath, nil)
-		if err != nil {
-			return err
-		}
-		b.db = db
-		return nil
-	*/
-	panic(fmt.Errorf("db support is not ready yet"))
+	if b.db != nil {
+		panic(fmt.Errorf("db is already open"))
+	}
+	db, err := pogreb.Open(filepath.Join(dbPath, dbName), nil)
+	if err != nil {
+		return err
+	}
+	b.db = db
+	return nil
 }
 
 func (b *BuildActionCache) read(ctx gobtools.EncContext, key *BuildActionCacheKey) (*BuildActionCachedData, error) {

@@ -19,8 +19,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"path/filepath"
 	"reflect"
 
+	"github.com/akrylysov/pogreb"
 	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/syncmap"
 )
@@ -60,11 +62,12 @@ type EncContext interface {
 
 type ReferenceEnc interface {
 	EncodeReferences() error
+	Close()
 	EncodeReference(value any, buf *bytes.Buffer, typ string, encode func(value any, buf *bytes.Buffer) error) error
 	DecodeReference(buf *bytes.Reader, decode func(buf *bytes.Reader) (any, error)) (any, error)
 }
 
-func NewCodecContext(dbPath string) EncContext {
+func NewEncContext(dbPath string) EncContext {
 	return NewReferencesEncoder(dbPath)
 }
 
@@ -103,19 +106,19 @@ func (b *ReferencesEncoder) openForTests() error {
 }
 
 func (b *ReferencesEncoder) open(dbPath string) error {
-	// Uncomment the code below once we support pogreb.
-	/*
-		if b.db != nil {
-			panic(fmt.Errorf("db is already open"))
-		}
-		db, err := pogreb.Open(filepath.Join(dbPath, dbName), nil)
-		if err != nil {
-			return err
-		}
-		b.db = db
-		return nil
-	*/
-	panic(fmt.Errorf("db support is not ready yet"))
+	if b.db != nil {
+		panic(fmt.Errorf("db is already open"))
+	}
+	db, err := pogreb.Open(filepath.Join(dbPath, dbName), nil)
+	if err != nil {
+		return err
+	}
+	b.db = db
+	return nil
+}
+
+func (b *ReferencesEncoder) Close() {
+	b.db.Close()
 }
 
 func (c *ReferencesEncoder) EncodeReferences() error {
