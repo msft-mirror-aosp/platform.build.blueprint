@@ -149,6 +149,9 @@ func (b *baseTestModule) GenerateBuildActions(ctx ModuleContext) {
 	for _, src := range b.properties.Srcs {
 		ctx.GlobWithDeps(src, b.properties.Exclude_srcs)
 	}
+	ctx.VisitDirectDeps(func(module Module) {
+		OtherModuleProvider(ctx, module, IncrementalTestProviderKey)
+	})
 	SetProvider(ctx, IncrementalTestProviderKey, IncrementalTestProvider{
 		Value: ctx.ModuleName(),
 	})
@@ -1565,6 +1568,7 @@ func incrementalSetup(t *testing.T) *Context {
 					name: "MyFooModule",
 					outputs: ["MyFooModule_phony_output"],
 					order_only: ["test.lib"],
+					deps: ["MyIncrementalModule"],
 			}
 		`
 
@@ -1600,14 +1604,21 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 	}
 	cacheKey, hash := calculateHashKey(incInfo, [][]uint64{providerHashes})
 	var providerValue any = IncrementalTestProvider{Value: "MyIncrementalModule"}
-	ctx.buildActionsCache.write(ctx.EncContext, &cacheKey, &BuildActionCachedData{
+	providerHash, _ := proptools.CalculateHash(providerValue)
+	ctx.buildActionsCache.writeBuildAction(ctx.EncContext, &cacheKey, &BuildActionCachedData{
 		InputHash: hash,
+		ProviderHashes: []ProviderHash{{
+			Id:   &IncrementalTestProviderKey.providerKey,
+			Hash: providerHash,
+		}},
+		OrderOnlyStrings: orderOnlyStrings,
+		GlobCache:        calculateGlobCache(),
+	})
+	ctx.buildActionsCache.writeProviders(ctx.EncContext, &cacheKey, &ProviderCachedData{
 		Providers: []CachedProvider{{
 			Id:    &IncrementalTestProviderKey.providerKey,
 			Value: &providerValue,
 		}},
-		OrderOnlyStrings: orderOnlyStrings,
-		GlobCache:        calculateGlobCache(),
 	})
 	ctx.SetIncrementalEnabled(true)
 	ctx.SetIncrementalAnalysis(true)
@@ -1673,7 +1684,7 @@ func TestCacheBuildActions(t *testing.T) {
 	//	t.Errorf("build actions are not cached for the incremental module")
 	//}
 	cacheKey, hash := calculateHashKey(incInfo, [][]uint64{barInfo.providerInitialValueHashes})
-	cache, err := ctx.buildActionsCache.read(ctx.EncContext, &cacheKey)
+	cache, err := ctx.buildActionsCache.readBuildAction(ctx.EncContext, &cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}
@@ -1681,17 +1692,35 @@ func TestCacheBuildActions(t *testing.T) {
 		t.Errorf("failed to find cached build actions for the incremental module")
 	}
 	var providerValue any = IncrementalTestProvider{Value: "MyIncrementalModule"}
+	providerHash, _ := proptools.CalculateHash(providerValue)
 	expectedCache := BuildActionCachedData{
 		InputHash: hash,
-		Providers: []CachedProvider{{
-			Id:    &IncrementalTestProviderKey.providerKey,
-			Value: &providerValue,
+		ProviderHashes: []ProviderHash{{
+			Id:   &IncrementalTestProviderKey.providerKey,
+			Hash: providerHash,
 		}},
 		OrderOnlyStrings: []string{"dedup-d479e9a8133ff998"},
 		GlobCache:        calculateGlobCache(),
 	}
 	if !reflect.DeepEqual(expectedCache, *cache) {
 		t.Errorf("expected: %v actual %v", expectedCache, *cache)
+	}
+
+	providers, err := ctx.buildActionsCache.readProviders(ctx.EncContext, &cacheKey)
+	if err != nil {
+		t.Fatalf("read failed with an error: %s", err)
+	}
+	if providers == nil {
+		t.Errorf("failed to find cached build actions for the incremental module")
+	}
+	expectedProviders := ProviderCachedData{
+		Providers: []CachedProvider{{
+			Id:    &IncrementalTestProviderKey.providerKey,
+			Value: &providerValue,
+		}},
+	}
+	if !reflect.DeepEqual(expectedProviders, *providers) {
+		t.Errorf("expected: %v actual %v", expectedProviders, *providers)
 	}
 }
 
@@ -2053,7 +2082,7 @@ func verifyOrderOnlyStringsCache(t *testing.T, ctx *Context, incInfo, barInfo *m
 	// Verify that the dedup-* order only strings used by MyIncrementalModule is
 	// cached along with its other cached values
 	cacheKey, _ := calculateHashKey(incInfo, [][]uint64{barInfo.providerInitialValueHashes})
-	cache, err := ctx.buildActionsCache.read(ctx.EncContext, &cacheKey)
+	cache, err := ctx.buildActionsCache.readBuildAction(ctx.EncContext, &cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}

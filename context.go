@@ -428,6 +428,8 @@ type globResultCache struct {
 
 type incrementalInfo struct {
 	incrementalRestored  bool
+	providersRestored    bool
+	providerRestoreLock  sync.Mutex
 	buildActionCacheKey  *BuildActionCacheKey
 	buildActionInputHash uint64
 	orderOnlyStrings     []string
@@ -771,28 +773,8 @@ func (c *Context) SetIncrementalDebugFile(file string) {
 	c.incrementalDebugFile = file
 }
 
-func (c *Context) updateBuildActionsCache(key *BuildActionCacheKey, data *BuildActionCachedData) {
-	if key != nil {
-		err := c.buildActionsCache.write(c.EncContext, key, data)
-		if err != nil {
-			panic(err)
-		}
-	}
-}
-
-func (c *Context) getBuildActionsFromCache(key *BuildActionCacheKey) *BuildActionCachedData {
-	if c.buildActionsCache != nil && key != nil {
-		v, err := c.buildActionsCache.read(c.EncContext, key)
-		if err != nil {
-			panic(err)
-		}
-		return v
-	}
-	return nil
-}
-
 func (c *Context) CacheAllBuildActions(soongOutDir string) error {
-	c.buildActionsCache.db.Close()
+	c.buildActionsCache.close()
 	if err := cacheEncData(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache); err != nil {
 		return err
 	}
@@ -5083,6 +5065,8 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 
 func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
 	var providers []CachedProvider
+	var providerHashes []ProviderHash
+
 	for i, p := range module.providers {
 		if p != nil && providerRegistry[i].mutator == "" {
 			providers = append(providers,
@@ -5090,17 +5074,30 @@ func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
 					Id:    providerRegistry[i],
 					Value: &p,
 				})
+			providerHashes = append(providerHashes,
+				ProviderHash{
+					Id:   providerRegistry[i],
+					Hash: module.providerInitialValueHashes[i],
+				})
 		}
 	}
 
-	data := BuildActionCachedData{
+	buildActionData := BuildActionCachedData{
 		InputHash:        module.buildActionInputHash,
-		Providers:        providers,
+		ProviderHashes:   providerHashes,
 		OrderOnlyStrings: module.orderOnlyStrings,
 		GlobCache:        module.globCache,
 	}
 
-	c.updateBuildActionsCache(module.buildActionCacheKey, &data)
+	providersData := ProviderCachedData{
+		Providers: providers,
+	}
+
+	err := errors.Join(c.buildActionsCache.writeBuildAction(c.EncContext, module.buildActionCacheKey, &buildActionData),
+		c.buildActionsCache.writeProviders(c.EncContext, module.buildActionCacheKey, &providersData))
+	if err != nil {
+		panic(err)
+	}
 }
 
 func (c *Context) writeLocalBuildActions(nw *ninjaWriter,
