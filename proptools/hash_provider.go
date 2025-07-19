@@ -146,7 +146,7 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 				return fmt.Errorf("in map: %s", err.Error())
 			}
 			hasher.Write(recordSeparator)
-			err = hasher.calculateHash(s.keys[s.indexes[i]])
+			err = hasher.calculateHash(s.values[s.indexes[i]])
 			if err != nil {
 				return fmt.Errorf("in map: %s", err.Error())
 			}
