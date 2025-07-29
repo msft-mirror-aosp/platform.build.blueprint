@@ -50,7 +50,8 @@ func CalculateHash(value interface{}) (uint64, error) {
 type hasher struct {
 	hash.Hash64
 	int64Buf      [8]byte
-	ptrs          map[uintptr]bool
+	ptrs          map[uintptr]uint64
+	visiting      map[uintptr]bool
 	mapStateCache *mapState
 }
 
@@ -73,6 +74,7 @@ func (hasher *hasher) reset() {
 	}
 
 	clear(hasher.ptrs)
+	clear(hasher.visiting)
 }
 
 func (hasher *hasher) writeUint64(i uint64) {
@@ -167,21 +169,40 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 			hasher.writeByte(0)
 			return nil
 		}
-		// Hardcoded value to indicate it is a pointer
-		hasher.writeInt(0x55)
 		addr := v.Pointer()
 		if hasher.ptrs == nil {
-			hasher.ptrs = make(map[uintptr]bool, ptrsMapSize)
+			hasher.ptrs = make(map[uintptr]uint64, ptrsMapSize)
 		}
-		if _, ok := hasher.ptrs[addr]; ok {
-			// We could make this an error if we want to disallow pointer cycles in the future
+		if hasher.visiting == nil {
+			hasher.visiting = make(map[uintptr]bool, ptrsMapSize)
+		}
+		if _, ok := hasher.visiting[addr]; ok {
+			// Circular dependency detected (we have this in Scope at least), just return nil for now.
 			return nil
 		}
-		hasher.ptrs[addr] = true
+		if hash, ok := hasher.ptrs[addr]; ok {
+			hasher.writeUint64(hash)
+			return nil
+		}
+		// The special logic below is to avoid hashing the same pointer more than once.
+		// We store the current hash value, then reset the hasher to a clean state in
+		// order to calculate the hash of the pointer which will be cached for future
+		// encounters. Once we have the hash value of the pointer, we hash both the
+		// stored hash value and the hash value of the pointer. This will still give
+		// us a unique hash value even though it is different from the case where we
+		// don't apply this special logic.
+		prevHash := hasher.Sum64()
+		hasher.Reset()
+		hasher.visiting[addr] = true
 		err := hasher.calculateHash(v.Elem())
 		if err != nil {
 			return fmt.Errorf("in pointer: %s", err.Error())
 		}
+		ptrHash := hasher.Sum64()
+		hasher.ptrs[addr] = ptrHash
+		hasher.writeUint64(prevHash)
+		hasher.writeUint64(ptrHash)
+		delete(hasher.visiting, addr)
 	case reflect.Interface:
 		if v.IsNil() {
 			hasher.writeByte(0)
