@@ -823,10 +823,13 @@ func Test_parallelVisit(t *testing.T) {
 	moduleI := create("I")
 	moduleJ := create("J")
 
-	// A depends on B, B depends on C.  Nothing depends on D through G, and they don't depend on
-	// anything. H depends on I, and I and J depend on each other.
+	// A depends on B, B depends on C.
 	addDep(moduleA, moduleB)
 	addDep(moduleB, moduleC)
+
+	// Nothing depends on D through G, and they don't depend on anything.
+
+	// H depends on I, and I and J depend on each other.
 	addDep(moduleH, moduleI)
 	addDep(moduleI, moduleJ)
 	addDep(moduleJ, moduleI)
@@ -1033,8 +1036,14 @@ func Test_parallelVisit(t *testing.T) {
 		}
 	})
 	t.Run("existing cycle", func(t *testing.T) {
-		errs := parallelVisit(slices.Values([]*moduleInfo{moduleH, moduleI, moduleJ}), bottomUpVisitorImpl{}, 3,
+		errs := parallelVisit(slices.Values([]*moduleInfo{moduleG, moduleH, moduleI, moduleJ}), bottomUpVisitorImpl{}, 3,
 			func(module *moduleInfo, pause pauseFunc) bool {
+				if module == moduleG {
+					// Pause module G on module I.  This verifies the fix for b/433694465, where
+					// having a module paused on a cycle of existing dependencies could drop
+					// the cycle error.
+					pause(moduleI)
+				}
 				return false
 			})
 		want := []string{

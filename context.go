@@ -2720,15 +2720,24 @@ func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit i
 				checking[module] = true
 				defer delete(checking, module)
 
-				var cycle []*moduleInfo
-				for _, dep := range order.propagate(module) {
-					cycle = check(dep)
-					if cycle != nil {
-						break
+				// Create an iterator that yields the existing dependencies of this module (via order.propagate),
+				// followed by any newly added dependencies stored in pauseMap.
+				dependencyIter := func(yield func(*moduleInfo) bool) {
+					for _, dep := range order.propagate(module) {
+						if !yield(dep) {
+							return
+						}
+					}
+					for _, pauseSpec := range pauseMap[module] {
+						if !yield(pauseSpec.paused) {
+							return
+						}
 					}
 				}
-				for _, pauseSpec := range pauseMap[module] {
-					cycle = check(pauseSpec.paused)
+
+				var cycle []*moduleInfo
+				for dep := range dependencyIter {
+					cycle = check(dep)
 					if cycle != nil {
 						break
 					}
