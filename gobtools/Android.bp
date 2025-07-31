@@ -12,8 +12,8 @@ bootstrap_go_package {
         "//visibility:public",
     ],
     deps: [
+        "blueprint-dbtools",
         "blueprint-proptools",
         "blueprint-syncmap",
-        "pogreb",
     ],
 }

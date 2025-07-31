@@ -773,13 +773,15 @@ func (c *Context) SetIncrementalDebugFile(file string) {
 	c.incrementalDebugFile = file
 }
 
-func (c *Context) CacheAllBuildActions(soongOutDir string) error {
-	c.buildActionsCache.close()
+func (c *Context) CacheAllBuildActions(soongOutDir string) (err error) {
 	if err := cacheEncData(c, soongOutDir, OrderOnlyStringsCacheFile, &c.orderOnlyStringsCache); err != nil {
 		return err
 	}
-	defer c.EncContext.Close()
-	return c.EncContext.EncodeReferences()
+	defer func() {
+		err = errors.Join(err, c.buildActionsCache.close())
+	}()
+	err = c.EncContext.EncodeReferences()
+	return err
 }
 
 func cacheEncData(ctx *Context, soongOutDir string, fileName string, data gobtools.CustomEnc) error {
@@ -2927,7 +2929,7 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 				if err != nil {
 					panic(fmt.Errorf("error opening incremental db: %w", err))
 				}
-				c.EncContext = gobtools.NewEncContext(filepath.Join(c.SrcDir(), c.IncrementalDBDir()))
+				c.EncContext = gobtools.NewEncContext(c.buildActionsCache.referencesDb)
 			}
 
 			for _, p := range packageContexts {

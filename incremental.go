@@ -16,17 +16,20 @@ package blueprint
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"path/filepath"
 
 	"github.com/akrylysov/pogreb"
+	"github.com/google/blueprint/dbtools"
 	"github.com/google/blueprint/gobtools"
 )
 
 //go:generate go run gobtools/codegen/gob_gen.go
 
-const BuildActionDbName = "incremental.db"
-const ProviderDbName = "providers.db"
+const buildActionDbName = "incremental.db"
+const providerDbName = "providers.db"
+const referencesDbName = "references.db"
 
 // @auto-generate: gob
 type BuildActionCacheKey struct {
@@ -67,9 +70,10 @@ type BuildActionCachedData struct {
 }
 
 type BuildActionCache struct {
-	buildActionDb gobtools.KeyValueStore
+	buildActionDb dbtools.KeyValueStore
 	// Use a separate DB for providers so that we only read them when necessary.
-	providerDb gobtools.KeyValueStore
+	providerDb   dbtools.KeyValueStore
+	referencesDb dbtools.KeyValueStore
 }
 
 func (b *BuildActionCache) openForTests() error {
@@ -77,32 +81,42 @@ func (b *BuildActionCache) openForTests() error {
 		panic(fmt.Errorf("db is already open"))
 	}
 
-	b.buildActionDb = &gobtools.InMemKeyValueStore{}
-	b.providerDb = &gobtools.InMemKeyValueStore{}
+	b.buildActionDb = &dbtools.InMemKeyValueStore{}
+	b.providerDb = &dbtools.InMemKeyValueStore{}
+	b.referencesDb = &dbtools.InMemKeyValueStore{}
 	return nil
 }
 
 func (b *BuildActionCache) open(dbPath string) error {
-	if b.buildActionDb != nil || b.providerDb != nil {
+	if b.buildActionDb != nil || b.providerDb != nil || b.referencesDb != nil {
 		panic(fmt.Errorf("db is already open"))
 	}
-	db, err := pogreb.Open(filepath.Join(dbPath, BuildActionDbName), nil)
+	db, err := pogreb.Open(filepath.Join(dbPath, buildActionDbName), nil)
 	if err != nil {
 		return err
 	}
 	b.buildActionDb = db
 
-	db, err = pogreb.Open(filepath.Join(dbPath, ProviderDbName), nil)
+	db, err = pogreb.Open(filepath.Join(dbPath, providerDbName), nil)
 	if err != nil {
 		return err
 	}
 	b.providerDb = db
+
+	db, err = pogreb.Open(filepath.Join(dbPath, referencesDbName), nil)
+	if err != nil {
+		return err
+	}
+	b.referencesDb = db
+
 	return nil
 }
 
-func (b *BuildActionCache) close() {
-	b.buildActionDb.Close()
-	b.providerDb.Close()
+func (b *BuildActionCache) close() error {
+	return errors.Join(
+		b.buildActionDb.Close(),
+		b.providerDb.Close(),
+		b.referencesDb.Close())
 }
 
 func (b *BuildActionCache) readBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*BuildActionCachedData, error) {
@@ -121,7 +135,7 @@ func (b *BuildActionCache) readProviders(ctx gobtools.EncContext, key *BuildActi
 	return &ret, nil
 }
 
-func read(ctx gobtools.EncContext, db gobtools.KeyValueStore, key *BuildActionCacheKey, ret gobtools.CustomDec) error {
+func read(ctx gobtools.EncContext, db dbtools.KeyValueStore, key *BuildActionCacheKey, ret gobtools.CustomDec) error {
 	v, err := db.Get(key.bytes(ctx))
 	if err != nil {
 		return err
@@ -142,7 +156,7 @@ func (b *BuildActionCache) writeProviders(ctx gobtools.EncContext, key *BuildAct
 	return write(ctx, b.providerDb, key, data)
 }
 
-func write(ctx gobtools.EncContext, db gobtools.KeyValueStore, key *BuildActionCacheKey, data gobtools.CustomEnc) error {
+func write(ctx gobtools.EncContext, db dbtools.KeyValueStore, key *BuildActionCacheKey, data gobtools.CustomEnc) error {
 	buf := &bytes.Buffer{}
 	err := data.Encode(ctx, buf)
 	if err != nil {

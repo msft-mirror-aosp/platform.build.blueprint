@@ -1,0 +1,14 @@
+bootstrap_go_package {
+    name: "blueprint-dbtools",
+    pkgPath: "github.com/google/blueprint/dbtools",
+    srcs: [
+        "db_tools.go",
+    ],
+    visibility: [
+        "//visibility:public",
+    ],
+    deps: [
+        "blueprint-syncmap",
+        "pogreb",
+    ],
+}
