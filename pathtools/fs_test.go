@@ -540,6 +540,177 @@ func TestMockFs_glob(t *testing.T) {
 	})
 }
 
+func TestMockFs_Remove(t *testing.T) {
+	testCases := []struct {
+		nameToRemove     string
+		initialState     map[string][]byte
+		filesExpected    map[string][]byte
+		symlinksExpected map[string]string
+		dirsExpected     map[string]bool
+		description      string
+	}{
+		// File Removal Cases
+		{
+			nameToRemove: "a/c",
+			initialState: map[string][]byte{
+				"a/b": nil,
+				"a/c": nil,
+			},
+			filesExpected: map[string][]byte{
+				"a/b": nil,
+			},
+			symlinksExpected: map[string]string{},
+			dirsExpected: map[string]bool{
+				"a": true,
+				".": true,
+				"/": true,
+			},
+			description: "Remove a file from an existing directory.",
+		},
+		{
+			nameToRemove: "a/b",
+			initialState: map[string][]byte{
+				"a/b": nil,
+			},
+			filesExpected:    map[string][]byte{},
+			symlinksExpected: map[string]string{},
+			dirsExpected: map[string]bool{
+				"a": true,
+				".": true,
+				"/": true,
+			},
+			description: "Remove the only file from a directory.",
+		},
+		{
+			nameToRemove: "non-existent-file",
+			initialState: map[string][]byte{
+				"a/b": nil,
+			},
+			filesExpected: map[string][]byte{
+				"a/b": nil,
+			},
+			symlinksExpected: map[string]string{},
+			dirsExpected: map[string]bool{
+				"a": true,
+				".": true,
+				"/": true,
+			},
+			description: "Remove a file that doesn't exist.",
+		},
+		// Directory Removal Cases
+		{
+			nameToRemove: "d",
+			initialState: map[string][]byte{
+				"d/e/f": nil,
+				"d/g":   nil,
+			},
+			filesExpected:    map[string][]byte{},
+			symlinksExpected: map[string]string{},
+			dirsExpected: map[string]bool{
+				".": true,
+				"/": true,
+			},
+			description: "Remove a non-empty directory and its contents.",
+		},
+		{
+			nameToRemove: "empty_dir",
+			initialState: map[string][]byte{
+				"file1": nil,
+			},
+			filesExpected: map[string][]byte{
+				"file1": nil,
+			},
+			symlinksExpected: map[string]string{},
+			dirsExpected: map[string]bool{
+				".": true,
+				"/": true,
+			},
+			description: "Remove an empty directory (implicitly created).",
+		},
+		{
+			nameToRemove: "non-existent-dir",
+			initialState: map[string][]byte{
+				"file1": nil,
+			},
+			filesExpected: map[string][]byte{
+				"file1": nil,
+			},
+			symlinksExpected: map[string]string{},
+			dirsExpected: map[string]bool{
+				".": true,
+				"/": true,
+			},
+			description: "Remove a directory that doesn't exist.",
+		},
+		{
+			nameToRemove: "root/dir",
+			initialState: map[string][]byte{
+				"root/dir/file1":        nil,
+				"root/dir/subdir/file2": nil,
+			},
+			filesExpected:    map[string][]byte{},
+			symlinksExpected: map[string]string{},
+			dirsExpected: map[string]bool{
+				"root": true,
+				".":    true,
+				"/":    true,
+			},
+			description: "Remove a directory with nested files and subdirectories.",
+		},
+		// Symlink Removal Cases
+		{
+			nameToRemove: "link_to_file",
+			initialState: map[string][]byte{
+				"target_file":                 nil,
+				"link_to_file -> target_file": nil,
+			},
+			filesExpected: map[string][]byte{
+				"target_file": nil,
+			},
+			symlinksExpected: map[string]string{},
+			dirsExpected: map[string]bool{
+				".": true,
+				"/": true,
+			},
+			description: "Remove a symlink to a file.",
+		},
+		{
+			nameToRemove: "link_to_dir",
+			initialState: map[string][]byte{
+				"target_dir/file":           nil,
+				"link_to_dir -> target_dir": nil,
+			},
+			filesExpected: map[string][]byte{
+				"target_dir/file": nil,
+			},
+			symlinksExpected: map[string]string{},
+			dirsExpected: map[string]bool{
+				"target_dir": true,
+				".":          true,
+				"/":          true,
+			},
+			description: "Remove a symlink to a directory.",
+		},
+	}
+
+	for _, test := range testCases {
+		t.Run(test.description, func(t *testing.T) {
+			mock := MockFs(test.initialState).(*mockFs)
+			mock.Remove(test.nameToRemove)
+
+			if !reflect.DeepEqual(mock.files, test.filesExpected) {
+				t.Errorf("files: want %v, got %v", test.filesExpected, mock.files)
+			}
+			if !reflect.DeepEqual(mock.symlinks, test.symlinksExpected) {
+				t.Errorf("symlinks: want %v, got %v", test.symlinksExpected, mock.symlinks)
+			}
+			if !reflect.DeepEqual(mock.dirs, test.dirsExpected) {
+				t.Errorf("dirs: want %v, got %v", test.dirsExpected, mock.dirs)
+			}
+		})
+	}
+}
+
 func syscallError(err error) error {
 	if serr, ok := err.(*os.SyscallError); ok {
 		return serr.Err.(syscall.Errno)
