@@ -30,6 +30,7 @@ import (
 const buildActionDbName = "incremental.db"
 const providerDbName = "providers.db"
 const referencesDbName = "references.db"
+const ninjaDbName = "ninja.db"
 
 // @auto-generate: gob
 type BuildActionCacheKey struct {
@@ -74,16 +75,18 @@ type BuildActionCache struct {
 	// Use a separate DB for providers so that we only read them when necessary.
 	providerDb   dbtools.KeyValueStore
 	referencesDb dbtools.KeyValueStore
+	ninjaDb      dbtools.KeyValueStore
 }
 
 func (b *BuildActionCache) openForTests() error {
-	if b.buildActionDb != nil || b.providerDb != nil {
+	if b.buildActionDb != nil || b.providerDb != nil || b.referencesDb != nil || b.ninjaDb != nil {
 		panic(fmt.Errorf("db is already open"))
 	}
 
 	b.buildActionDb = &dbtools.InMemKeyValueStore{}
 	b.providerDb = &dbtools.InMemKeyValueStore{}
 	b.referencesDb = &dbtools.InMemKeyValueStore{}
+	b.ninjaDb = &dbtools.InMemKeyValueStore{}
 	return nil
 }
 
@@ -109,6 +112,12 @@ func (b *BuildActionCache) open(dbPath string) error {
 	}
 	b.referencesDb = db
 
+	db, err = pogreb.Open(filepath.Join(dbPath, ninjaDbName), nil)
+	if err != nil {
+		return err
+	}
+	b.ninjaDb = db
+
 	return nil
 }
 
@@ -116,14 +125,16 @@ func (b *BuildActionCache) close() error {
 	return errors.Join(
 		b.buildActionDb.Close(),
 		b.providerDb.Close(),
-		b.referencesDb.Close())
+		b.referencesDb.Close(),
+		b.ninjaDb.Close())
 }
 
 func (b *BuildActionCache) reset(c *Context, dbPath string) error {
 	return errors.Join(
 		c.fs.Remove(filepath.Join(dbPath, buildActionDbName)),
 		c.fs.Remove(filepath.Join(dbPath, providerDbName)),
-		c.fs.Remove(filepath.Join(dbPath, referencesDbName)))
+		c.fs.Remove(filepath.Join(dbPath, referencesDbName)),
+		c.fs.Remove(filepath.Join(dbPath, ninjaDbName)))
 }
 
 func (b *BuildActionCache) readBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*BuildActionCachedData, error) {
@@ -140,6 +151,10 @@ func (b *BuildActionCache) readProviders(ctx gobtools.EncContext, key *BuildActi
 		return nil, err
 	}
 	return &ret, nil
+}
+
+func (b *BuildActionCache) readNinjaStatements(ctx gobtools.EncContext, key *BuildActionCacheKey) ([]byte, error) {
+	return b.ninjaDb.Get(key.bytes(ctx))
 }
 
 func read(ctx gobtools.EncContext, db dbtools.KeyValueStore, key *BuildActionCacheKey, ret gobtools.CustomDec) error {
@@ -161,6 +176,10 @@ func (b *BuildActionCache) writeBuildAction(ctx gobtools.EncContext, key *BuildA
 
 func (b *BuildActionCache) writeProviders(ctx gobtools.EncContext, key *BuildActionCacheKey, data *ProviderCachedData) error {
 	return write(ctx, b.providerDb, key, data)
+}
+
+func (b *BuildActionCache) writeNinjaStatements(ctx gobtools.EncContext, key *BuildActionCacheKey, data []byte) error {
+	return b.ninjaDb.Put(key.bytes(ctx), data)
 }
 
 func write(ctx gobtools.EncContext, db dbtools.KeyValueStore, key *BuildActionCacheKey, data gobtools.CustomEnc) error {

@@ -4862,38 +4862,26 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 		return err
 	}
 	defer bf.Close()
-	bBuf := bufio.NewWriterSize(bf, 16*1024*1024)
-	defer bBuf.Flush()
-	bWriter := newNinjaWriter(bBuf)
-	ninjaPath := filepath.Join(filepath.Dir(baseFile), strings.ReplaceAll(filepath.Base(baseFile), ".", "_"))
-	err = os.MkdirAll(JoinPath(c.SrcDir(), ninjaPath), 0755)
-	if err != nil {
-		return err
-	}
+	baseBuf := bufio.NewWriterSize(bf, 16*1024*1024)
+	defer baseBuf.Flush()
+	baseWriter := newNinjaWriter(baseBuf)
 
+	inMemoryWriter := bytes.NewBuffer(nil)
+	var moduleBytes []byte
 	for _, module := range modules {
-		moduleFile := filepath.Join(ninjaPath, module.ModuleCacheKey()+".ninja")
 		if !module.incrementalRestored {
-			err := func() error {
-				mf, err := c.fs.OpenFile(JoinPath(c.SrcDir(), moduleFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
-				if err != nil {
-					return err
-				}
-				defer mf.Close()
-				mBuf := bufio.NewWriterSize(mf, 4*1024*1024)
-				defer mBuf.Flush()
-				mWriter := newNinjaWriter(mBuf)
-				return c.writeModuleAction([]*moduleInfo{module}, mWriter, headerTemplate)
-			}()
-			if err != nil {
+			inMemoryWriter.Reset()
+			mWriter := newNinjaWriter(inMemoryWriter)
+			if err := c.writeModuleAction([]*moduleInfo{module}, mWriter, headerTemplate); err != nil {
 				return err
 			}
-			if module.buildActionCacheKey != nil {
-				c.cacheModuleBuildActions(module)
-			}
+			moduleBytes = inMemoryWriter.Bytes()
+			c.cacheModuleBuildActions(module)
+			c.buildActionsCache.writeNinjaStatements(c.EncContext, module.buildActionCacheKey, moduleBytes)
+		} else if moduleBytes, err = c.buildActionsCache.readNinjaStatements(c.EncContext, module.buildActionCacheKey); err != nil {
+			return err
 		}
-
-		bWriter.Subninja(moduleFile)
+		baseWriter.writer.Write(moduleBytes)
 	}
 	return nil
 }
