@@ -98,6 +98,9 @@ type FileSystem interface {
 	// O_CREATE flag is passed, it is created with mode perm (before umask).
 	OpenFile(name string, flag int, perm fs.FileMode) (io.WriteCloser, error)
 
+	// Remove removes a file or a directory.
+	Remove(path string) error
+
 	// Exists returns whether the file exists and whether it is a directory.  Follows symlinks.
 	Exists(name string) (bool, bool, error)
 
@@ -216,6 +219,19 @@ func (fs *osFs) OpenFile(name string, flag int, perm fs.FileMode) (io.WriteClose
 		return nil, err
 	}
 	return &OsFile{f, fs}, nil
+}
+
+func (fs *osFs) Remove(path string) error {
+	_, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Directory doesn't exist, so nothing to remove.
+		}
+		// Some other error occurred while checking path status
+		return fmt.Errorf("failed to check status of directory '%s': %w", path, err)
+	}
+
+	return os.RemoveAll(path)
 }
 
 func (fs *osFs) Exists(name string) (bool, bool, error) {
@@ -376,6 +392,56 @@ func (m *mockFs) OpenFile(name string, flag int, perm fs.FileMode) (io.WriteClos
 			fs:   m,
 		},
 	}, nil
+}
+
+func (m *mockFs) Remove(name string) error {
+	m.lock.RLock()
+	defer m.lock.RUnlock()
+	name = filepath.Clean(name)
+	if _, ok := m.files[name]; ok {
+		delete(m.files, name)
+	}
+	if _, ok := m.symlinks[name]; ok {
+		delete(m.symlinks, name)
+	}
+	// We need to remove all its contents first, and then the directory itself.
+	if _, ok := m.dirs[name]; ok {
+		for entryPath := range m.files {
+			if strings.HasPrefix(entryPath, name+"/") {
+				delete(m.files, entryPath)
+			}
+		}
+		for entryPath := range m.symlinks {
+			if strings.HasPrefix(entryPath, name+"/") {
+				delete(m.symlinks, entryPath)
+			}
+		}
+		for entryPath := range m.dirs {
+			if strings.HasPrefix(entryPath, name+"/") {
+				delete(m.dirs, entryPath)
+			}
+		}
+
+		// Finally, remove the directory itself.
+		delete(m.dirs, name)
+		m.updateAllPaths()
+	}
+	return nil
+}
+
+// updateAllPaths is a helper method to rebuild the 'all' slice.
+func (m *mockFs) updateAllPaths() {
+	m.all = m.all[:0]
+	for f := range m.files {
+		m.all = append(m.all, f)
+	}
+	for d := range m.dirs {
+		m.all = append(m.all, d)
+	}
+	for s := range m.symlinks {
+		m.all = append(m.all, s)
+	}
+	sort.Strings(m.all)
 }
 
 func (m *mockFs) Exists(name string) (bool, bool, error) {

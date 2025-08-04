@@ -2925,8 +2925,14 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 		if c.GetIncrementalEnabled() {
 			if c.buildActionsCache == nil {
 				c.buildActionsCache = &BuildActionCache{}
-				err := c.buildActionsCache.open(filepath.Join(c.SrcDir(), c.IncrementalDBDir()))
-				if err != nil {
+				dbPath := filepath.Join(c.SrcDir(), c.IncrementalDBDir())
+				// Remove all the cached data from the key-value store for a full build.
+				if !c.GetIncrementalAnalysis() {
+					if err := c.buildActionsCache.reset(c, dbPath); err != nil {
+						panic(fmt.Errorf("error resetting incremental db: %w", err))
+					}
+				}
+				if err := c.buildActionsCache.open(dbPath); err != nil {
 					panic(fmt.Errorf("error opening incremental db: %w", err))
 				}
 				c.EncContext = gobtools.NewEncContext(c.buildActionsCache.referencesDb)

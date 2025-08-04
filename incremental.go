@@ -119,6 +119,13 @@ func (b *BuildActionCache) close() error {
 		b.referencesDb.Close())
 }
 
+func (b *BuildActionCache) reset(c *Context, dbPath string) error {
+	return errors.Join(
+		c.fs.Remove(filepath.Join(dbPath, buildActionDbName)),
+		c.fs.Remove(filepath.Join(dbPath, providerDbName)),
+		c.fs.Remove(filepath.Join(dbPath, referencesDbName)))
+}
+
 func (b *BuildActionCache) readBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*BuildActionCachedData, error) {
 	var ret BuildActionCachedData
 	if err := read(ctx, b.buildActionDb, key, &ret); err != nil {
