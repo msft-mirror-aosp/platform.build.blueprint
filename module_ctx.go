@@ -806,7 +806,6 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		}
 	}
 
-	restored := false
 	if incrementalAnalysis && cacheKey != nil {
 		// Try to restore from cache if there is a cache hit
 		data, err := m.context.buildActionsCache.readBuildAction(m.context.EncContext, cacheKey)
@@ -834,14 +833,17 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 			m.module.providerInitialValueHashes = make([]uint64, len(providerRegistry))
 		}
 
+		m.module.incrementalRestored = true
+
 		for _, provider := range data.ProviderHashes {
 			m.module.providerInitialValueHashes[provider.Id.id] = provider.Hash
+			// We need to restore all the providers before we cache singletons, so do
+			// it here so the work can be run more in parallel.
+			maybeRestoreProviders(m.context, m.module, provider.Id)
 		}
 
-		m.module.incrementalRestored = true
 		m.module.orderOnlyStrings = data.OrderOnlyStrings
 		m.module.globCache = data.GlobCache
-		restored = true
 		for _, str := range data.OrderOnlyStrings {
 			if !strings.HasPrefix(str, "dedup-") {
 				continue
@@ -871,7 +873,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		}
 	}
 
-	return restored
+	return m.module.incrementalRestored
 }
 
 type depProviders struct {
