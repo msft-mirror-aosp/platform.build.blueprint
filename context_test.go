@@ -19,8 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"os"
-	"path"
 	"reflect"
 	"slices"
 	"strconv"
@@ -189,6 +187,17 @@ type incrementalModule struct {
 }
 
 var _ Incremental = &incrementalModule{}
+
+const incrementalModuleNinja string = `# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+# Module:  MyIncrementalModule
+# Variant:
+# Type:    incremental_module
+# Factory: github.com/google/blueprint.newIncrementalModule
+# Defined: Android.bp:2:4
+
+build MyIncrementalModule_phony_output: phony || dedup-d479e9a8133ff998
+    tags = module_name=MyIncrementalModule;module_type=incremental_module;rule_name=phony
+`
 
 func newIncrementalModule() (Module, []interface{}) {
 	m := &incrementalModule{}
@@ -1629,6 +1638,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 			Value: &providerValue,
 		}},
 	})
+	ctx.buildActionsCache.writeNinjaStatements(ctx.EncContext, &cacheKey, []byte(incrementalModuleNinja))
 	ctx.SetIncrementalEnabled(true)
 	ctx.SetIncrementalAnalysis(true)
 
@@ -1731,6 +1741,15 @@ func TestCacheBuildActions(t *testing.T) {
 	if !reflect.DeepEqual(expectedProviders, *providers) {
 		t.Errorf("expected: %v actual %v", expectedProviders, *providers)
 	}
+
+	ninja, err := ctx.buildActionsCache.readNinjaStatements(ctx.EncContext, &cacheKey)
+	if err != nil {
+		t.Fatalf("read failed with an error: %s", err)
+	}
+	ninjaStr := string(ninja)
+	if !strings.Contains(ninjaStr, incrementalModuleNinja) {
+		t.Errorf("expected: %v actual %v", incrementalModuleNinja, ninjaStr)
+	}
 }
 
 func TestRestoreBuildActions(t *testing.T) {
@@ -1815,10 +1834,14 @@ func TestSkipNinjaForCacheHit(t *testing.T) {
 		t.Errorf("ninja file doesn't have build statements for MyBarModule: %s", string(content))
 	}
 
-	file, err = ctx.fs.Open(path.Join("test_incremental_ninja",
-		calculateFileNameHash(".-MyIncrementalModule-none-incremental_module")+".ninja"))
-	if !os.IsNotExist(err) {
-		t.Errorf("shouldn't generate ninja file for MyIncrementalModule: %s", err.Error())
+	file, err = ctx.fs.Open("test.incremental.ninja")
+	if err != nil {
+		t.Errorf("no ninja file for MyIncrementalModule")
+	}
+	content = make([]byte, 1024)
+	file.Read(content)
+	if !strings.Contains(string(content), incrementalModuleNinja) {
+		t.Errorf("ninja file doesn't have build statements for MyIncrementalModule: %s", string(content))
 	}
 }
 
@@ -1850,11 +1873,11 @@ func TestNotSkipNinjaForCacheMiss(t *testing.T) {
 		t.Errorf("ninja file doesn't have build statements for MyBarModule: %s", string(content))
 	}
 
-	file, err = ctx.fs.Open(path.Join("test_incremental_ninja",
-		calculateFileNameHash(".-MyIncrementalModule-none-incremental_module")+".ninja"))
+	file, err = ctx.fs.Open("test.incremental.ninja")
 	if err != nil {
 		t.Errorf("no ninja file for MyIncrementalModule")
 	}
+	content = make([]byte, 1024)
 	file.Read(content)
 	if !strings.Contains(string(content), "build MyIncrementalModule_phony_output: phony") {
 		t.Errorf("ninja file doesn't have build statements for MyIncrementalModule: %s", string(content))
