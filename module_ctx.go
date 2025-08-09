@@ -763,21 +763,19 @@ func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface
 }
 
 func (m *moduleContext) restoreModuleBuildActions() bool {
-	// Whether the incremental flag is set and the module type supports
-	// incremental, this will decide weather to cache the data for the module.
-	incrementalEnabled := false
 	// Whether the above conditions are true and we can try to restore from
 	// the cache for this module, i.e., no env, product variables and Soong
 	// code changes.
 	incrementalAnalysis := false
 	var cacheKey *BuildActionCacheKey = nil
-	if m.context.GetIncrementalEnabled() {
-		if im, ok := m.module.logicModule.(Incremental); ok {
-			incrementalEnabled = im.IncrementalSupported()
-			incrementalAnalysis = m.context.GetIncrementalAnalysis() && incrementalEnabled
-		}
+	if im, ok := m.module.logicModule.(Incremental); ok {
+		m.module.incrementalSupported = im.IncrementalSupported()
 	}
-	if incrementalEnabled {
+
+	// Whether the incremental flag is set and the module type supports
+	// incremental, this will decide weather to cache the data for the module.
+	if m.context.GetIncrementalEnabled() && m.module.incrementalSupported {
+		incrementalAnalysis = m.context.GetIncrementalAnalysis()
 		hash, err := proptools.CalculateHash(m.module.properties)
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate properties hash"))
@@ -806,7 +804,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		}
 	}
 
-	if incrementalAnalysis && cacheKey != nil {
+	if incrementalAnalysis {
 		// Try to restore from cache if there is a cache hit
 		data, err := m.context.buildActionsCache.readBuildAction(m.context.EncContext, cacheKey)
 		if err != nil {
