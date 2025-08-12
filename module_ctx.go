@@ -168,6 +168,10 @@ func (m ModuleProxy) IsNil() bool {
 	return m.moduleInfo == nil
 }
 
+func (m ModuleProxy) IncrementalInfo() (bool, bool) {
+	return m.moduleInfo.incrementalSupported, m.moduleInfo.incrementalRestored
+}
+
 func (m ModuleProxy) Name() string {
 	if m.moduleInfo.logicModule == nil {
 		return m.moduleInfo.cachedName
