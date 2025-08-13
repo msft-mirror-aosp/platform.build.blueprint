@@ -168,6 +168,10 @@ func (m ModuleProxy) IsNil() bool {
 	return m.moduleInfo == nil
 }
 
+func (m ModuleProxy) IncrementalInfo() (bool, bool) {
+	return m.moduleInfo.incrementalSupported, m.moduleInfo.incrementalRestored
+}
+
 func (m ModuleProxy) Name() string {
 	if m.moduleInfo.logicModule == nil {
 		return m.moduleInfo.cachedName
@@ -763,21 +767,19 @@ func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface
 }
 
 func (m *moduleContext) restoreModuleBuildActions() bool {
-	// Whether the incremental flag is set and the module type supports
-	// incremental, this will decide weather to cache the data for the module.
-	incrementalEnabled := false
 	// Whether the above conditions are true and we can try to restore from
 	// the cache for this module, i.e., no env, product variables and Soong
 	// code changes.
 	incrementalAnalysis := false
 	var cacheKey *BuildActionCacheKey = nil
-	if m.context.GetIncrementalEnabled() {
-		if im, ok := m.module.logicModule.(Incremental); ok {
-			incrementalEnabled = im.IncrementalSupported()
-			incrementalAnalysis = m.context.GetIncrementalAnalysis() && incrementalEnabled
-		}
+	if im, ok := m.module.logicModule.(Incremental); ok {
+		m.module.incrementalSupported = im.IncrementalSupported()
 	}
-	if incrementalEnabled {
+
+	// Whether the incremental flag is set and the module type supports
+	// incremental, this will decide weather to cache the data for the module.
+	if m.context.GetIncrementalEnabled() && m.module.incrementalSupported {
+		incrementalAnalysis = m.context.GetIncrementalAnalysis()
 		hash, err := proptools.CalculateHash(m.module.properties)
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate properties hash"))
@@ -806,8 +808,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		}
 	}
 
-	restored := false
-	if incrementalAnalysis && cacheKey != nil {
+	if incrementalAnalysis {
 		// Try to restore from cache if there is a cache hit
 		data, err := m.context.buildActionsCache.readBuildAction(m.context.EncContext, cacheKey)
 		if err != nil {
@@ -834,14 +835,17 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 			m.module.providerInitialValueHashes = make([]uint64, len(providerRegistry))
 		}
 
+		m.module.incrementalRestored = true
+
 		for _, provider := range data.ProviderHashes {
 			m.module.providerInitialValueHashes[provider.Id.id] = provider.Hash
+			// We need to restore all the providers before we cache singletons, so do
+			// it here so the work can be run more in parallel.
+			maybeRestoreProviders(m.context, m.module, provider.Id)
 		}
 
-		m.module.incrementalRestored = true
 		m.module.orderOnlyStrings = data.OrderOnlyStrings
 		m.module.globCache = data.GlobCache
-		restored = true
 		for _, str := range data.OrderOnlyStrings {
 			if !strings.HasPrefix(str, "dedup-") {
 				continue
@@ -871,7 +875,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		}
 	}
 
-	return restored
+	return m.module.incrementalRestored
 }
 
 type depProviders struct {
