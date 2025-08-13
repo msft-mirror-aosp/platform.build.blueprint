@@ -3273,7 +3273,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 	// Add in any new reverse dependencies that were added by the mutator
 	for module, deps := range reverseDeps {
-		sort.Sort(depSorter(deps))
+		sort.Sort(depSorter{deps, c.nameInterface})
 		module.directDeps = append(module.directDeps, deps...)
 		for _, dep := range deps {
 			module.forwardDeps = append(module.forwardDeps, dep.module)
@@ -4679,24 +4679,21 @@ func (c *Context) writeGlobalRules(nw *ninjaWriter) error {
 	return nil
 }
 
-type depSorter []depInfo
+type depSorter struct {
+	deps          []depInfo
+	nameInterface NameInterface
+}
 
 func (s depSorter) Len() int {
-	return len(s)
+	return len(s.deps)
 }
 
 func (s depSorter) Less(i, j int) bool {
-	iName := s[i].module.Name()
-	jName := s[j].module.Name()
-	if iName == jName {
-		iName = s[i].module.variant.name
-		jName = s[j].module.variant.name
-	}
-	return iName < jName
+	return moduleLess(s.deps[i].module, s.deps[j].module, s.nameInterface)
 }
 
 func (s depSorter) Swap(i, j int) {
-	s[i], s[j] = s[j], s[i]
+	s.deps[i], s.deps[j] = s.deps[j], s.deps[i]
 }
 
 type moduleSorter struct {
@@ -4709,13 +4706,15 @@ func (s moduleSorter) Len() int {
 }
 
 func (s moduleSorter) Less(i, j int) bool {
-	iMod := s.modules[i]
-	jMod := s.modules[j]
-	iName := s.nameInterface.UniqueName(newNamespaceContext(iMod), iMod.group.name)
-	jName := s.nameInterface.UniqueName(newNamespaceContext(jMod), jMod.group.name)
+	return moduleLess(s.modules[i], s.modules[j], s.nameInterface)
+}
+
+func moduleLess(iMod, jMod *moduleInfo, nameInterface NameInterface) bool {
+	iName := nameInterface.UniqueName(newNamespaceContext(iMod), iMod.group.name)
+	jName := nameInterface.UniqueName(newNamespaceContext(jMod), jMod.group.name)
 	if iName == jName {
-		iVariantName := s.modules[i].variant.name
-		jVariantName := s.modules[j].variant.name
+		iVariantName := iMod.variant.name
+		jVariantName := jMod.variant.name
 		if iVariantName == jVariantName {
 			panic(fmt.Sprintf("duplicate module name: %s %s: %#v and %#v\n",
 				iName, iVariantName, iMod.variant.variations, jMod.variant.variations))
