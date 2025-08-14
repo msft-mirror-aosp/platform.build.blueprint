@@ -147,6 +147,9 @@ func TestBootstrap(t *testing.T) {
 		name:        "c",
 		incDirs:     []string{"a/pkg"},
 		compileDeps: []string{"a/pkg/a.a"},
+		// c has no tests so validation dependencies on dependency tests is via
+		// the test.dependencies output
+		testDependenciesValidationDeps: []string{"a/test/test.passed"},
 	})
 	assertModule(t, ctx, config, expectedModuleInfo{
 		name: "d",
@@ -164,23 +167,25 @@ func TestBootstrap(t *testing.T) {
 		incDirs:     []string{"b/pkg", "c/pkg", "d/pkg", "e/pkg"},
 		compileDeps: []string{"b/pkg/b.a", "c/pkg/c.a", "d/pkg/d.a", "e/pkg/e.a"},
 		// linkDirs and linkDeps should include all transitive dependencies.
-		linkDirs: []string{"a/pkg", "b/pkg", "c/pkg", "d/pkg", "e/pkg"},
-		linkDeps: []string{"a/pkg/a.a", "b/pkg/b.a", "c/pkg/c.a", "d/pkg/d.a", "e/pkg/e.a"},
-		testValidationDeps: []string{"a/test/test.passed", "b/test/test.passed", "d/test/test.passed",
-			"e/test/test.passed"},
-		installValidationDeps: []string{"bin/test/test.passed", "a/test/test.passed", "b/test/test.passed",
+		linkDirs: []string{"a/pkg", "d/pkg", "b/pkg", "c/pkg", "e/pkg"},
+		linkDeps: []string{"a/pkg/a.a", "d/pkg/d.a", "b/pkg/b.a", "c/pkg/c.a", "e/pkg/e.a"},
+		// test validation deps contains only the direct deps because the test rule of the direct
+		// deps depends on the test rules of the transitive deps.
+		testValidationDeps: []string{"b/test/test.passed", "c/test/test.dependencies",
 			"d/test/test.passed", "e/test/test.passed"},
+		installValidationDeps: []string{"bin/test/test.passed"},
 	})
 }
 
 type expectedModuleInfo struct {
-	name                  string
-	incDirs               []string
-	compileDeps           []string
-	linkDirs              []string
-	linkDeps              []string
-	testValidationDeps    []string
-	installValidationDeps []string
+	name                           string
+	incDirs                        []string
+	compileDeps                    []string
+	linkDirs                       []string
+	linkDeps                       []string
+	testValidationDeps             []string
+	testDependenciesValidationDeps []string
+	installValidationDeps          []string
 }
 
 func assertModule(t *testing.T, ctx *blueprint.Context, config *testConfig, expected expectedModuleInfo) {
@@ -190,6 +195,7 @@ func assertModule(t *testing.T, ctx *blueprint.Context, config *testConfig, expe
 	compile := buildParamsForOutput(ctx, m, filepath.Join(goDir, expected.name, "pkg", expected.name+".a"))
 	link := buildParamsForOutput(ctx, m, filepath.Join(goDir, expected.name, "pkg", expected.name))
 	test := buildParamsForOutput(ctx, m, filepath.Join(goDir, expected.name, "test", "test.passed"))
+	testDependencies := buildParamsForOutput(ctx, m, filepath.Join(goDir, expected.name, "test", "test.dependencies"))
 
 	install := buildParamsForOutput(ctx, m, filepath.Join(config.HostToolDir(), expected.name))
 
@@ -211,6 +217,10 @@ func assertModule(t *testing.T, ctx *blueprint.Context, config *testConfig, expe
 
 	if g, w := test.Validations, pathtools.PrefixPaths(expected.testValidationDeps, goDir); !slices.Equal(g, w) {
 		t.Errorf("expected %s test validation deps %q, got %q", expected.name, w, g)
+	}
+
+	if g, w := testDependencies.Validations, pathtools.PrefixPaths(expected.testDependenciesValidationDeps, goDir); !slices.Equal(g, w) {
+		t.Errorf("expected %s test dependencies validation deps %q, got %q", expected.name, w, g)
 	}
 
 	if g, w := install.Validations, pathtools.PrefixPaths(expected.installValidationDeps, goDir); !slices.Equal(g, w) {
