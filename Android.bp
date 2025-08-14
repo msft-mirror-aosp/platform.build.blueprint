@@ -206,6 +206,7 @@ bootstrap_go_package {
         "blueprint",
         "blueprint-deptools",
         "blueprint-pathtools",
+        "blueprint-proptools",
         "blueprint-bootstrap-bpdoc",
     ],
     pkgPath: "github.com/google/blueprint/bootstrap",
