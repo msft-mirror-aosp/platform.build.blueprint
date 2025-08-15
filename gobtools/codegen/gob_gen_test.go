@@ -133,6 +133,14 @@ func TestEncDec(t *testing.T) {
 			},
 			decoded: &testEchoMap{},
 		},
+		{
+			name: "TestStruct with empty slice and map",
+			origin: &TestStruct{
+				f12: map[string]int{},
+				f15: []int{},
+			},
+			decoded: &TestStruct{},
+		},
 	}
 
 	for _, tc := range testCases {

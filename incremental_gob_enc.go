@@ -110,12 +110,18 @@ func (r CachedProvider) GetTypeId() int16 {
 func (r ProviderCachedData) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	var err error
 
-	if err = gobtools.EncodeSimple(buf, int32(len(r.Providers))); err != nil {
-		return err
-	}
-	for val1 := 0; val1 < len(r.Providers); val1++ {
-		if err = r.Providers[val1].Encode(ctx, buf); err != nil {
+	if r.Providers == nil {
+		if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
 			return err
+		}
+	} else {
+		if err = gobtools.EncodeSimple(buf, int32(len(r.Providers))); err != nil {
+			return err
+		}
+		for val1 := 0; val1 < len(r.Providers); val1++ {
+			if err = r.Providers[val1].Encode(ctx, buf); err != nil {
+				return err
+			}
 		}
 	}
 	return err
@@ -129,7 +135,7 @@ func (r *ProviderCachedData) Decode(ctx gobtools.EncContext, buf *bytes.Reader) 
 	if err != nil {
 		return err
 	}
-	if val2 > 0 {
+	if val2 != -1 {
 		r.Providers = make([]CachedProvider, val2)
 		for val3 := 0; val3 < int(val2); val3++ {
 			if err = r.Providers[val3].Decode(ctx, buf); err != nil {
@@ -202,30 +208,48 @@ func (r BuildActionCachedData) Encode(ctx gobtools.EncContext, buf *bytes.Buffer
 		return err
 	}
 
-	if err = gobtools.EncodeSimple(buf, int32(len(r.ProviderHashes))); err != nil {
-		return err
-	}
-	for val1 := 0; val1 < len(r.ProviderHashes); val1++ {
-		if err = r.ProviderHashes[val1].Encode(ctx, buf); err != nil {
+	if r.ProviderHashes == nil {
+		if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
 			return err
+		}
+	} else {
+		if err = gobtools.EncodeSimple(buf, int32(len(r.ProviderHashes))); err != nil {
+			return err
+		}
+		for val1 := 0; val1 < len(r.ProviderHashes); val1++ {
+			if err = r.ProviderHashes[val1].Encode(ctx, buf); err != nil {
+				return err
+			}
 		}
 	}
 
-	if err = gobtools.EncodeSimple(buf, int32(len(r.OrderOnlyStrings))); err != nil {
-		return err
-	}
-	for val2 := 0; val2 < len(r.OrderOnlyStrings); val2++ {
-		if err = gobtools.EncodeString(buf, r.OrderOnlyStrings[val2]); err != nil {
+	if r.OrderOnlyStrings == nil {
+		if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
 			return err
+		}
+	} else {
+		if err = gobtools.EncodeSimple(buf, int32(len(r.OrderOnlyStrings))); err != nil {
+			return err
+		}
+		for val2 := 0; val2 < len(r.OrderOnlyStrings); val2++ {
+			if err = gobtools.EncodeString(buf, r.OrderOnlyStrings[val2]); err != nil {
+				return err
+			}
 		}
 	}
 
-	if err = gobtools.EncodeSimple(buf, int32(len(r.GlobCache))); err != nil {
-		return err
-	}
-	for val3 := 0; val3 < len(r.GlobCache); val3++ {
-		if err = r.GlobCache[val3].Encode(ctx, buf); err != nil {
+	if r.GlobCache == nil {
+		if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
 			return err
+		}
+	} else {
+		if err = gobtools.EncodeSimple(buf, int32(len(r.GlobCache))); err != nil {
+			return err
+		}
+		for val3 := 0; val3 < len(r.GlobCache); val3++ {
+			if err = r.GlobCache[val3].Encode(ctx, buf); err != nil {
+				return err
+			}
 		}
 	}
 	return err
@@ -244,7 +268,7 @@ func (r *BuildActionCachedData) Decode(ctx gobtools.EncContext, buf *bytes.Reade
 	if err != nil {
 		return err
 	}
-	if val3 > 0 {
+	if val3 != -1 {
 		r.ProviderHashes = make([]ProviderHash, val3)
 		for val4 := 0; val4 < int(val3); val4++ {
 			if err = r.ProviderHashes[val4].Decode(ctx, buf); err != nil {
@@ -258,7 +282,7 @@ func (r *BuildActionCachedData) Decode(ctx gobtools.EncContext, buf *bytes.Reade
 	if err != nil {
 		return err
 	}
-	if val7 > 0 {
+	if val7 != -1 {
 		r.OrderOnlyStrings = make([]string, val7)
 		for val8 := 0; val8 < int(val7); val8++ {
 			err = gobtools.DecodeString(buf, &r.OrderOnlyStrings[val8])
@@ -273,7 +297,7 @@ func (r *BuildActionCachedData) Decode(ctx gobtools.EncContext, buf *bytes.Reade
 	if err != nil {
 		return err
 	}
-	if val11 > 0 {
+	if val11 != -1 {
 		r.GlobCache = make([]globResultCache, val11)
 		for val12 := 0; val12 < int(val11); val12++ {
 			if err = r.GlobCache[val12].Decode(ctx, buf); err != nil {
@@ -294,19 +318,31 @@ func (r BuildActionCachedData) GetTypeId() int16 {
 func (r OrderOnlyStringsCache) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	var err error
 
-	if err = gobtools.EncodeSimple(buf, int32(len(r))); err != nil {
-		return err
-	}
-	for k, v := range r {
-		if err = gobtools.EncodeString(buf, k); err != nil {
+	if r == nil {
+		if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
 			return err
 		}
-		if err = gobtools.EncodeSimple(buf, int32(len(v))); err != nil {
+	} else {
+		if err = gobtools.EncodeSimple(buf, int32(len(r))); err != nil {
 			return err
 		}
-		for val1 := 0; val1 < len(v); val1++ {
-			if err = gobtools.EncodeString(buf, v[val1]); err != nil {
+		for k, v := range r {
+			if err = gobtools.EncodeString(buf, k); err != nil {
 				return err
+			}
+			if v == nil {
+				if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
+					return err
+				}
+			} else {
+				if err = gobtools.EncodeSimple(buf, int32(len(v))); err != nil {
+					return err
+				}
+				for val1 := 0; val1 < len(v); val1++ {
+					if err = gobtools.EncodeString(buf, v[val1]); err != nil {
+						return err
+					}
+				}
 			}
 		}
 	}
@@ -321,7 +357,7 @@ func (r *OrderOnlyStringsCache) Decode(ctx gobtools.EncContext, buf *bytes.Reade
 	if err != nil {
 		return err
 	}
-	if val1 > 0 {
+	if val1 != -1 {
 		(*r) = make(map[string][]string, val1)
 		for val2 := 0; val2 < int(val1); val2++ {
 			var k string
@@ -335,7 +371,7 @@ func (r *OrderOnlyStringsCache) Decode(ctx gobtools.EncContext, buf *bytes.Reade
 			if err != nil {
 				return err
 			}
-			if val5 > 0 {
+			if val5 != -1 {
 				v = make([]string, val5)
 				for val6 := 0; val6 < int(val5); val6++ {
 					err = gobtools.DecodeString(buf, &v[val6])

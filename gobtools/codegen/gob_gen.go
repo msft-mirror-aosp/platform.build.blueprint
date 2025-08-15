@@ -70,6 +70,7 @@ const blueprintPkgPath = "build/blueprint"
 const soongPkgPrefix = "android/soong"
 const soongPkgPath = "build/soong"
 const gobtoolsImport = `"github.com/google/blueprint/gobtools"`
+const valueIsNil = -1
 
 type typeDefTypes int
 
@@ -217,10 +218,12 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 			generateEncodeForCustomType(encodeBody, fieldName, pkgName, t.Name, imports)
 		}
 	case *ast.MapType:
+		generateEncodeForNillable(encodeBody, fieldName)
 		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return err }\n", fieldName))
 		encodeBody.WriteString(fmt.Sprintf("\tfor k, v := range %s {\n", fieldName))
 		generateEncodeForType(encodeBody, pkgName, t.Key, "k", imports)
 		generateEncodeForType(encodeBody, pkgName, t.Value, "v", imports)
+		encodeBody.WriteString("\t}\n")
 		encodeBody.WriteString("\t}\n")
 	case *ast.ArrayType:
 		encodeArray(encodeBody, pkgName, t.Elt, fieldName, imports)
@@ -269,6 +272,11 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 	}
 }
 
+func generateEncodeForNillable(encodeBody *strings.Builder, fieldName string) {
+	encodeBody.WriteString(fmt.Sprintf("\tif %s == nil {\n", fieldName))
+	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(%d)); err != nil { return err }\n", valueIsNil))
+	encodeBody.WriteString(fmt.Sprintf("\t} else {\n"))
+}
 func generateEncodeForCustomType(encodeBody *strings.Builder, fieldName string, pkgName string, typeName string, imports map[string]bool) {
 	typ := findType(pkgName, typeName, imports)
 	if fieldName[len(fieldName)-1] == '.' {
@@ -358,7 +366,7 @@ func generateDecodeForType(decodeBody *strings.Builder, pkgName string, field as
 		_, _, vName := findStructName(t.Value, pkgName)
 		decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
 		decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int32](buf, &%s); if err != nil { return err }\n", valId))
-		decodeBody.WriteString(fmt.Sprintf("\tif %s > 0 {\n", valId))
+		decodeBody.WriteString(fmt.Sprintf("\tif %s != %d {\n", valId, valueIsNil))
 		decodeBody.WriteString(fmt.Sprintf("\t%s = make(map[%s]%s, %s)\n", fieldName, kName, vName, valId))
 		maybeAddImport(kName, imports)
 		maybeAddImport(vName, imports)
@@ -426,10 +434,12 @@ func generateDecodeForType(decodeBody *strings.Builder, pkgName string, field as
 }
 
 func encodeArray(encodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string, imports map[string]bool) {
+	generateEncodeForNillable(encodeBody, fieldName)
 	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return err }\n", fieldName))
 	index := nextVar()
 	encodeBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < len(%s); %s++ {\n", index, index, fieldName, index))
 	generateEncodeForType(encodeBody, pkgName, t, fmt.Sprintf("%s[%s]", fieldName, index), imports)
+	encodeBody.WriteString("\t}\n")
 	encodeBody.WriteString("\t}\n")
 }
 
@@ -438,7 +448,7 @@ func decodeArray(decodeBody *strings.Builder, pkgName string, t ast.Expr, fieldN
 	_, _, typName := findStructName(t, pkgName)
 	decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
 	decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int32](buf, &%s); if err != nil { return err }\n", valId))
-	decodeBody.WriteString(fmt.Sprintf("\tif %s > 0 {\n", valId))
+	decodeBody.WriteString(fmt.Sprintf("\tif %s != %d {\n", valId, valueIsNil))
 	decodeBody.WriteString(fmt.Sprintf("\t%s = make([]%s, %s)\n", fieldName, typName, valId))
 	maybeAddImport(typName, imports)
 	index := nextVar()
