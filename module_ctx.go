@@ -1164,6 +1164,13 @@ func (m *moduleContext) Rule(pctx PackageContext, name string,
 func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 	m.scope.ReparentTo(pctx)
 
+	if m.context.captureBuildParams {
+		if m.module.buildParams == nil {
+			m.module.buildParams = &[]BuildParams{}
+		}
+		*m.module.buildParams = append(*m.module.buildParams, params)
+	}
+
 	def, err := parseBuildParams(m.scope, &params, m.ModuleTags())
 	if err != nil {
 		panic(err)
