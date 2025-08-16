@@ -19,12 +19,18 @@ func (r globResultCache) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) erro
 		return err
 	}
 
-	if err = gobtools.EncodeSimple(buf, int32(len(r.Excludes))); err != nil {
-		return err
-	}
-	for val1 := 0; val1 < len(r.Excludes); val1++ {
-		if err = gobtools.EncodeString(buf, r.Excludes[val1]); err != nil {
+	if r.Excludes == nil {
+		if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
 			return err
+		}
+	} else {
+		if err = gobtools.EncodeSimple(buf, int32(len(r.Excludes))); err != nil {
+			return err
+		}
+		for val1 := 0; val1 < len(r.Excludes); val1++ {
+			if err = gobtools.EncodeString(buf, r.Excludes[val1]); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -47,7 +53,7 @@ func (r *globResultCache) Decode(ctx gobtools.EncContext, buf *bytes.Reader) err
 	if err != nil {
 		return err
 	}
-	if val3 > 0 {
+	if val3 != -1 {
 		r.Excludes = make([]string, val3)
 		for val4 := 0; val4 < int(val3); val4++ {
 			err = gobtools.DecodeString(buf, &r.Excludes[val4])
