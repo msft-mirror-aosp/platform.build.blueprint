@@ -621,7 +621,7 @@ func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
 
 	var incFlags []string
 	var deps []string
-	ctx.VisitDepsDepthFirst(func(module blueprint.Module) {
+	ctx.VisitDirectDepsProxy(func(module blueprint.ModuleProxy) {
 		if info, ok := blueprint.OtherModuleProvider(ctx, module, PackageProvider); ok {
 			incDir := info.PkgRoot
 			target := info.PackageTarget

@@ -158,11 +158,14 @@ func TestBootstrap(t *testing.T) {
 		testValidationDeps: []string{"d/test/test.passed"},
 	})
 	assertModule(t, ctx, config, expectedModuleInfo{
-		name:        "bin",
-		incDirs:     []string{"a/pkg", "b/pkg", "c/pkg", "d/pkg", "e/pkg"},
-		compileDeps: []string{"a/pkg/a.a", "b/pkg/b.a", "c/pkg/c.a", "d/pkg/d.a", "e/pkg/e.a"},
-		linkDirs:    []string{"a/pkg", "b/pkg", "c/pkg", "d/pkg", "e/pkg"},
-		linkDeps:    []string{"a/pkg/a.a", "b/pkg/b.a", "c/pkg/c.a", "d/pkg/d.a", "e/pkg/e.a"},
+		name: "bin",
+		// incDirs and compileDeps should only include direct dependencies so that an explicit
+		// import in a go source file of a transitive dependency fails.
+		incDirs:     []string{"b/pkg", "c/pkg", "d/pkg", "e/pkg"},
+		compileDeps: []string{"b/pkg/b.a", "c/pkg/c.a", "d/pkg/d.a", "e/pkg/e.a"},
+		// linkDirs and linkDeps should include all transitive dependencies.
+		linkDirs: []string{"a/pkg", "b/pkg", "c/pkg", "d/pkg", "e/pkg"},
+		linkDeps: []string{"a/pkg/a.a", "b/pkg/b.a", "c/pkg/c.a", "d/pkg/d.a", "e/pkg/e.a"},
 		testValidationDeps: []string{"a/test/test.passed", "b/test/test.passed", "d/test/test.passed",
 			"e/test/test.passed"},
 		installValidationDeps: []string{"bin/test/test.passed", "a/test/test.passed", "b/test/test.passed",
