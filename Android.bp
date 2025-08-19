@@ -216,6 +216,9 @@ bootstrap_go_package {
         "bootstrap/config.go",
         "bootstrap/writedocs.go",
     ],
+    testSrcs: [
+        "bootstrap/bootstrap_test.go",
+    ],
 }
 
 bootstrap_go_package {
