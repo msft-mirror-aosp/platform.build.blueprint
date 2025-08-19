@@ -14,5 +14,6 @@ bootstrap_go_package {
         "//build/blueprint",
         "//build/blueprint/depset",
         "//build/blueprint/gobtools/codegen",
+        "//build/soong/android",
     ],
 }
