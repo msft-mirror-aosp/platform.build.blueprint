@@ -599,3 +599,142 @@ func TestDepSetInvalidOrder(t *testing.T) {
 		})
 	}
 }
+
+func TestDepSetSetMinus(t *testing.T) {
+	testCases := []struct {
+		name                             string
+		d                                func(order Order) DepSet[string]
+		other                            func(order Order) DepSet[string]
+		postorder, preorder, topological []string
+	}{
+		{
+			name: "simple",
+			d: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("a", "b", "c").Build()
+			},
+			other: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("b").Build()
+			},
+			postorder:   []string{"a", "c"},
+			preorder:    []string{"a", "c"},
+			topological: []string{"a", "c"},
+		},
+		{
+			name: "no overlap",
+			d: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("a", "b").Build()
+			},
+			other: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("c", "d").Build()
+			},
+			postorder:   []string{"a", "b"},
+			preorder:    []string{"a", "b"},
+			topological: []string{"a", "b"},
+		},
+		{
+			name: "subtract superset",
+			d: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("a", "b").Build()
+			},
+			other: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("a", "b", "c").Build()
+			},
+			postorder:   nil,
+			preorder:    nil,
+			topological: nil,
+		},
+		{
+			name: "subtract subset",
+			d: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("a", "b", "c").Build()
+			},
+			other: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("a", "b").Build()
+			},
+			postorder:   []string{"c"},
+			preorder:    []string{"c"},
+			topological: []string{"c"},
+		},
+		{
+			name: "subtract from empty",
+			d: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Build()
+			},
+			other: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("a", "b").Build()
+			},
+			postorder:   nil,
+			preorder:    nil,
+			topological: nil,
+		},
+		{
+			name: "subtract empty",
+			d: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("a", "b").Build()
+			},
+			other: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Build()
+			},
+			postorder:   []string{"a", "b"},
+			preorder:    []string{"a", "b"},
+			topological: []string{"a", "b"},
+		},
+		{
+			name: "subtract self",
+			d: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("a", "b", "c").Build()
+			},
+			other: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("a", "b", "c").Build()
+			},
+			postorder:   nil,
+			preorder:    nil,
+			topological: nil,
+		},
+		{
+			name: "diamond",
+			d: func(order Order) DepSet[string] {
+				d := NewBuilder[string](order).Direct("d").Build()
+				c := NewBuilder[string](order).Direct("c").Transitive(d).Build()
+				b := NewBuilder[string](order).Direct("b").Transitive(d).Build()
+				a := NewBuilder[string](order).Direct("a").Transitive(b).Transitive(c).Build()
+				return a
+			},
+			other: func(order Order) DepSet[string] {
+				return NewBuilder[string](order).Direct("c", "d").Build()
+			},
+			postorder:   []string{"b", "a"},
+			preorder:    []string{"a", "b"},
+			topological: []string{"a", "b"},
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Run("postorder", func(t *testing.T) {
+				d := tt.d(POSTORDER)
+				other := tt.other(POSTORDER)
+				g := d.SetMinus(other).ToList()
+				if !slices.Equal(g, tt.postorder) {
+					t.Errorf("got %q, want %q", g, tt.postorder)
+				}
+			})
+			t.Run("preorder", func(t *testing.T) {
+				d := tt.d(PREORDER)
+				other := tt.other(PREORDER)
+				g := d.SetMinus(other).ToList()
+				if !slices.Equal(g, tt.preorder) {
+					t.Errorf("got %q, want %q", g, tt.preorder)
+				}
+			})
+			t.Run("topological", func(t *testing.T) {
+				d := tt.d(TOPOLOGICAL)
+				other := tt.other(TOPOLOGICAL)
+				g := d.SetMinus(other).ToList()
+				if !slices.Equal(g, tt.topological) {
+					t.Errorf("got %q, want %q", g, tt.topological)
+				}
+			})
+		})
+	}
+}
