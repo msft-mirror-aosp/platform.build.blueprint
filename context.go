@@ -188,6 +188,8 @@ type Context struct {
 	EncContext              gobtools.EncContext
 
 	moduleDebugDataChannel chan []byte
+
+	captureBuildParams bool
 }
 
 type orderOnlyStringsInfo struct {
@@ -396,7 +398,8 @@ type moduleInfo struct {
 	outgoingTransitionCache [][]string
 
 	// set during PrepareBuildActions
-	actionDefs localBuildActions
+	actionDefs  localBuildActions
+	buildParams *[]BuildParams
 
 	providers                  []interface{}
 	providerInitialValueHashes []uint64
@@ -4343,6 +4346,17 @@ func (c *Context) VisitAllModuleVariantProxies(module ModuleProxy, visit func(Mo
 
 func (c *Context) ModuleToProxy(module ModuleOrProxy) ModuleProxy {
 	return ModuleProxy{module.info()}
+}
+
+func (c *Context) CaptureBuildParams() {
+	c.captureBuildParams = true
+}
+
+func (c *Context) BuildParamsForModule(module ModuleOrProxy) []BuildParams {
+	if p := module.info().buildParams; p != nil {
+		return *p
+	}
+	return nil
 }
 
 // Singletons returns a list of all registered Singletons.

@@ -474,7 +474,7 @@ func (g *GoBinary) Properties() []interface{} {
 func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	var (
 		name            = ctx.ModuleName()
-		objDir          = moduleObjDir(ctx)
+		objDir          = packageRoot(ctx)
 		archiveFile     = filepath.Join(objDir, name+".a")
 		testArchiveFile = filepath.Join(testRoot(ctx), name+".a")
 		aoutFile        = filepath.Join(objDir, name)
@@ -879,12 +879,6 @@ func testRoot(ctx blueprint.ModuleContext) string {
 // specified relative to.
 func moduleSrcDir(ctx blueprint.ModuleContext) string {
 	return ctx.ModuleDir()
-}
-
-// moduleObjDir returns the module-specific object directory path.
-func moduleObjDir(ctx blueprint.ModuleContext) string {
-	toolDir := ctx.Config().(BootstrapConfig).HostToolDir()
-	return filepath.Join(toolDir, "go", ctx.ModuleName(), ctx.ModuleSubDir(), "obj")
 }
 
 // moduleGenSrcDir returns the module-specific generated sources path.
