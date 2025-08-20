@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 
 	"github.com/akrylysov/pogreb"
+	"github.com/akrylysov/pogreb/fs"
 	"github.com/google/blueprint/dbtools"
 	"github.com/google/blueprint/gobtools"
 )
@@ -94,25 +95,46 @@ func (b *BuildActionCache) open(dbPath string) error {
 	if b.buildActionDb != nil || b.providerDb != nil || b.referencesDb != nil {
 		panic(fmt.Errorf("db is already open"))
 	}
-	db, err := pogreb.Open(filepath.Join(dbPath, buildActionDbName), nil)
+	opts := &pogreb.Options{
+		// By default pogreb uses MMap file system, which suffers from severe performance
+		// degradation when the OS page cache is cold (the case where large target is
+		// built previously). This leads to a high number of small, 4KB random reads.
+		// Switching to standard buffered file I/O allows the kernel's I/O scheduler
+		// to merge these into fewer, larger sequential reads. This improves throughput
+		// and provides more consistent, predictable performance. For example, here are
+		// the two iostat outputs from using mmap and standard file system:
+		// mmap:
+		//                 r/s      rkB/s     rareq-sz  %util
+		//         dm-0    3155.60  12781.60  4.05      92.48
+		//
+		// os.File:
+		//         dm-0    1945.40  248168.80 127.57    83.12
+		//
+		// From the above data we can see that with os.File it reads data in large chunks
+		// (rareq-sz 127 vs. 4). This is a much more efficient I/O pattern than the
+		// previous 4KB random reads
+
+		FileSystem: fs.OS,
+	}
+	db, err := pogreb.Open(filepath.Join(dbPath, buildActionDbName), opts)
 	if err != nil {
 		return err
 	}
 	b.buildActionDb = db
 
-	db, err = pogreb.Open(filepath.Join(dbPath, providerDbName), nil)
+	db, err = pogreb.Open(filepath.Join(dbPath, providerDbName), opts)
 	if err != nil {
 		return err
 	}
 	b.providerDb = db
 
-	db, err = pogreb.Open(filepath.Join(dbPath, referencesDbName), nil)
+	db, err = pogreb.Open(filepath.Join(dbPath, referencesDbName), opts)
 	if err != nil {
 		return err
 	}
 	b.referencesDb = db
 
-	db, err = pogreb.Open(filepath.Join(dbPath, ninjaDbName), nil)
+	db, err = pogreb.Open(filepath.Join(dbPath, ninjaDbName), opts)
 	if err != nil {
 		return err
 	}
