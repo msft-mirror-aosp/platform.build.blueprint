@@ -354,7 +354,7 @@ type BaseModuleContext interface {
 	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
 	// Module returned by PrimaryModule without data races.  This can be used to perform singleton actions that are
 	// only done once for all variants of a module.
-	IsPrimaryModule(module ModuleOrProxy) bool
+	IsPrimaryModule() bool
 
 	// FinalModule returns the last variant of the current module.  Variants of a module are always visited in
 	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
@@ -366,7 +366,7 @@ type BaseModuleContext interface {
 	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
 	// variants using VisitAllModuleVariants if the current module is the last one.  This can be used to perform
 	// singleton actions that are only done once for all variants of a module.
-	IsFinalModule(module ModuleOrProxy) bool
+	IsFinalModule() bool
 
 	// OtherModuleName returns the name of another Module.  See BaseModuleContext.ModuleName for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
@@ -1091,16 +1091,16 @@ func (m *baseModuleContext) PrimaryModule() Module {
 	return m.module.group.modules.firstModule().logicModule
 }
 
-func (m *baseModuleContext) IsPrimaryModule(module ModuleOrProxy) bool {
-	return m.module.group.modules.firstModule() == module.info()
+func (m *baseModuleContext) IsPrimaryModule() bool {
+	return m.module.group.modules.firstModule() == m.module
 }
 
 func (m *baseModuleContext) FinalModule() Module {
 	return m.module.group.modules.lastModule().logicModule
 }
 
-func (m *baseModuleContext) IsFinalModule(module ModuleOrProxy) bool {
-	return m.module.group.modules.lastModule() == module.info()
+func (m *baseModuleContext) IsFinalModule() bool {
+	return m.module.group.modules.lastModule() == m.module
 }
 
 func (m *baseModuleContext) AddNinjaFileDeps(deps ...string) {
