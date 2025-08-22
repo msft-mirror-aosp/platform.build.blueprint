@@ -478,9 +478,7 @@ func (s *singletonContext) ModuleVariantsFromName(referer ModuleProxy, name stri
 	}
 	result := make([]ModuleProxy, 0, len(moduleGroup.modules))
 	for _, moduleInfo := range moduleGroup.modules {
-		if moduleInfo.logicModule != nil {
-			result = append(result, ModuleProxy{moduleInfo})
-		}
+		result = append(result, ModuleProxy{moduleInfo})
 	}
 	return result
 }
