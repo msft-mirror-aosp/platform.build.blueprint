@@ -4206,6 +4206,24 @@ func (c *Context) VisitDirectDepsProxies(module ModuleOrProxy, visit func(Module
 	}
 }
 
+func (c *Context) VisitDirectDepsProxiesWithTags(module ModuleOrProxy, visit func(ModuleProxy, DependencyTag)) {
+	topModule := module.info()
+
+	var visiting *moduleInfo
+
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitDirectDepsProxies(%s, %s) for dependency %s",
+				topModule, funcName(visit), visiting))
+		}
+	}()
+
+	for _, dep := range topModule.directDeps {
+		visiting = dep.module
+		visit(ModuleProxy{dep.module}, dep.tag)
+	}
+}
+
 func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, DependencyTag)) {
 	topModule := module.info()
 
