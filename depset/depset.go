@@ -432,6 +432,42 @@ func (d DepSet[T]) ToList() []T {
 	return list
 }
 
+// SetMinus returns a new DepSet containing elements in the receiver DepSet 'd'
+// that are not present in the 'other' DepSet. The resulting DepSet is "flat"
+// (it has no transitive members) and inherits the traversal order from the receiver 'd'.
+func (d DepSet[T]) SetMinus(other DepSet[T]) DepSet[T] {
+	listA := d.ToList()
+	if len(listA) == 0 {
+		// If the receiver is empty, the result is always an empty DepSet.
+		return DepSet[T]{}
+	}
+
+	// Flatten the 'other' DepSet to a list. If it's empty, we don't need to do any
+	// subtraction, so we can return a new flat DepSet with the receiver's elements.
+	listB := other.ToList()
+	if len(listB) == 0 {
+		return New(d.order(), listA, nil)
+	}
+
+	// Create a map from the 'other' list for efficient lookups.
+	otherElements := make(map[T]bool, len(listB))
+	for _, item := range listB {
+		otherElements[item] = true
+	}
+
+	// Build the result slice by including only the elements from listA that do not
+	// exist in the otherElements map.
+	result := make([]T, 0, len(listA))
+	for _, item := range listA {
+		if _, exists := otherElements[item]; !exists {
+			result = append(result, item)
+		}
+	}
+
+	// Create a new, flat DepSet from the resulting slice with the same order as 'd'.
+	return New(d.order(), result, nil)
+}
+
 // firstUniqueInPlace returns all unique elements of a slice, keeping the first copy of
 // each.  It modifies the slice contents in place, and returns a subslice of the original
 // slice.
