@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/depset"
 	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
 )
@@ -253,6 +254,9 @@ type PackageInfo struct {
 	PkgRoot       string
 	PackageTarget string
 	TestTargets   []string
+
+	TransitivePkgRoot       depset.DepSet[string]
+	TransitivePackageTarget depset.DepSet[string]
 }
 
 var PackageProvider = blueprint.NewProvider[*PackageInfo]()
@@ -342,7 +346,7 @@ func (g *GoPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 	archiveFile := filepath.Join(pkgRoot,
 		filepath.FromSlash(g.properties.PkgPath)+".a")
 
-	ctx.VisitDepsDepthFirst(func(module blueprint.Module) {
+	ctx.VisitDirectDepsProxy(func(module blueprint.ModuleProxy) {
 		if ctx.OtherModuleDependencyTag(module) == PluginDepTag {
 			hasPlugins = true
 		}
@@ -379,14 +383,47 @@ func (g *GoPackage) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		return
 	}
 
+	incFlags, deps, _, _, transitivePkgRoot, transitivePackageTarget := collectGoDeps(ctx)
+
 	buildGoPackage(ctx, pkgRoot, g.properties.PkgPath, archiveFile,
-		srcs, genSrcs, g.properties.EmbedSrcs)
+		srcs, genSrcs, g.properties.EmbedSrcs, incFlags, deps)
+
 	blueprint.SetProvider(ctx, PackageProvider, &PackageInfo{
 		PkgPath:       g.properties.PkgPath,
 		PkgRoot:       pkgRoot,
 		PackageTarget: archiveFile,
 		TestTargets:   testResultFile,
+
+		TransitivePkgRoot:       transitivePkgRoot,
+		TransitivePackageTarget: transitivePackageTarget,
 	})
+}
+
+func collectGoDeps(ctx blueprint.ModuleContext) (incFlags, incFlagsDeps, linkFlags, linkFlagsDeps []string,
+	transitivePkgRoot, transitivePackageTarget depset.DepSet[string]) {
+
+	transitivePkgRootBuilder := depset.NewBuilder[string](depset.POSTORDER)
+	transitivePackageTargetBuilder := depset.NewBuilder[string](depset.POSTORDER)
+
+	ctx.VisitDirectDepsProxy(func(module blueprint.ModuleProxy) {
+		if info, ok := blueprint.OtherModuleProvider(ctx, module, PackageProvider); ok {
+			incDir := info.PkgRoot
+			target := info.PackageTarget
+			incFlags = append(incFlags, "-I "+incDir)
+			incFlagsDeps = append(incFlagsDeps, target)
+			transitivePkgRootBuilder.Direct(info.PkgRoot).Transitive(info.TransitivePkgRoot)
+			transitivePackageTargetBuilder.Direct(info.PackageTarget).Transitive(info.TransitivePackageTarget)
+		}
+	})
+
+	transitivePkgRoot = transitivePkgRootBuilder.Build()
+	transitivePackageTarget = transitivePackageTargetBuilder.Build()
+
+	linkFlagsDeps = transitivePackageTarget.ToList()
+	for _, libDir := range transitivePkgRoot.ToList() {
+		linkFlags = append(linkFlags, "-L "+libDir)
+	}
+	return
 }
 
 func buildVerifySerializers(ctx blueprint.ModuleContext, outputFile string, srcs []string) {
@@ -487,7 +524,7 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		g.installPath = filepath.Join(ctx.Config().(BootstrapConfig).HostToolDir(), name)
 	}
 
-	ctx.VisitDirectDeps(func(module blueprint.Module) {
+	ctx.VisitDirectDepsProxy(func(module blueprint.ModuleProxy) {
 		if ctx.OtherModuleDependencyTag(module) == PluginDepTag {
 			hasPlugins = true
 		}
@@ -496,8 +533,6 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		pluginSrc = filepath.Join(moduleGenSrcDir(ctx), "plugin.go")
 		genSrcs = append(genSrcs, pluginSrc)
 	}
-
-	var testDeps []string
 
 	if hasPlugins && !buildGoPluginLoader(ctx, "main", pluginSrc) {
 		return
@@ -514,31 +549,21 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 
 	testResultFile := buildGoTest(ctx, testRoot(ctx), testArchiveFile,
 		name, srcs, genSrcs, testSrcs, g.properties.EmbedSrcs)
-	testDeps = append(testDeps, testResultFile...)
 
-	buildGoPackage(ctx, objDir, "main", archiveFile, srcs, genSrcs, g.properties.EmbedSrcs)
+	incFlags, deps, linkFlags, linkFlagsDeps, _, _ := collectGoDeps(ctx)
 
-	var linkDeps []string
-	var libDirFlags []string
-	ctx.VisitDepsDepthFirst(func(module blueprint.Module) {
-		if info, ok := blueprint.OtherModuleProvider(ctx, module, PackageProvider); ok {
-			linkDeps = append(linkDeps, info.PackageTarget)
-			libDir := info.PkgRoot
-			libDirFlags = append(libDirFlags, "-L "+libDir)
-			testDeps = append(testDeps, info.TestTargets...)
-		}
-	})
+	buildGoPackage(ctx, objDir, "main", archiveFile, srcs, genSrcs, g.properties.EmbedSrcs, incFlags, deps)
 
 	linkArgs := map[string]string{}
-	if len(libDirFlags) > 0 {
-		linkArgs["libDirFlags"] = strings.Join(libDirFlags, " ")
+	if len(linkFlags) > 0 {
+		linkArgs["libDirFlags"] = strings.Join(linkFlags, " ")
 	}
 
 	ctx.Build(pctx, blueprint.BuildParams{
 		Rule:      link,
 		Outputs:   []string{aoutFile},
 		Inputs:    []string{archiveFile},
-		Implicits: linkDeps,
+		Implicits: linkFlagsDeps,
 		Args:      linkArgs,
 	})
 
@@ -546,7 +571,7 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 
 	var validations []string
 	if ctx.Config().(BootstrapConfig).RunGoTests() {
-		validations = testDeps
+		validations = testResultFile
 	}
 
 	if !g.skipInstall {
@@ -570,7 +595,7 @@ func buildGoPluginLoader(ctx blueprint.ModuleContext, pkgPath, pluginSrc string)
 	ret := true
 
 	var pluginPaths []string
-	ctx.VisitDirectDeps(func(module blueprint.Module) {
+	ctx.VisitDirectDepsProxy(func(module blueprint.ModuleProxy) {
 		if ctx.OtherModuleDependencyTag(module) == PluginDepTag {
 			if info, ok := blueprint.OtherModuleProvider(ctx, module, PackageProvider); ok {
 				pluginPaths = append(pluginPaths, info.PkgPath)
@@ -613,22 +638,12 @@ func generateEmbedcfgFile(ctx blueprint.ModuleContext, files []string, srcDir st
 }
 
 func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
-	pkgPath string, archiveFile string, srcs []string, genSrcs []string, embedSrcs []string) {
+	pkgPath string, archiveFile string, srcs []string, genSrcs []string, embedSrcs []string,
+	incFlags []string, deps []string) {
 
 	srcDir := moduleSrcDir(ctx)
 	srcFiles := pathtools.PrefixPaths(srcs, srcDir)
 	srcFiles = append(srcFiles, genSrcs...)
-
-	var incFlags []string
-	var deps []string
-	ctx.VisitDepsDepthFirst(func(module blueprint.Module) {
-		if info, ok := blueprint.OtherModuleProvider(ctx, module, PackageProvider); ok {
-			incDir := info.PkgRoot
-			target := info.PackageTarget
-			incFlags = append(incFlags, "-I "+incDir)
-			deps = append(deps, target)
-		}
-	})
 
 	compileArgs := map[string]string{
 		"pkgPath": pkgPath,
@@ -666,7 +681,23 @@ func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
 func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
 	pkgPath string, srcs, genSrcs, testSrcs []string, embedSrcs []string) []string {
 
+	var testDeps []string
+	ctx.VisitDirectDepsProxy(func(module blueprint.ModuleProxy) {
+		if info, ok := blueprint.OtherModuleProvider(ctx, module, PackageProvider); ok {
+			testDeps = append(testDeps, info.TestTargets...)
+		}
+	})
+
 	if len(testSrcs) == 0 {
+		if len(testDeps) > 0 {
+			testDependencies := filepath.Join(testRoot, "test.dependencies")
+			ctx.Build(pctx, blueprint.BuildParams{
+				Rule:        touch,
+				Outputs:     []string{testDependencies},
+				Validations: testDeps,
+			})
+			return []string{testDependencies}
+		}
 		return nil
 	}
 
@@ -678,8 +709,10 @@ func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
 	testFile := filepath.Join(testRoot, "test")
 	testPassed := filepath.Join(testRoot, "test.passed")
 
+	incFlags, deps, linkFlags, linkFlagsDeps, _, _ := collectGoDeps(ctx)
+
 	buildGoPackage(ctx, testRoot, pkgPath, testPkgArchive,
-		append(srcs, testSrcs...), genSrcs, embedSrcs)
+		append(srcs, testSrcs...), genSrcs, embedSrcs, incFlags, deps)
 
 	ctx.Build(pctx, blueprint.BuildParams{
 		Rule:    goTestMain,
@@ -690,17 +723,8 @@ func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
 		},
 	})
 
-	linkDeps := []string{testPkgArchive}
-	libDirFlags := []string{"-L " + testRoot}
-	testDeps := []string{}
-	ctx.VisitDepsDepthFirst(func(module blueprint.Module) {
-		if info, ok := blueprint.OtherModuleProvider(ctx, module, PackageProvider); ok {
-			linkDeps = append(linkDeps, info.PackageTarget)
-			libDir := info.PkgRoot
-			libDirFlags = append(libDirFlags, "-L "+libDir)
-			testDeps = append(testDeps, info.TestTargets...)
-		}
-	})
+	linkFlagsDeps = append([]string{testPkgArchive}, linkFlagsDeps...)
+	linkFlags = append([]string{"-L " + testRoot}, linkFlags...)
 
 	ctx.Build(pctx, blueprint.BuildParams{
 		Rule:      compile,
@@ -717,9 +741,9 @@ func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
 		Rule:      link,
 		Outputs:   []string{testFile},
 		Inputs:    []string{testArchive},
-		Implicits: linkDeps,
+		Implicits: linkFlagsDeps,
 		Args: map[string]string{
-			"libDirFlags": strings.Join(libDirFlags, " "),
+			"libDirFlags": strings.Join(linkFlags, " "),
 		},
 	})
 
