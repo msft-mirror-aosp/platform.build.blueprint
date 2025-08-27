@@ -4403,51 +4403,27 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 	if !c.buildActionsReady {
 		return []error{ErrBuildActionsNotReady}
 	}
-	toProcess := make(chan *moduleInfo)
-	errorCh := make(chan []error)
-	var wg sync.WaitGroup
-	go func() {
-		for m := range c.iterateAllVariants() {
-			toProcess <- m
-		}
-		close(toProcess)
-	}()
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
-		go func() {
-			var errors []error
-			for m := range toProcess {
-				for i, provider := range m.providers {
-					if provider != nil {
-						hash, err := proptools.CalculateHash(provider)
-						if err != nil {
-							errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set, and no longer hashable afterwards: %s", providerRegistry[i].typ, m.Name(), err.Error()))
-							continue
-						}
-						if m.providerInitialValueHashes[i] != hash {
-							errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set", providerRegistry[i].typ, m.Name()))
-						}
-					} else if m.providerInitialValueHashes[i] != 0 {
-						// This should be unreachable, because in setProvider we check if the provider has already been set.
-						errors = append(errors, fmt.Errorf("provider %q on module %q was unset somehow, this is an internal error", providerRegistry[i].typ, m.Name()))
-					}
-				}
-			}
-			if errors != nil {
-				errorCh <- errors
-			}
-			wg.Done()
-		}()
-	}
-	go func() {
-		wg.Wait()
-		close(errorCh)
-	}()
 
-	var errors []error
-	for newErrors := range errorCh {
-		errors = append(errors, newErrors...)
-	}
+	errors := parallelVisitSimple(c.iterateAllVariants(), 1000, func(m *moduleInfo) []error {
+		var errors []error
+		for i, provider := range m.providers {
+			if provider != nil {
+				hash, err := proptools.CalculateHash(provider)
+				if err != nil {
+					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set, and no longer hashable afterwards: %s", providerRegistry[i].typ, m.Name(), err.Error()))
+					continue
+				}
+				if m.providerInitialValueHashes[i] != hash {
+					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set", providerRegistry[i].typ, m.Name()))
+				}
+			} else if m.providerInitialValueHashes[i] != 0 {
+				// This should be unreachable, because in setProvider we check if the provider has already been set.
+				errors = append(errors, fmt.Errorf("provider %q on module %q was unset somehow, this is an internal error", providerRegistry[i].typ, m.Name()))
+			}
+		}
+		return errors
+	})
+
 	return errors
 }
 
@@ -4867,12 +4843,12 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				parallelVisit(slices.Values(incModules), unorderedVisitorImpl{}, parallelVisitLimit,
-					func(m *moduleInfo, pause pauseFunc) bool {
+				parallelVisitSimple(slices.Values(incModules), parallelVisitLimit,
+					func(m *moduleInfo) []error {
 						if !m.incrementalRestored {
 							c.cacheModuleBuildActions(m)
 						}
-						return false
+						return nil
 					})
 			}()
 		}
@@ -4899,6 +4875,42 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	}
 }
 
+// A simplified version of parallelVisit where multiple calls to it can be run at the same time.
+func parallelVisitSimple(moduleIter iter.Seq[*moduleInfo], limit int, visit func(module *moduleInfo) []error) []error {
+	toProcess := make(chan *moduleInfo)
+	errorCh := make(chan []error)
+	var wg sync.WaitGroup
+	go func() {
+		for m := range moduleIter {
+			toProcess <- m
+		}
+		close(toProcess)
+	}()
+	for i := 0; i < limit; i++ {
+		wg.Add(1)
+		go func() {
+			var errors []error
+			for m := range toProcess {
+				errors = append(errors, visit(m)...)
+			}
+			if len(errors) > 0 {
+				errorCh <- errors
+			}
+			wg.Done()
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(errorCh)
+	}()
+
+	var errors []error
+	for newErrors := range errorCh {
+		errors = append(errors, newErrors...)
+	}
+	return errors
+}
+
 func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
 	c.BeginEvent("write_incremental_modules")
 	defer c.EndEvent("write_incremental_modules")
@@ -4912,6 +4924,24 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 	baseWriter := newNinjaWriter(baseBuf)
 
 	if c.GetIncrementalEnabled() {
+		ninjaForModules := make(map[*moduleInfo][]byte)
+		var ninjaLock sync.Mutex
+		errs := parallelVisitSimple(slices.Values(modules), parallelVisitLimit, func(m *moduleInfo) []error {
+			if m.incrementalRestored {
+				if moduleBytes, err := c.buildActionsCache.readNinjaStatements(c.EncContext, m.buildActionCacheKey); err != nil {
+					return []error{err}
+				} else {
+					ninjaLock.Lock()
+					ninjaForModules[m] = moduleBytes
+					ninjaLock.Unlock()
+				}
+			}
+			return nil
+		})
+		if len(errs) > 0 {
+			return errors.Join(errs...)
+		}
+
 		inMemoryWriter := bytes.NewBuffer(nil)
 		var moduleBytes []byte
 		buf := bytes.NewBuffer(nil)
@@ -4924,8 +4954,8 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 				}
 				moduleBytes = inMemoryWriter.Bytes()
 				c.buildActionsCache.writeNinjaStatements(c.EncContext, module.buildActionCacheKey, moduleBytes)
-			} else if moduleBytes, err = c.buildActionsCache.readNinjaStatements(c.EncContext, module.buildActionCacheKey); err != nil {
-				return err
+			} else {
+				moduleBytes = ninjaForModules[module]
 			}
 			baseWriter.writer.Write(moduleBytes)
 		}
