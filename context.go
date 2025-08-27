@@ -4928,7 +4928,7 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 		var ninjaLock sync.Mutex
 		errs := parallelVisitSimple(slices.Values(modules), parallelVisitLimit, func(m *moduleInfo) []error {
 			if m.incrementalRestored {
-				if moduleBytes, err := c.buildActionsCache.readNinjaStatements(c.EncContext, m.buildActionCacheKey); err != nil {
+				if moduleBytes, err := c.buildActionsCache.readNinjaStatements(m.buildActionCacheKey); err != nil {
 					return []error{err}
 				} else {
 					ninjaLock.Lock()
@@ -4953,7 +4953,7 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 					return err
 				}
 				moduleBytes = inMemoryWriter.Bytes()
-				c.buildActionsCache.writeNinjaStatements(c.EncContext, module.buildActionCacheKey, moduleBytes)
+				c.buildActionsCache.writeNinjaStatements(module.buildActionCacheKey, moduleBytes)
 			} else {
 				moduleBytes = ninjaForModules[module]
 			}

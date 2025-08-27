@@ -1638,7 +1638,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 			Value: &providerValue,
 		}},
 	})
-	ctx.buildActionsCache.writeNinjaStatements(ctx.EncContext, &cacheKey, []byte(incrementalModuleNinja))
+	ctx.buildActionsCache.writeNinjaStatements(&cacheKey, []byte(incrementalModuleNinja))
 	ctx.SetIncrementalEnabled(true)
 	ctx.SetIncrementalAnalysis(true)
 
@@ -1742,7 +1742,7 @@ func TestCacheBuildActions(t *testing.T) {
 		t.Errorf("expected: %v actual %v", expectedProviders, *providers)
 	}
 
-	ninja, err := ctx.buildActionsCache.readNinjaStatements(ctx.EncContext, &cacheKey)
+	ninja, err := ctx.buildActionsCache.readNinjaStatements(&cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}
