@@ -4404,7 +4404,7 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 		return []error{ErrBuildActionsNotReady}
 	}
 
-	errors := parallelVisitSimple(c.iterateAllVariants(), 1000, func(m *moduleInfo) []error {
+	errors := parallelVisitSimple(c.iterateAllVariants(), 1000, func(m *moduleInfo, _ int) []error {
 		var errors []error
 		for i, provider := range m.providers {
 			if provider != nil {
@@ -4844,7 +4844,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			go func() {
 				defer wg.Done()
 				parallelVisitSimple(slices.Values(incModules), parallelVisitLimit,
-					func(m *moduleInfo) []error {
+					func(m *moduleInfo, _ int) []error {
 						if !m.incrementalRestored {
 							c.cacheModuleBuildActions(m)
 						}
@@ -4876,13 +4876,19 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 }
 
 // A simplified version of parallelVisit where multiple calls to it can be run at the same time.
-func parallelVisitSimple(moduleIter iter.Seq[*moduleInfo], limit int, visit func(module *moduleInfo) []error) []error {
-	toProcess := make(chan *moduleInfo)
+func parallelVisitSimple(moduleIter iter.Seq[*moduleInfo], limit int, visit func(module *moduleInfo, idx int) []error) []error {
+	type moduleToProcess struct {
+		module *moduleInfo
+		index  int
+	}
+	toProcess := make(chan moduleToProcess)
 	errorCh := make(chan []error)
 	var wg sync.WaitGroup
 	go func() {
+		idx := 0
 		for m := range moduleIter {
-			toProcess <- m
+			toProcess <- moduleToProcess{m, idx}
+			idx++
 		}
 		close(toProcess)
 	}()
@@ -4891,7 +4897,7 @@ func parallelVisitSimple(moduleIter iter.Seq[*moduleInfo], limit int, visit func
 		go func() {
 			var errors []error
 			for m := range toProcess {
-				errors = append(errors, visit(m)...)
+				errors = append(errors, visit(m.module, m.index)...)
 			}
 			if len(errors) > 0 {
 				errorCh <- errors
@@ -4923,46 +4929,71 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 	defer baseBuf.Flush()
 	baseWriter := newNinjaWriter(baseBuf)
 
-	if c.GetIncrementalEnabled() {
-		ninjaForModules := make(map[*moduleInfo][]byte)
-		var ninjaLock sync.Mutex
-		errs := parallelVisitSimple(slices.Values(modules), parallelVisitLimit, func(m *moduleInfo) []error {
-			if m.incrementalRestored {
-				if moduleBytes, err := c.buildActionsCache.readNinjaStatements(m.buildActionCacheKey); err != nil {
-					return []error{err}
-				} else {
-					ninjaLock.Lock()
-					ninjaForModules[m] = moduleBytes
-					ninjaLock.Unlock()
+	// Use a sync.Pool to reuse buffers and reduce memory allocations.
+	bufferPool := sync.Pool{
+		New: func() any {
+			// Pre-allocate a reasonably sized buffer for each new writer.
+			return bytes.NewBuffer(make([]byte, 0, 128*1024))
+		},
+	}
+	headerBufPool := sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+	writeSignals := make([]chan struct{}, len(modules))
+	for i := range writeSignals {
+		writeSignals[i] = make(chan struct{})
+	}
+
+	errs := parallelVisitSimple(slices.Values(modules), parallelVisitLimit, func(m *moduleInfo, idx int) []error {
+		var moduleBytes []byte
+		var err error
+
+		if m.incrementalRestored {
+			// Read from the cache if the module is restored.
+			moduleBytes, err = c.buildActionsCache.readNinjaStatements(m.buildActionCacheKey)
+		} else {
+			// Generate statements for dirty modules.
+			inMemoryWriter := bufferPool.Get().(*bytes.Buffer)
+			inMemoryWriter.Reset()
+			defer bufferPool.Put(inMemoryWriter)
+
+			headerBuf := headerBufPool.Get().(*bytes.Buffer)
+			headerBuf.Reset()
+			defer headerBufPool.Put(headerBuf)
+
+			mWriter := newNinjaWriter(inMemoryWriter)
+			err = c.writeOneModuleAction(m, mWriter, headerTemplate, headerBuf)
+			if err == nil {
+				// Make a copy of the bytes, as the buffer will be reused.
+				moduleBytes = slices.Clone(inMemoryWriter.Bytes())
+				// Write the newly generated statements back to the cache when in incremental mode.
+				if c.GetIncrementalEnabled() {
+					err = c.buildActionsCache.writeNinjaStatements(m.buildActionCacheKey, moduleBytes)
 				}
 			}
-			return nil
-		})
-		if len(errs) > 0 {
-			return errors.Join(errs...)
 		}
 
-		inMemoryWriter := bytes.NewBuffer(nil)
-		var moduleBytes []byte
-		buf := bytes.NewBuffer(nil)
-		for _, module := range modules {
-			if !module.incrementalRestored {
-				inMemoryWriter.Reset()
-				mWriter := newNinjaWriter(inMemoryWriter)
-				if err := c.writeOneModuleAction(module, mWriter, headerTemplate, buf); err != nil {
-					return err
-				}
-				moduleBytes = inMemoryWriter.Bytes()
-				c.buildActionsCache.writeNinjaStatements(module.buildActionCacheKey, moduleBytes)
-			} else {
-				moduleBytes = ninjaForModules[module]
-			}
+		// Wait for the signal from the previous thread before writing even when an
+		// error happens to ensure no concurrently writing of the ninja file.
+		if idx > 0 {
+			<-writeSignals[idx-1]
+		}
+
+		if err == nil {
 			baseWriter.writer.Write(moduleBytes)
 		}
+
+		// Signal the next thread that it's clear to write.
+		close(writeSignals[idx])
+		if err != nil {
+			return []error{err}
+		}
 		return nil
-	} else {
-		return c.writeModuleAction(modules, baseWriter, headerTemplate)
+	})
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
+	return nil
 }
 
 func (c *Context) writeModuleAction(modules []*moduleInfo, nw *ninjaWriter, headerTemplate *template.Template) error {
