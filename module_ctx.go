@@ -290,10 +290,6 @@ type EarlyModuleContext interface {
 type BaseModuleContext interface {
 	EarlyModuleContext
 
-	// GetDirectDepWithTag returns the Module the direct dependency with the specified name, or nil if
-	// none exists.  It panics if the dependency does not have the specified tag.
-	GetDirectDepWithTag(name string, tag DependencyTag) Module
-
 	GetDirectDepProxyWithTag(name string, tag DependencyTag) ModuleProxy
 
 	// VisitDirectDeps calls visit for each direct dependency.  If there are multiple direct dependencies on the same
@@ -306,33 +302,6 @@ type BaseModuleContext interface {
 
 	VisitDirectDepsProxy(visit func(proxy ModuleProxy))
 
-	// VisitDirectDepsIf calls pred for each direct dependency, and if pred returns true calls visit.  If there are
-	// multiple direct dependencies on the same module pred and visit will be called multiple times on that module and
-	// OtherModuleDependencyTag will return a different tag for each.
-	//
-	// The Module passed to the visit function should not be retained outside of the visit function, it may be
-	// invalidated by future mutators.
-	VisitDirectDepsIf(pred func(Module) bool, visit func(Module))
-
-	// VisitDepsDepthFirst calls visit for each transitive dependency, traversing the dependency tree in depth first
-	// order. visit will only be called once for any given module, even if there are multiple paths through the
-	// dependency tree to the module or multiple direct dependencies with different tags.  OtherModuleDependencyTag will
-	// return the tag for the first path found to the module.
-	//
-	// The Module passed to the visit function should not be retained outside of the visit function, it may be
-	// invalidated by future mutators.
-	VisitDepsDepthFirst(visit func(Module))
-
-	// VisitDepsDepthFirstIf calls pred for each transitive dependency, and if pred returns true calls visit, traversing
-	// the dependency tree in depth first order.  visit will only be called once for any given module, even if there are
-	// multiple paths through the dependency tree to the module or multiple direct dependencies with different tags.
-	// OtherModuleDependencyTag will return the tag for the first path found to the module.  The return value of pred
-	// does not affect which branches of the tree are traversed.
-	//
-	// The Module passed to the visit function should not be retained outside of the visit function, it may be
-	// invalidated by future mutators.
-	VisitDepsDepthFirstIf(pred func(Module) bool, visit func(Module))
-
 	// WalkDeps calls visit for each transitive dependency, traversing the dependency tree in top down order.  visit may
 	// be called multiple times for the same (child, parent) pair if there are multiple direct dependencies between the
 	// child and parent with different tags.  OtherModuleDependencyTag will return the tag for the currently visited
@@ -344,28 +313,12 @@ type BaseModuleContext interface {
 
 	WalkDepsProxy(visit func(ModuleProxy, ModuleProxy) bool)
 
-	// PrimaryModule returns the first variant of the current module.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
-	// Module returned by PrimaryModule without data races.  This can be used to perform singleton actions that are
-	// only done once for all variants of a module.
-	PrimaryModule() Module
-
-	// IsPrimaryModule returns if the current module is the first variant.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
-	// Module returned by PrimaryModule without data races.  This can be used to perform singleton actions that are
-	// only done once for all variants of a module.
+	// IsPrimaryModule returns if the current module is the first variant.  This can be used to perform singleton
+	// actions that are only done once for all variants of a module.
 	IsPrimaryModule() bool
 
-	// FinalModule returns the last variant of the current module.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
-	// variants using VisitAllModuleVariants if the current module == FinalModule().  This can be used to perform
-	// singleton actions that are only done once for all variants of a module.
-	FinalModule() Module
-
-	// IsFinalModule returns if the current module is the last variant.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
-	// variants using VisitAllModuleVariants if the current module is the last one.  This can be used to perform
-	// singleton actions that are only done once for all variants of a module.
+	// IsFinalModule returns if the current module is the last variant.  This can be used to perform singleton
+	// actions that are only done once for all variants of a module.
 	IsFinalModule() bool
 
 	// OtherModuleName returns the name of another Module.  See BaseModuleContext.ModuleName for more information.
@@ -924,12 +877,12 @@ func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *Build
 	return buf
 }
 
-func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) Module {
+func (m *baseModuleContext) GetDirectDepProxyWithTag(name string, tag DependencyTag) ModuleProxy {
 	var deps []depInfo
 	for _, dep := range m.module.directDeps {
 		if dep.module.Name() == name {
 			if dep.tag == tag {
-				return dep.module.logicModule
+				return ModuleProxy{dep.module}
 			}
 			deps = append(deps, dep)
 		}
@@ -937,15 +890,6 @@ func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) 
 
 	if len(deps) != 0 {
 		panic(fmt.Errorf("Unable to find dependency %q with requested tag %#v. Found: %#v", deps[0].module, tag, deps))
-	}
-
-	return nil
-}
-
-func (m *baseModuleContext) GetDirectDepProxyWithTag(name string, tag DependencyTag) ModuleProxy {
-	module := m.GetDirectDepWithTag(name, tag)
-	if module != nil {
-		return ModuleProxy{module.info()}
 	}
 
 	return ModuleProxy{}
@@ -992,76 +936,6 @@ func (m *baseModuleContext) VisitDirectDepsProxy(visit func(proxy ModuleProxy)) 
 	m.visitingDep = depInfo{}
 }
 
-func (m *baseModuleContext) VisitDirectDepsIf(pred func(Module) bool, visit func(Module)) {
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitDirectDepsIf(%s, %s, %s) for dependency %s",
-				m.module, funcName(pred), funcName(visit), m.visitingDep.module))
-		}
-	}()
-
-	m.visitingParent = m.module
-
-	for _, dep := range m.module.directDeps {
-		m.visitingDep = dep
-		if dep.module.logicModule == nil {
-			panic(fmt.Errorf("VisitDirectDepsIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
-		}
-		if pred(dep.module.logicModule) {
-			visit(dep.module.logicModule)
-		}
-	}
-
-	m.visitingParent = nil
-	m.visitingDep = depInfo{}
-}
-
-func (m *baseModuleContext) VisitDepsDepthFirst(visit func(Module)) {
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitDepsDepthFirst(%s, %s) for dependency %s",
-				m.module, funcName(visit), m.visitingDep.module))
-		}
-	}()
-
-	m.context.walkDeps(m.module, false, nil, func(dep depInfo, parent *moduleInfo) {
-		m.visitingParent = parent
-		m.visitingDep = dep
-		if dep.module.logicModule == nil {
-			panic(fmt.Errorf("VisitDepsDepthFirst visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
-		}
-		visit(dep.module.logicModule)
-	})
-
-	m.visitingParent = nil
-	m.visitingDep = depInfo{}
-}
-
-func (m *baseModuleContext) VisitDepsDepthFirstIf(pred func(Module) bool,
-	visit func(Module)) {
-
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitDepsDepthFirstIf(%s, %s, %s) for dependency %s",
-				m.module, funcName(pred), funcName(visit), m.visitingDep.module))
-		}
-	}()
-
-	m.context.walkDeps(m.module, false, nil, func(dep depInfo, parent *moduleInfo) {
-		if pred(dep.module.logicModule) {
-			m.visitingParent = parent
-			m.visitingDep = dep
-			if dep.module.logicModule == nil {
-				panic(fmt.Errorf("VisitDepsDepthFirstIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
-			}
-			visit(dep.module.logicModule)
-		}
-	})
-
-	m.visitingParent = nil
-	m.visitingDep = depInfo{}
-}
-
 func (m *baseModuleContext) WalkDeps(visit func(child, parent Module) bool) {
 	m.context.walkDeps(m.module, true, func(dep depInfo, parent *moduleInfo) bool {
 		m.visitingParent = parent
@@ -1087,16 +961,8 @@ func (m *baseModuleContext) WalkDepsProxy(visit func(child, parent ModuleProxy) 
 	m.visitingDep = depInfo{}
 }
 
-func (m *baseModuleContext) PrimaryModule() Module {
-	return m.module.group.modules.firstModule().logicModule
-}
-
 func (m *baseModuleContext) IsPrimaryModule() bool {
 	return m.module.group.modules.firstModule() == m.module
-}
-
-func (m *baseModuleContext) FinalModule() Module {
-	return m.module.group.modules.lastModule().logicModule
 }
 
 func (m *baseModuleContext) IsFinalModule() bool {
