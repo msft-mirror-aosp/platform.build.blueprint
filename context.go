@@ -418,6 +418,9 @@ type moduleInfo struct {
 	cachedName string
 	// cachedString stores the result of Module.String() after the end of GenerateBuildActions for use in ModuleProxy.String().
 	cachedString string
+	// cachedUniqueName stores the result of UniqueName after the end of GenerateBuildActions for use when sorting
+	// modules.
+	cachedUniqueName string
 
 	incrementalInfo
 }
@@ -3457,6 +3460,8 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				mctx.module.propertyPos = nil
 			}
 
+			module.cachedUniqueName = uniqueName
+
 			newErrs := c.processLocalBuildActions(&module.actionDefs,
 				&mctx.actionDefs, liveGlobals)
 			if len(newErrs) > 0 {
@@ -4704,19 +4709,6 @@ func (s depSorter) Swap(i, j int) {
 	s.deps[i], s.deps[j] = s.deps[j], s.deps[i]
 }
 
-type moduleSorter struct {
-	modules       []*moduleInfo
-	nameInterface NameInterface
-}
-
-func (s moduleSorter) Len() int {
-	return len(s.modules)
-}
-
-func (s moduleSorter) Less(i, j int) bool {
-	return moduleLess(s.modules[i], s.modules[j], s.nameInterface)
-}
-
 func moduleLess(iMod, jMod *moduleInfo, nameInterface NameInterface) bool {
 	iName := nameInterface.UniqueName(newNamespaceContext(iMod), iMod.group.name)
 	jName := nameInterface.UniqueName(newNamespaceContext(jMod), jMod.group.name)
@@ -4732,10 +4724,6 @@ func moduleLess(iMod, jMod *moduleInfo, nameInterface NameInterface) bool {
 	} else {
 		return iName < jName
 	}
-}
-
-func (s moduleSorter) Swap(i, j int) {
-	s.modules[i], s.modules[j] = s.modules[j], s.modules[i]
 }
 
 func GetNinjaShardFiles(ninjaFile string) []string {
@@ -4767,8 +4755,24 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 		}
 		modules = append(modules, module)
 	}
-	sort.Sort(moduleSorter{modules, c.nameInterface})
-	sort.Sort(moduleSorter{incModules, c.nameInterface})
+
+	// cachedNameModuleLess is similar to moduleLess, but uses the namespaced name cached in
+	// moduleInfo.uniqueName instead of recomputing it each time.
+	cachedNameModuleLess := func(a, b *moduleInfo) int {
+		if a.cachedUniqueName == b.cachedUniqueName {
+			if a.variant.name == b.variant.name {
+				panic(fmt.Sprintf("duplicate module name: %s %s: %#v and %#v\n",
+					a.cachedUniqueName, a.variant.name, a.variant.variations, a.variant.variations))
+			} else {
+				return cmp.Compare(a.variant.name, b.variant.name)
+			}
+		} else {
+			return cmp.Compare(a.cachedUniqueName, b.cachedUniqueName)
+		}
+	}
+
+	slices.SortFunc(modules, cachedNameModuleLess)
+	slices.SortFunc(incModules, cachedNameModuleLess)
 
 	phonys := c.deduplicateOrderOnlyDeps(append(modules, incModules...))
 
