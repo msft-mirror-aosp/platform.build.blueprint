@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 	"text/scanner"
 )
 
@@ -43,11 +44,11 @@ type Assignment struct {
 	Value      Expression
 	EqualsPos  scanner.Position
 	Assigner   string
-	Referenced bool
+	Referenced atomic.Bool
 }
 
 func (a *Assignment) String() string {
-	return fmt.Sprintf("%s@%s %s %s %t", a.Name, a.EqualsPos, a.Assigner, a.Value, a.Referenced)
+	return fmt.Sprintf("%s@%s %s %s %t", a.Name, a.EqualsPos, a.Assigner, a.Value, a.Referenced.Load())
 }
 
 func (a *Assignment) Pos() scanner.Position { return a.NamePos }
@@ -187,7 +188,7 @@ func hackyExpressionsAreSame(a Expression, b Expression) (equal bool, err error)
 }
 
 func hackyFingerprint(expression Expression) (fingerprint []byte, err error) {
-	assignment := &Assignment{"a", noPos, expression, noPos, "=", false}
+	assignment := &Assignment{"a", noPos, expression, noPos, "=", atomic.Bool{}}
 	module := &File{}
 	module.Defs = append(module.Defs, assignment)
 	p := newPrinter(module)
@@ -410,7 +411,7 @@ func (x *Variable) Copy() Expression {
 
 func (x *Variable) Eval(scope *Scope) (Expression, error) {
 	if assignment := scope.Get(x.Name); assignment != nil {
-		assignment.Referenced = true
+		assignment.Referenced.Store(true)
 		return assignment.Value, nil
 	}
 	return nil, fmt.Errorf("undefined variable %s", x.Name)
@@ -422,7 +423,7 @@ func (x *Variable) PrintfInto(value string) error {
 
 func (x *Variable) MarkReferencedVariables(scope *Scope) {
 	if assignment := scope.Get(x.Name); assignment != nil {
-		assignment.Referenced = true
+		assignment.Referenced.Store(true)
 	}
 }
 
