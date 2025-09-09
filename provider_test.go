@@ -37,6 +37,38 @@ func newProviderTestModule() (Module, []interface{}) {
 	return m, []interface{}{&m.properties, &m.SimpleName.Properties}
 }
 
+var providerTestSingletonProvider = NewSingletonProvider[bool]()
+
+type providerTestParallelSingleton struct {
+	visitAllSingletons bool
+}
+
+func (s *providerTestParallelSingleton) GenerateBuildActions(ctx SingletonContext) {
+	if s.visitAllSingletons {
+		ctx.VisitAllSingletons(func(s SingletonProxy) {})
+	}
+	ctx.SetSingletonProvider(providerTestSingletonProvider, true)
+}
+
+type providerTestSequentialSingleton struct {
+	getModuleProvider bool
+	setModuleProvider bool
+}
+
+func (s *providerTestSequentialSingleton) GenerateBuildActions(ctx SingletonContext) {
+	if s.getModuleProvider {
+		ctx.VisitAllSingletons(func(s SingletonProxy) {
+			ctx.OtherSingletonProvider(s, providerTestMutatorInfoProvider)
+		})
+	}
+	if s.setModuleProvider {
+		ctx.SetSingletonProvider(providerTestMutatorInfoProvider, nil)
+	}
+	ctx.VisitAllSingletons(func(s SingletonProxy) {
+		ctx.OtherSingletonProvider(s, providerTestSingletonProvider)
+	})
+}
+
 type providerTestMutatorInfo struct {
 	Values []string
 }
@@ -386,6 +418,147 @@ func TestInvalidProvidersUsage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.prop, func(t *testing.T) {
 			run(t, tt.module, tt.prop, tt.panicMsg)
+		})
+	}
+}
+
+func TestInvalidSingletonProvidersUsage(t *testing.T) {
+	type singletonType struct {
+		name     string
+		factory  SingletonFactory
+		parallel bool
+	}
+
+	run := func(t *testing.T, singletons []singletonType, panicMsg string) {
+		t.Helper()
+		ctx := NewContext()
+		for _, s := range singletons {
+			ctx.RegisterSingletonType(s.name, s.factory, s.parallel)
+		}
+
+		ctx.MockFileSystem(map[string][]byte{
+			"Android.bp": {},
+		})
+
+		_, errs := ctx.ParseBlueprintsFiles("Android.bp", nil)
+
+		if len(errs) == 0 {
+			_, errs = ctx.ResolveDependencies(nil)
+		}
+
+		if len(errs) == 0 {
+			_, errs = ctx.PrepareBuildActions(nil)
+		}
+
+		if len(panicMsg) == 0 {
+			if len(errs) != 0 {
+				t.Fatal("got an error: ", errs)
+			}
+			return
+		}
+
+		if len(errs) == 0 {
+			t.Fatal("expected an error")
+		}
+
+		if len(errs) > 1 {
+			t.Errorf("expected a single error, got %d:", len(errs))
+			for i, err := range errs {
+				t.Errorf("%d:  %s", i, err)
+			}
+			t.FailNow()
+		}
+
+		if panicErr, ok := errs[0].(panicError); ok {
+			if panicErr.panic != panicMsg {
+				t.Fatalf("expected panic %q, got %q", panicMsg, panicErr.panic)
+			}
+		} else {
+			t.Fatalf("expected a panicError, got %T: %s", errs[0], errs[0].Error())
+		}
+
+	}
+
+	tests := []struct {
+		testName   string
+		singletons []singletonType
+		panicMsg   string
+	}{
+		{
+			testName: "get_non_singleton_provider",
+			singletons: []singletonType{
+				{
+					name: "parallel_singleton",
+					factory: func() Singleton {
+						return &providerTestParallelSingleton{}
+					},
+					parallel: true,
+				},
+				{
+					name: "sequential_singleton",
+					factory: func() Singleton {
+						return &providerTestSequentialSingleton{
+							getModuleProvider: true,
+						}
+					},
+					parallel: false,
+				},
+			},
+			panicMsg: "Can't get value of non-singleton provider *blueprint.providerTestMutatorInfo usign singleton specific get method",
+		},
+		{
+			testName: "set_non_singleton_provider",
+			singletons: []singletonType{
+				{
+					name: "sequential_singleton",
+					factory: func() Singleton {
+						return &providerTestSequentialSingleton{
+							setModuleProvider: true,
+						}
+					},
+					parallel: false,
+				},
+			},
+			panicMsg: "Can't set value of non-singleton provider *blueprint.providerTestMutatorInfo inside singleton sequential_singleton",
+		},
+		{
+			testName: "set_get_singleton_provider",
+			singletons: []singletonType{
+				{
+					name: "parallel_singleton",
+					factory: func() Singleton {
+						return &providerTestParallelSingleton{}
+					},
+					parallel: true,
+				},
+				{
+					name: "sequential_singleton",
+					factory: func() Singleton {
+						return &providerTestSequentialSingleton{}
+					},
+					parallel: false,
+				},
+			},
+			panicMsg: "",
+		},
+		{
+			testName: "visit_all_singletons_in_parallel_singleton",
+			singletons: []singletonType{
+				{
+					name: "parallel_singleton",
+					factory: func() Singleton {
+						return &providerTestParallelSingleton{visitAllSingletons: true}
+					},
+					parallel: true,
+				},
+			},
+			panicMsg: "VisitAllSingletons not allowed in parallel singletons parallel_singleton",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.testName, func(t *testing.T) {
+			run(t, tt.singletons, tt.panicMsg)
 		})
 	}
 }

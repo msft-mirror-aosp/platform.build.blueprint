@@ -54,6 +54,21 @@ type SingletonContext interface {
 	// GenerateBuildActions pass for the provider on the module.
 	ModuleProvider(module ModuleOrProxy, provider AnyProviderKey) (any, bool)
 
+	// SetSingletonProvider sets the value for a provider for the current singleton.
+	// It panics if not called during the appropriate GenerateBuildActions pass for
+	// the provider, if the provider is not registered as a singleton provider, if the value
+	// is not of the appropriate type, or if the value has already been set. The value should not
+	// be modified after being passed to SetSingletonProvider.
+	SetSingletonProvider(provider AnyProviderKey, value any)
+
+	// OtherSingletonProvider returns the value, if any, for the provider for a singleton. If the value for the
+	// provider was not set it returns the zero value of the type of the provider, which means the
+	// return value can always be type-asserted to the type of the provider. The return value should
+	// always be considered read-only. It panics if called before the appropriate
+	// GenerateBuildActions completes for the provider on the singleton, or if the provider is not
+	// registered as a singleton provider.
+	OtherSingletonProvider(singleton SingletonProxy, provider AnyProviderKey) (any, bool)
+
 	// ModuleErrorf reports an error at the line number of the module type in the module definition.
 	ModuleErrorf(module ModuleOrProxy, format string, args ...interface{})
 
@@ -142,6 +157,8 @@ type SingletonContext interface {
 	// VisitAllModuleVariantProxies calls visit for each variant of the given module.
 	VisitAllModuleVariantProxies(module ModuleProxy, visit func(proxy ModuleProxy))
 
+	VisitAllSingletons(visit func(singleton SingletonProxy))
+
 	// PrimaryModule returns the first variant of the given module.  This can be used to perform
 	// singleton actions that are only done once for all variants of a module.
 	PrimaryModule(module Module) Module
@@ -194,14 +211,18 @@ type SingletonContext interface {
 	OtherModuleNamespace(module ModuleOrProxy) Namespace
 }
 
+type SingletonProxy struct {
+	singleton *singletonInfo
+}
+
 var _ SingletonContext = (*singletonContext)(nil)
 
 type singletonContext struct {
-	name    string
-	context *Context
-	config  interface{}
-	scope   *localScope
-	globals *liveTracker
+	singleton *singletonInfo
+	context   *Context
+	config    interface{}
+	scope     *localScope
+	globals   *liveTracker
 
 	ninjaFileDeps []string
 	errs          []error
@@ -216,7 +237,7 @@ func (s *singletonContext) Config() interface{} {
 }
 
 func (s *singletonContext) Name() string {
-	return s.name
+	return s.singleton.name
 }
 
 func (s *singletonContext) ModuleName(logicModule ModuleOrProxy) string {
@@ -237,6 +258,14 @@ func (s *singletonContext) ModuleType(logicModule ModuleOrProxy) string {
 
 func (s *singletonContext) ModuleProvider(logicModule ModuleOrProxy, provider AnyProviderKey) (any, bool) {
 	return s.context.ModuleProvider(logicModule, provider)
+}
+
+func (s *singletonContext) SetSingletonProvider(provider AnyProviderKey, value any) {
+	s.context.setSingletonProvider(s.singleton, provider.provider(), value)
+}
+
+func (s *singletonContext) OtherSingletonProvider(singleton SingletonProxy, provider AnyProviderKey) (any, bool) {
+	return s.context.singletonProvider(singleton.singleton, provider.provider())
 }
 
 func (s *singletonContext) BlueprintFile(logicModule ModuleOrProxy) string {
@@ -300,7 +329,7 @@ func (s *singletonContext) Build(pctx PackageContext, params BuildParams) {
 	s.scope.ReparentTo(pctx)
 
 	def, err := parseBuildParams(s.scope, &params, map[string]string{
-		"module_name": s.name,
+		"module_name": s.singleton.name,
 		"module_type": "singleton",
 	})
 	if err != nil {
@@ -448,6 +477,13 @@ func (s *singletonContext) VisitAllModuleVariants(module Module, visit func(Modu
 
 func (s *singletonContext) VisitAllModuleVariantProxies(module ModuleProxy, visit func(proxy ModuleProxy)) {
 	s.context.VisitAllModuleVariantProxies(module, visitProxyAdaptor(visit))
+}
+
+func (s *singletonContext) VisitAllSingletons(visit func(singleton SingletonProxy)) {
+	if s.singleton.parallel {
+		panic(fmt.Sprintf("VisitAllSingletons not allowed in parallel singletons %s", s.Name()))
+	}
+	s.context.VisitAllSingletons(visit)
 }
 
 func (s *singletonContext) AddNinjaFileDeps(deps ...string) {
