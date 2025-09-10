@@ -19,9 +19,11 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"hash/fnv"
 	"io"
 	"io/ioutil"
@@ -186,6 +188,7 @@ type Context struct {
 	orderOnlyStrings        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
 	incrementalDebugFile    string
 	EncContext              gobtools.EncContext
+	providerValueHashes     []uint64
 
 	moduleDebugDataChannel chan []byte
 
@@ -401,8 +404,7 @@ type moduleInfo struct {
 	actionDefs  localBuildActions
 	buildParams *[]BuildParams
 
-	providers                  []interface{}
-	providerInitialValueHashes []uint64
+	providerInfo
 
 	startedMutator  int
 	finishedMutator int
@@ -423,6 +425,11 @@ type moduleInfo struct {
 	cachedUniqueName string
 
 	incrementalInfo
+}
+
+type providerInfo struct {
+	providers                  []interface{}
+	providerInitialValueHashes []uint64
 }
 
 // @auto-generate: gob
@@ -604,6 +611,9 @@ type singletonInfo struct {
 
 	// set during PrepareBuildActions
 	actionDefs localBuildActions
+	providerInfo
+	startedGenerateBuildActions  bool
+	finishedGenerateBuildActions bool
 }
 
 type mutatorInfo struct {
@@ -3518,12 +3528,14 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 	scope := newLocalScope(nil, singletonNamespacePrefix(info.name))
 
 	sctx := &singletonContext{
-		name:    info.name,
-		context: c,
-		config:  config,
-		scope:   scope,
-		globals: liveGlobals,
+		singleton: info,
+		context:   c,
+		config:    config,
+		scope:     scope,
+		globals:   liveGlobals,
 	}
+
+	info.startedGenerateBuildActions = true
 
 	func() {
 		defer func() {
@@ -3539,6 +3551,8 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 		}()
 		info.singleton.GenerateBuildActions(sctx)
 	}()
+
+	info.finishedGenerateBuildActions = true
 
 	if len(sctx.errs) > 0 {
 		errs = append(errs, sctx.errs...)
@@ -3604,6 +3618,27 @@ func (c *Context) generateParallelSingletonBuildActions(config interface{},
 	return deps, errs
 }
 
+func (c *Context) calculateProvidersHashes() {
+	hashers := make([]hash.Hash64, len(providerRegistry))
+	var wg sync.WaitGroup
+	for i := range hashers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, 8)
+			hashers[i] = fnv.New64()
+			c.visitAllModuleInfos(func(m *moduleInfo) {
+				binary.BigEndian.PutUint64(buf, m.providerInitialValueHashes[i])
+				hashers[i].Write(buf)
+			})
+		}()
+	}
+	wg.Wait()
+	for i := range hashers {
+		c.providerValueHashes = append(c.providerValueHashes, hashers[i].Sum64())
+	}
+}
+
 func (c *Context) generateSingletonBuildActions(config interface{},
 	singletons []*singletonInfo, liveGlobals *liveTracker) ([]string, []error) {
 
@@ -3625,6 +3660,10 @@ func (c *Context) generateSingletonBuildActions(config interface{},
 	// Force a resort of the module groups before running singletons so that two singletons running in parallel
 	// don't cause a data race when they trigger a resort in VisitAllModules.
 	c.sortedModuleGroups()
+
+	if c.GetIncrementalEnabled() {
+		c.calculateProvidersHashes()
+	}
 
 	// First, take care of any singletons that want to run in parallel.
 	deps, errs = c.generateParallelSingletonBuildActions(config, singletons, liveGlobals)
@@ -4365,6 +4404,24 @@ func (c *Context) VisitAllModuleVariantProxies(module ModuleProxy, visit func(Mo
 		visitingModule = module
 		visit(ModuleProxy{module})
 	})
+}
+
+func (c *Context) VisitAllSingletons(visit func(singleton SingletonProxy)) {
+	var singleton *singletonInfo
+
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllSingletons(%s) for %s",
+				funcName(visit), singleton.name))
+		}
+	}()
+
+	for _, singleton = range c.singletonInfo {
+		// Only return the finished ones
+		if singleton.finishedGenerateBuildActions {
+			visit(SingletonProxy{singleton: singleton})
+		}
+	}
 }
 
 func (c *Context) ModuleToProxy(module ModuleOrProxy) ModuleProxy {

@@ -45,6 +45,8 @@ import (
 // necessary for the getters and setters to make deep copies of the values, likely extending
 // proptools.CloneProperties to do so.
 
+const singletonTag = "singleton"
+
 type typedProviderKey[K any] struct {
 	providerKey
 }
@@ -77,6 +79,15 @@ var providerRegistry []*providerKey
 // any module later in the build graph.
 func NewProvider[K any]() ProviderKey[K] {
 	return NewMutatorProvider[K]("")
+}
+
+// NewSingletonProvider returns a ProviderKey for the given type.
+//
+// The returned ProviderKey can be used to set a value of the ProviderKey's type for a singleton
+// inside GenerateBuildActions for the singleton, and to get the value from GenerateBuildActions from
+// any singleton later in the build graph.
+func NewSingletonProvider[K any]() ProviderKey[K] {
+	return NewMutatorProvider[K](singletonTag)
 }
 
 // NewMutatorProvider returns a ProviderKey for the given type.
@@ -147,29 +158,48 @@ func (c *Context) setProvider(m *moduleInfo, provider *providerKey, value any) {
 		}
 	}
 
-	if m.providers == nil {
-		m.providers = make([]any, len(providerRegistry))
+	c.setProviderInternal(&m.providerInfo, provider, value)
+}
+
+func (c *Context) setSingletonProvider(s *singletonInfo, provider *providerKey, value any) {
+	if provider.mutator != singletonTag {
+		panic(fmt.Sprintf("Can't set value of non-singleton provider %s inside singleton %s", provider.typ, s.name))
+	} else {
+		if !s.startedGenerateBuildActions {
+			panic(fmt.Sprintf("Can't set value of provider %s before %s's GenerateBuildActions started",
+				provider.typ, s.name))
+		} else if s.finishedGenerateBuildActions {
+			panic(fmt.Sprintf("Can't set value of provider %s after %s's GenerateBuildActions finished",
+				provider.typ, s.name))
+		}
+	}
+	c.setProviderInternal(&s.providerInfo, provider, value)
+}
+
+func (c *Context) setProviderInternal(info *providerInfo, provider *providerKey, value any) {
+	if info.providers == nil {
+		info.providers = make([]any, len(providerRegistry))
 	}
 
-	if m.providers[provider.id] != nil {
+	if info.providers[provider.id] != nil {
 		panic(fmt.Sprintf("Value of provider %s is already set", provider.typ))
 	}
 
-	m.providers[provider.id] = value
+	info.providers[provider.id] = value
 
 	containsConfigurableChan := make(chan bool)
 	go func() {
 		containsConfigurableChan <- proptools.ContainsConfigurable(value)
 	}()
 
-	if m.providerInitialValueHashes == nil {
-		m.providerInitialValueHashes = make([]uint64, len(providerRegistry))
+	if info.providerInitialValueHashes == nil {
+		info.providerInitialValueHashes = make([]uint64, len(providerRegistry))
 	}
 	hash, err := proptools.CalculateHash(value)
 	if err != nil {
 		panic(fmt.Sprintf("Can't set value of provider %s: %s", provider.typ, err.Error()))
 	}
-	m.providerInitialValueHashes[provider.id] = hash
+	info.providerInitialValueHashes[provider.id] = hash
 
 	if <-containsConfigurableChan {
 		panic(fmt.Sprintf("Providers can't contain Configurable objects: %s", provider.typ))
@@ -187,6 +217,18 @@ func (c *Context) provider(m *moduleInfo, provider *providerKey) (any, bool) {
 	maybeRestoreProviders(c, m, provider)
 	if len(m.providers) > provider.id {
 		if p := m.providers[provider.id]; p != nil {
+			return p, true
+		}
+	}
+
+	return nil, false
+}
+
+func (c *Context) singletonProvider(s *singletonInfo, provider *providerKey) (any, bool) {
+	validateSingletonProvider(s, provider)
+	//maybeRestoreProviders(c, m, provider)
+	if len(s.providers) > provider.id {
+		if p := s.providers[provider.id]; p != nil {
 			return p, true
 		}
 	}
@@ -247,6 +289,15 @@ func validateProvider(c *Context, m *moduleInfo, provider *providerKey) {
 			panic(fmt.Sprintf("Can't get value of provider %s before mutator %s finished",
 				provider.typ, provider.mutator))
 		}
+	}
+}
+
+func validateSingletonProvider(s *singletonInfo, provider *providerKey) {
+	if provider.mutator != singletonTag {
+		panic(fmt.Sprintf("Can't get value of non-singleton provider %s usign singleton specific get method", provider.typ))
+	} else if !s.finishedGenerateBuildActions {
+		panic(fmt.Sprintf("Can't get value of singleton provider %s before %s's GenerateBuildActions finished",
+			provider.typ, s.name))
 	}
 }
 
