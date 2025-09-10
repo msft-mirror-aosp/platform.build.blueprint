@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"unsafe"
 
 	"github.com/google/blueprint/dbtools"
 	"github.com/google/blueprint/proptools"
@@ -253,7 +254,7 @@ func DecodeString(buf *bytes.Reader, s *string) error {
 	b := make([]byte, length)
 	_, err = io.ReadFull(buf, b)
 	if err == nil {
-		*s = string(b)
+		*s = unsafe.String(unsafe.SliceData(b), len(b))
 	}
 
 	return err
