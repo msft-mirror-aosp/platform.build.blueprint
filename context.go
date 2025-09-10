@@ -447,7 +447,10 @@ type moduleIncrementalInfo struct {
 
 type commonIncrementalInfo struct {
 	incrementalRestored bool
-	providersRestored   bool
+	// hasUnrestoredProvider is true when the module has been restored from the cache and the provider
+	// (indexed in the same order as providerRegistry) exists in the cache but has not yet been
+	// restored.
+	hasUnrestoredProvider []bool
 	// Whether this module support incremental build.
 	incrementalSupported bool
 	providerRestoreLock  sync.Mutex
@@ -3587,8 +3590,7 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 						Value: &p,
 					})
 			}
-			if err := c.buildActionsCache.writeProviders(c.EncContext, info.buildActionCacheKey,
-				&ProviderCachedData{Providers: providers}); err != nil {
+			if err := c.buildActionsCache.writeProviders(c.EncContext, info.buildActionCacheKey, providers); err != nil {
 				panic(err)
 			}
 		}
@@ -4556,7 +4558,7 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 				if m.providerInitialValueHashes[i] != hash {
 					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set", providerRegistry[i].typ, m.Name()))
 				}
-			} else if m.providerInitialValueHashes[i] != 0 {
+			} else if m.providerInitialValueHashes[i] != 0 && !m.hasUnrestoredProvider[i] {
 				// This should be unreachable, because in setProvider we check if the provider has already been set.
 				errors = append(errors, fmt.Errorf("provider %q on module %q was unset somehow, this is an internal error", providerRegistry[i].typ, m.Name()))
 			}
@@ -5367,12 +5369,8 @@ func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
 		GlobCache:        module.globCache,
 	}
 
-	providersData := ProviderCachedData{
-		Providers: providers,
-	}
-
 	err := errors.Join(c.buildActionsCache.writeModuleBuildAction(c.EncContext, module.buildActionCacheKey, &buildActionData),
-		c.buildActionsCache.writeProviders(c.EncContext, module.buildActionCacheKey, &providersData))
+		c.buildActionsCache.writeProviders(c.EncContext, module.buildActionCacheKey, providers))
 	if err != nil {
 		panic(err)
 	}

@@ -16,11 +16,14 @@ package blueprint
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"unsafe"
 
 	"github.com/akrylysov/pogreb"
+
 	"github.com/google/blueprint/dbtools"
 	"github.com/google/blueprint/gobtools"
 )
@@ -39,18 +42,25 @@ type BuildActionCacheKey struct {
 }
 
 func (k *BuildActionCacheKey) bytes() []byte {
-	return []byte(k.Id)
+	return unsafe.Slice(unsafe.StringData(k.Id), len(k.Id))
+}
+
+type ProviderCacheKey struct {
+	BuildActionCacheKey
+	ProviderId int
+}
+
+func (k *ProviderCacheKey) bytes() []byte {
+	buf := make([]byte, len(k.BuildActionCacheKey.Id), len(k.BuildActionCacheKey.Id)+8)
+	copy(buf, k.BuildActionCacheKey.bytes())
+	buf = binary.LittleEndian.AppendUint64(buf, uint64(k.ProviderId))
+	return buf
 }
 
 // @auto-generate: gob
 type CachedProvider struct {
 	Id    *providerKey
 	Value *any
-}
-
-// @auto-generate: gob
-type ProviderCachedData struct {
-	Providers []CachedProvider
 }
 
 // @auto-generate: gob
@@ -132,7 +142,7 @@ func (b *BuildActionCache) reset(c *Context, dbPath string) error {
 
 func (b *BuildActionCache) readModuleBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*ModuleActionCachedData, error) {
 	var ret ModuleActionCachedData
-	if err := read(ctx, b.moduleActionsDb, key, &ret); err != nil {
+	if err := read(ctx, b.moduleActionsDb, key.bytes(), &ret); err != nil {
 		return nil, err
 	}
 	return &ret, nil
@@ -140,26 +150,33 @@ func (b *BuildActionCache) readModuleBuildAction(ctx gobtools.EncContext, key *B
 
 func (b *BuildActionCache) readSingletonBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*SingletonActionCachedData, error) {
 	var ret SingletonActionCachedData
-	if err := read(ctx, b.singletonActionsDb, key, &ret); err != nil {
+	if err := read(ctx, b.singletonActionsDb, key.bytes(), &ret); err != nil {
 		return nil, err
 	}
 	return &ret, nil
 }
 
-func (b *BuildActionCache) readProviders(ctx gobtools.EncContext, key *BuildActionCacheKey) (*ProviderCachedData, error) {
-	var ret ProviderCachedData
-	if err := read(ctx, b.providerDb, key, &ret); err != nil {
-		return nil, err
+func (b *BuildActionCache) readProvider(ctx gobtools.EncContext, key *BuildActionCacheKey, provider *providerKey) (CachedProvider, error) {
+	var ret CachedProvider
+	providerKey := ProviderCacheKey{
+		*key,
+		provider.id,
 	}
-	return &ret, nil
+	err := read(ctx, b.providerDb, providerKey.bytes(), &ret)
+	if err != nil {
+		if *ret.Id != *provider {
+			panic(fmt.Errorf("restored provider %#v but got provider %#v", provider, ret.Id))
+		}
+	}
+	return ret, err
 }
 
 func (b *BuildActionCache) readNinjaStatements(key *BuildActionCacheKey) ([]byte, error) {
 	return b.ninjaDb.Get(key.bytes())
 }
 
-func read(ctx gobtools.EncContext, db dbtools.KeyValueStore, key *BuildActionCacheKey, ret gobtools.CustomDec) error {
-	v, err := db.Get(key.bytes())
+func read(ctx gobtools.EncContext, db dbtools.KeyValueStore, key []byte, ret gobtools.CustomDec) error {
+	v, err := db.Get(key)
 	if err != nil {
 		return err
 	}
@@ -172,28 +189,38 @@ func read(ctx gobtools.EncContext, db dbtools.KeyValueStore, key *BuildActionCac
 }
 
 func (b *BuildActionCache) writeModuleBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey, data *ModuleActionCachedData) error {
-	return write(ctx, b.moduleActionsDb, key, data)
+	return write(ctx, b.moduleActionsDb, key.bytes(), data)
 }
 
 func (b *BuildActionCache) writeSingletonBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey, data *SingletonActionCachedData) error {
-	return write(ctx, b.singletonActionsDb, key, data)
+	return write(ctx, b.singletonActionsDb, key.bytes(), data)
 }
 
-func (b *BuildActionCache) writeProviders(ctx gobtools.EncContext, key *BuildActionCacheKey, data *ProviderCachedData) error {
-	return write(ctx, b.providerDb, key, data)
+func (b *BuildActionCache) writeProviders(ctx gobtools.EncContext, key *BuildActionCacheKey, providers []CachedProvider) error {
+	for _, p := range providers {
+		providerKey := ProviderCacheKey{
+			*key,
+			p.Id.id,
+		}
+		err := write(ctx, b.providerDb, providerKey.bytes(), p)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (b *BuildActionCache) writeNinjaStatements(key *BuildActionCacheKey, data []byte) error {
 	return b.ninjaDb.Put(key.bytes(), data)
 }
 
-func write(ctx gobtools.EncContext, db dbtools.KeyValueStore, key *BuildActionCacheKey, data gobtools.CustomEnc) error {
+func write(ctx gobtools.EncContext, db dbtools.KeyValueStore, key []byte, data gobtools.CustomEnc) error {
 	buf := &bytes.Buffer{}
 	err := data.Encode(ctx, buf)
 	if err != nil {
 		return err
 	}
-	err = db.Put(key.bytes(), buf.Bytes())
+	err = db.Put(key, buf.Bytes())
 	if err != nil {
 		return err
 	}
