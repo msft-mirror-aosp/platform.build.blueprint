@@ -259,16 +259,20 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 		generateEncodeForCustomType(encodeBody, fieldName, pkgName, typName, imports)
 	// anonymous struct
 	case *ast.StructType:
-		for _, f := range t.Fields.List {
-			encodeBody.WriteString("\n")
-			fName := fieldName + "."
-			if len(f.Names) > 0 {
-				fName += f.Names[0].Name
-			}
-			generateEncodeForType(encodeBody, pkgName, f.Type, fName, imports)
-		}
+		generateEncodeForStruct(encodeBody, pkgName, t, fieldName, imports)
 	default:
 		panic(fmt.Errorf("unknown data type: %v %T", t, t))
+	}
+}
+
+func generateEncodeForStruct(encodeBody *strings.Builder, pkgName string, t *ast.StructType, fieldName string, imports map[string]bool) {
+	for _, f := range t.Fields.List {
+		encodeBody.WriteString("\n")
+		fName := fieldName + "."
+		if len(f.Names) > 0 {
+			fName += f.Names[0].Name
+		}
+		generateEncodeForType(encodeBody, pkgName, f.Type, fName, imports)
 	}
 }
 
@@ -420,16 +424,20 @@ func generateDecodeForType(decodeBody *strings.Builder, pkgName string, field as
 		generateDecodeForCustomType(decodeBody, fieldName, pkgName, typName, imports)
 	// anonymous struct
 	case *ast.StructType:
-		for _, f := range t.Fields.List {
-			decodeBody.WriteString("\n")
-			fName := fieldName + "."
-			if len(f.Names) > 0 {
-				fName += f.Names[0].Name
-			}
-			generateDecodeForType(decodeBody, pkgName, f.Type, fName, imports)
-		}
+		generateDecodeForStruct(decodeBody, pkgName, t, fieldName, imports)
 	default:
 		panic(fmt.Errorf("unknown data type: %v %T", t, t))
+	}
+}
+
+func generateDecodeForStruct(decodeBody *strings.Builder, pkgName string, t *ast.StructType, fieldName string, imports map[string]bool) {
+	for _, f := range t.Fields.List {
+		decodeBody.WriteString("\n")
+		fName := fieldName + "."
+		if len(f.Names) > 0 {
+			fName += f.Names[0].Name
+		}
+		generateDecodeForType(decodeBody, pkgName, f.Type, fName, imports)
 	}
 }
 
@@ -466,14 +474,7 @@ func generateEncode(pkgName string, structDecl *ast.TypeSpec, encodeBody *string
 	encodeBody.WriteString("\tvar err error\n")
 
 	if isStruct {
-		for _, field := range structType.Fields.List {
-			fieldName := "r."
-			if len(field.Names) > 0 {
-				fieldName += field.Names[0].Name
-			}
-			encodeBody.WriteString("\n")
-			generateEncodeForType(encodeBody, pkgName, field.Type, fieldName, imports)
-		}
+		generateEncodeForStruct(encodeBody, pkgName, structType, "r", imports)
 	} else {
 		fieldName := "r"
 		encodeBody.WriteString("\n")
@@ -492,14 +493,7 @@ func generateDecode(pkgName string, structDecl *ast.TypeSpec, decodeBody *string
 	decodeBody.WriteString("\tvar err error\n")
 
 	if isStruct {
-		for _, field := range structType.Fields.List {
-			fieldName := "r."
-			if len(field.Names) > 0 {
-				fieldName += field.Names[0].Name
-			}
-			decodeBody.WriteString("\n")
-			generateDecodeForType(decodeBody, pkgName, field.Type, fieldName, imports)
-		}
+		generateDecodeForStruct(decodeBody, pkgName, structType, "r", imports)
 	} else {
 		fieldName := "(*r)"
 		decodeBody.WriteString("\n")
