@@ -310,6 +310,27 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	if err = gobtools.EncodeInterface(ctx, buf, r.f31); err != nil {
 		return err
 	}
+
+	if r.f32 == nil {
+		if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeSimple(buf, int32(len(r.f32))); err != nil {
+			return err
+		}
+		for val16 := 0; val16 < len(r.f32); val16++ {
+			val17 := r.f32[val16] == nil
+			if err = gobtools.EncodeSimple(buf, val17); err != nil {
+				return err
+			}
+			if !val17 {
+				if err = (*r.f32[val16]).Encode(ctx, buf); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	return err
 }
 
@@ -649,6 +670,28 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 		r.f31 = nil
 	} else {
 		r.f31 = val85
+	}
+
+	var val87 int32
+	err = gobtools.DecodeSimple[int32](buf, &val87)
+	if err != nil {
+		return err
+	}
+	if val87 != -1 {
+		r.f32 = make([]*test.TypeStruct, val87)
+		for val88 := 0; val88 < int(val87); val88++ {
+			var val90 bool
+			if err = gobtools.DecodeSimple(buf, &val90); err != nil {
+				return err
+			}
+			if !val90 {
+				var val89 test.TypeStruct
+				if err = val89.Decode(ctx, buf); err != nil {
+					return err
+				}
+				r.f32[val88] = &val89
+			}
+		}
 	}
 
 	return err

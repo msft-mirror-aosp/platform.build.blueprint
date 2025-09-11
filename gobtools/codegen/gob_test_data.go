@@ -60,6 +60,7 @@ type TestStruct struct {
 	f29 [][]string
 	f30 depset.DepSet[string]
 	f31 any
+	f32 []*test.TypeStruct
 }
 
 type testStrings []string

@@ -112,6 +112,7 @@ func TestEncDec(t *testing.T) {
 				},
 				f30: depsetString,
 				f31: &defaultEcho,
+				f32: []*test.TypeStruct{{Name: "hhhhhhhh"}},
 			},
 			decoded: &TestStruct{},
 		},

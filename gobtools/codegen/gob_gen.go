@@ -86,6 +86,7 @@ const (
 type structMap map[string]*ast.TypeSpec
 
 type typeReference struct {
+	prefix     string
 	curPackage bool
 	pkgName    string
 	typeName   string
@@ -93,9 +94,9 @@ type typeReference struct {
 
 func (t typeReference) fullName() string {
 	if t.curPackage {
-		return t.typeName
+		return t.prefix + t.typeName
 	} else {
-		return t.pkgName + "." + t.typeName
+		return t.prefix + t.pkgName + "." + t.typeName
 	}
 }
 
@@ -160,11 +161,11 @@ func (g *gobGen) findTypeReference(expr ast.Expr, pkgName string) typeReference 
 		typeRef.typeName = t.Sel.Name
 	case *ast.ArrayType:
 		typeRef = g.findTypeReference(t.Elt, pkgName)
-		typeRef.typeName = "[]" + typeRef.typeName
+		typeRef.prefix = "[]" + typeRef.prefix
 		return typeRef
 	case *ast.StarExpr:
 		typeRef = g.findTypeReference(t.X, pkgName)
-		typeRef.typeName = "*" + typeRef.typeName
+		typeRef.prefix = "*" + typeRef.prefix
 		return typeRef
 	default:
 		panic(fmt.Errorf("unknown type to find name: %T", expr))
