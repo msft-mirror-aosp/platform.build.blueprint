@@ -295,7 +295,8 @@ func (g *gobGen) generateEncodeForStruct(encodeBody *strings.Builder, pkgName st
 		encodeBody.WriteString("\n")
 		fName := fieldName + "."
 		if len(f.Names) == 0 {
-			g.generateEncodeForType(encodeBody, pkgName, f.Type, fName)
+			typeRef := g.findTypeReference(f.Type, pkgName)
+			g.generateEncodeForType(encodeBody, pkgName, f.Type, fName+typeRef.typeName)
 		} else {
 			for _, name := range f.Names {
 				g.generateEncodeForType(encodeBody, pkgName, f.Type, fName+name.Name)
@@ -461,7 +462,8 @@ func (g *gobGen) generateDecodeForStruct(decodeBody *strings.Builder, pkgName st
 		decodeBody.WriteString("\n")
 		fName := fieldName + "."
 		if len(f.Names) == 0 {
-			g.generateDecodeForType(decodeBody, pkgName, f.Type, fName)
+			typeRef := g.findTypeReference(f.Type, pkgName)
+			g.generateDecodeForType(decodeBody, pkgName, f.Type, fName+typeRef.typeName)
 		} else {
 			for _, name := range f.Names {
 				g.generateDecodeForType(decodeBody, pkgName, f.Type, fName+name.Name)

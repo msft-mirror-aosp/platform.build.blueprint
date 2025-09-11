@@ -67,6 +67,7 @@ type TestStruct struct {
 	f33, f34 string
 	f35      struct{ s string }
 	f36      TestGeneric[int32]
+	*TestEmbedPtr
 }
 
 type testStrings []string
@@ -104,3 +105,8 @@ type testStringMap map[string][]string
 
 // @auto-generate: gob
 type testEchoMap map[TestEcho]*TestEcho
+
+// @auto-generate: gob
+type TestEmbedPtr struct {
+	f37 string
+}

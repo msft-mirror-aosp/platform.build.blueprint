@@ -15,6 +15,7 @@ func init() {
 	testEchosGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(testEchos) })
 	testStringMapGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(testStringMap) })
 	testEchoMapGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(testEchoMap) })
+	TestEmbedPtrGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(TestEmbedPtr) })
 }
 
 func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
@@ -345,6 +346,16 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 
 	if err = r.f36.Encode(ctx, buf); err != nil {
 		return err
+	}
+
+	val18 := r.TestEmbedPtr == nil
+	if err = gobtools.EncodeSimple(buf, val18); err != nil {
+		return err
+	}
+	if !val18 {
+		if err = (*r.TestEmbedPtr).Encode(ctx, buf); err != nil {
+			return err
+		}
 	}
 	return err
 }
@@ -727,6 +738,18 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 		return err
 	}
 
+	var val98 bool
+	if err = gobtools.DecodeSimple(buf, &val98); err != nil {
+		return err
+	}
+	if !val98 {
+		var val97 TestEmbedPtr
+		if err = val97.Decode(ctx, buf); err != nil {
+			return err
+		}
+		r.TestEmbedPtr = &val97
+	}
+
 	return err
 }
 
@@ -957,4 +980,30 @@ var testEchoMapGobRegId int16
 
 func (r testEchoMap) GetTypeId() int16 {
 	return testEchoMapGobRegId
+}
+
+func (r TestEmbedPtr) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.f37); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r *TestEmbedPtr) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.f37)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var TestEmbedPtrGobRegId int16
+
+func (r TestEmbedPtr) GetTypeId() int16 {
+	return TestEmbedPtrGobRegId
 }
