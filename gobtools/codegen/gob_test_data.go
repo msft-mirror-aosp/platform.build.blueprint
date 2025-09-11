@@ -68,6 +68,7 @@ type TestStruct struct {
 	f35      struct{ s string }
 	f36      TestGeneric[int32]
 	*TestEmbedPtr
+	f38 test.TypeBasic
 }
 
 type testStrings []string

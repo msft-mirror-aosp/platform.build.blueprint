@@ -357,6 +357,10 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 			return err
 		}
 	}
+
+	if err = gobtools.EncodeSimple(buf, int64(int(r.f38))); err != nil {
+		return err
+	}
 	return err
 }
 
@@ -749,6 +753,15 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 		}
 		r.TestEmbedPtr = &val97
 	}
+
+	var val101 int
+	var val102 int64
+	err = gobtools.DecodeSimple[int64](buf, &val102)
+	if err != nil {
+		return err
+	}
+	val101 = int(val102)
+	r.f38 = test.TypeBasic(val101)
 
 	return err
 }

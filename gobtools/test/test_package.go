@@ -6,6 +6,8 @@ type TypeAlias = []TypeStruct
 
 type TypeIdent TypeStruct
 
+type TypeBasic int
+
 type TypeInterface interface {
 	print(value string) string
 }

@@ -118,6 +118,7 @@ func TestEncDec(t *testing.T) {
 				f35:          struct{ s string }{s: "kkkkkkkkk"},
 				f36:          TestGeneric[int32]{t: 12345},
 				TestEmbedPtr: &TestEmbedPtr{f37: "mmmmmmmm"},
+				f38:          test.TypeBasic(1),
 			},
 			decoded: &TestStruct{},
 		},

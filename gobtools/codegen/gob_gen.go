@@ -24,6 +24,7 @@ import (
 	"go/parser"
 	"go/scanner"
 	"go/token"
+	"go/types"
 	"maps"
 	"os"
 	"path"
@@ -154,6 +155,12 @@ func (g *gobGen) findTypeReference(expr ast.Expr, pkgName string) typeReference 
 	var typeRef typeReference
 	switch t := expr.(type) {
 	case *ast.Ident:
+		for _, basicType := range types.Typ {
+			if t.Name == basicType.Name() {
+				// basic types (like int) have no package
+				pkgName = ""
+			}
+		}
 		typeRef.pkgName = pkgName
 		typeRef.typeName = t.Name
 	case *ast.SelectorExpr:
@@ -171,7 +178,7 @@ func (g *gobGen) findTypeReference(expr ast.Expr, pkgName string) typeReference 
 		panic(fmt.Errorf("unknown type to find name: %T", expr))
 	}
 
-	typeRef.curPackage = typeRef.pkgName == g.curPackage
+	typeRef.curPackage = typeRef.pkgName == g.curPackage || typeRef.pkgName == ""
 
 	return typeRef
 }
