@@ -294,10 +294,13 @@ func (g *gobGen) generateEncodeForStruct(encodeBody *strings.Builder, pkgName st
 	for _, f := range t.Fields.List {
 		encodeBody.WriteString("\n")
 		fName := fieldName + "."
-		if len(f.Names) > 0 {
-			fName += f.Names[0].Name
+		if len(f.Names) == 0 {
+			g.generateEncodeForType(encodeBody, pkgName, f.Type, fName)
+		} else {
+			for _, name := range f.Names {
+				g.generateEncodeForType(encodeBody, pkgName, f.Type, fName+name.Name)
+			}
 		}
-		g.generateEncodeForType(encodeBody, pkgName, f.Type, fName)
 	}
 }
 
@@ -457,10 +460,13 @@ func (g *gobGen) generateDecodeForStruct(decodeBody *strings.Builder, pkgName st
 	for _, f := range t.Fields.List {
 		decodeBody.WriteString("\n")
 		fName := fieldName + "."
-		if len(f.Names) > 0 {
-			fName += f.Names[0].Name
+		if len(f.Names) == 0 {
+			g.generateDecodeForType(decodeBody, pkgName, f.Type, fName)
+		} else {
+			for _, name := range f.Names {
+				g.generateDecodeForType(decodeBody, pkgName, f.Type, fName+name.Name)
+			}
 		}
-		g.generateDecodeForType(decodeBody, pkgName, f.Type, fName)
 	}
 }
 

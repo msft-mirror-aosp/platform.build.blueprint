@@ -331,6 +331,13 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 			}
 		}
 	}
+
+	if err = gobtools.EncodeString(buf, r.f33); err != nil {
+		return err
+	}
+	if err = gobtools.EncodeString(buf, r.f34); err != nil {
+		return err
+	}
 	return err
 }
 
@@ -692,6 +699,15 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 				r.f32[val88] = &val89
 			}
 		}
+	}
+
+	err = gobtools.DecodeString(buf, &r.f33)
+	if err != nil {
+		return err
+	}
+	err = gobtools.DecodeString(buf, &r.f34)
+	if err != nil {
+		return err
 	}
 
 	return err
