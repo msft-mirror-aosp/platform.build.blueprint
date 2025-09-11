@@ -15,7 +15,10 @@
 package main
 
 import (
+	"bytes"
+
 	"github.com/google/blueprint/depset"
+	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/gobtools/test"
 	"github.com/google/blueprint/uniquelist"
 )
@@ -62,6 +65,8 @@ type TestStruct struct {
 	f31      any
 	f32      []*test.TypeStruct
 	f33, f34 string
+	f35      struct{ s string }
+	f36      TestGeneric[int32]
 }
 
 type testStrings []string
@@ -73,6 +78,22 @@ type TestEcho struct {
 
 func (t TestEcho) EchoTest(string) string {
 	return t.EchoStr
+}
+
+type TestGeneric[T any] struct {
+	t T
+}
+
+func (t *TestGeneric[T]) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	return gobtools.DecodeSimple(buf, &t.t)
+}
+
+func (t *TestGeneric[T]) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	return gobtools.EncodeSimple(buf, t.t)
+}
+
+func (t *TestGeneric[T]) GetTypeId() int16 {
+	return -1
 }
 
 // @auto-generate: gob

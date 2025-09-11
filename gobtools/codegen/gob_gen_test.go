@@ -115,6 +115,8 @@ func TestEncDec(t *testing.T) {
 				f32: []*test.TypeStruct{{Name: "hhhhhhhh"}},
 				f33: "iiiiiiii",
 				f34: "jjjjjjjj",
+				f35: struct{ s string }{s: "kkkkkkkkk"},
+				f36: TestGeneric[int32]{t: 12345},
 			},
 			decoded: &TestStruct{},
 		},
