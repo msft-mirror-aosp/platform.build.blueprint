@@ -737,7 +737,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate properties hash"))
 		}
-		cacheInput := new(BuildActionCacheInput)
+		cacheInput := new(ModuleBuildActionCacheInput)
 		cacheInput.PropertiesHash = hash
 		var deps []ModuleProxy
 		m.VisitDirectDepsProxy(func(module ModuleProxy) {
@@ -763,7 +763,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 
 	if incrementalAnalysis {
 		// Try to restore from cache if there is a cache hit
-		data, err := m.context.buildActionsCache.readBuildAction(m.context.EncContext, cacheKey)
+		data, err := m.context.buildActionsCache.readModuleBuildAction(m.context.EncContext, cacheKey)
 		if err != nil {
 			panic(err)
 		}
@@ -838,7 +838,7 @@ type depProviders struct {
 	Providers []string `json:"dep_provider_hash"`
 }
 
-func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *BuildActionCacheInput) []byte {
+func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *ModuleBuildActionCacheInput) []byte {
 	info := struct {
 		Name      string         `json:"name"`
 		CacheKey  string         `json:"cache_key"`

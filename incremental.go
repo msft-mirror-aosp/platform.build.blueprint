@@ -27,8 +27,8 @@ import (
 
 //go:generate go run gobtools/codegen/gob_gen.go
 
-const buildActionDbName = "incremental.db"
-const providerDbName = "providers.db"
+const moduleActionsDbName = "module_actions.db"
+const providersDbName = "providers.db"
 const referencesDbName = "references.db"
 const ninjaDbName = "ninja.db"
 
@@ -59,7 +59,7 @@ type ProviderHash struct {
 }
 
 // @auto-generate: gob
-type BuildActionCachedData struct {
+type ModuleActionCachedData struct {
 	InputHash        uint64
 	ProviderHashes   []ProviderHash
 	OrderOnlyStrings []string
@@ -67,7 +67,7 @@ type BuildActionCachedData struct {
 }
 
 type BuildActionCache struct {
-	buildActionDb dbtools.KeyValueStore
+	moduleActionsDb dbtools.KeyValueStore
 	// Use a separate DB for providers so that we only read them when necessary.
 	providerDb   dbtools.KeyValueStore
 	referencesDb dbtools.KeyValueStore
@@ -75,11 +75,7 @@ type BuildActionCache struct {
 }
 
 func (b *BuildActionCache) openForTests() error {
-	if b.buildActionDb != nil || b.providerDb != nil || b.referencesDb != nil || b.ninjaDb != nil {
-		panic(fmt.Errorf("db is already open"))
-	}
-
-	b.buildActionDb = &dbtools.InMemKeyValueStore{}
+	b.moduleActionsDb = &dbtools.InMemKeyValueStore{}
 	b.providerDb = &dbtools.InMemKeyValueStore{}
 	b.referencesDb = &dbtools.InMemKeyValueStore{}
 	b.ninjaDb = &dbtools.InMemKeyValueStore{}
@@ -87,16 +83,16 @@ func (b *BuildActionCache) openForTests() error {
 }
 
 func (b *BuildActionCache) open(dbPath string) error {
-	if b.buildActionDb != nil || b.providerDb != nil || b.referencesDb != nil {
+	if b.moduleActionsDb != nil || b.providerDb != nil || b.referencesDb != nil {
 		panic(fmt.Errorf("db is already open"))
 	}
-	db, err := pogreb.Open(filepath.Join(dbPath, buildActionDbName), nil)
+	db, err := pogreb.Open(filepath.Join(dbPath, moduleActionsDbName), nil)
 	if err != nil {
 		return err
 	}
-	b.buildActionDb = db
+	b.moduleActionsDb = db
 
-	db, err = pogreb.Open(filepath.Join(dbPath, providerDbName), nil)
+	db, err = pogreb.Open(filepath.Join(dbPath, providersDbName), nil)
 	if err != nil {
 		return err
 	}
@@ -119,7 +115,7 @@ func (b *BuildActionCache) open(dbPath string) error {
 
 func (b *BuildActionCache) close() error {
 	return errors.Join(
-		b.buildActionDb.Close(),
+		b.moduleActionsDb.Close(),
 		b.providerDb.Close(),
 		b.referencesDb.Close(),
 		b.ninjaDb.Close())
@@ -127,15 +123,15 @@ func (b *BuildActionCache) close() error {
 
 func (b *BuildActionCache) reset(c *Context, dbPath string) error {
 	return errors.Join(
-		c.fs.Remove(filepath.Join(dbPath, buildActionDbName)),
-		c.fs.Remove(filepath.Join(dbPath, providerDbName)),
+		c.fs.Remove(filepath.Join(dbPath, moduleActionsDbName)),
+		c.fs.Remove(filepath.Join(dbPath, providersDbName)),
 		c.fs.Remove(filepath.Join(dbPath, referencesDbName)),
 		c.fs.Remove(filepath.Join(dbPath, ninjaDbName)))
 }
 
-func (b *BuildActionCache) readBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*BuildActionCachedData, error) {
-	var ret BuildActionCachedData
-	if err := read(ctx, b.buildActionDb, key, &ret); err != nil {
+func (b *BuildActionCache) readModuleBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*ModuleActionCachedData, error) {
+	var ret ModuleActionCachedData
+	if err := read(ctx, b.moduleActionsDb, key, &ret); err != nil {
 		return nil, err
 	}
 	return &ret, nil
@@ -166,8 +162,8 @@ func read(ctx gobtools.EncContext, db dbtools.KeyValueStore, key *BuildActionCac
 	return ret.Decode(ctx, buf)
 }
 
-func (b *BuildActionCache) writeBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey, data *BuildActionCachedData) error {
-	return write(ctx, b.buildActionDb, key, data)
+func (b *BuildActionCache) writeModuleBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey, data *ModuleActionCachedData) error {
+	return write(ctx, b.moduleActionsDb, key, data)
 }
 
 func (b *BuildActionCache) writeProviders(ctx gobtools.EncContext, key *BuildActionCacheKey, data *ProviderCachedData) error {
@@ -194,7 +190,7 @@ func write(ctx gobtools.EncContext, db dbtools.KeyValueStore, key *BuildActionCa
 // @auto-generate: gob
 type OrderOnlyStringsCache map[string][]string
 
-type BuildActionCacheInput struct {
+type ModuleBuildActionCacheInput struct {
 	PropertiesHash uint64
 	ProvidersHash  [][]uint64
 }

@@ -5264,7 +5264,7 @@ func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
 		}
 	}
 
-	buildActionData := BuildActionCachedData{
+	buildActionData := ModuleActionCachedData{
 		InputHash:        module.buildActionInputHash,
 		ProviderHashes:   providerHashes,
 		OrderOnlyStrings: module.orderOnlyStrings,
@@ -5275,7 +5275,7 @@ func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
 		Providers: providers,
 	}
 
-	err := errors.Join(c.buildActionsCache.writeBuildAction(c.EncContext, module.buildActionCacheKey, &buildActionData),
+	err := errors.Join(c.buildActionsCache.writeModuleBuildAction(c.EncContext, module.buildActionCacheKey, &buildActionData),
 		c.buildActionsCache.writeProviders(c.EncContext, module.buildActionCacheKey, &providersData))
 	if err != nil {
 		panic(err)
