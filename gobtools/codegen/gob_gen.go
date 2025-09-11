@@ -87,17 +87,30 @@ const (
 
 type structMap map[string]*ast.TypeSpec
 
+type typeReference struct {
+	pkgName  string
+	typeName string
+}
+
+func (t typeReference) fullName() string {
+	if t.pkgName != curPackage {
+		return t.pkgName + "." + t.typeName
+	} else {
+		return t.typeName
+	}
+}
+
 var pkgStructs = make(map[string]structMap)
 var importPkgs = make(map[string]string)
 var curPackage string
 var sourceDir string
 
-func findType(pkgName string, typeName string, imports map[string]bool) typeDefTypes {
-	if _, ok := pkgStructs[pkgName]; !ok {
-		importPackage(pkgName, findPackagePath(pkgName, imports))
+func findType(typeRef typeReference, imports map[string]bool) typeDefTypes {
+	if _, ok := pkgStructs[typeRef.pkgName]; !ok {
+		importPackage(typeRef.pkgName, findPackagePath(typeRef.pkgName, imports))
 	}
 
-	ts := pkgStructs[pkgName][typeName]
+	ts := pkgStructs[typeRef.pkgName][typeRef.typeName]
 	if ts == nil {
 		return Unknown
 	}
@@ -125,31 +138,25 @@ func findType(pkgName string, typeName string, imports map[string]bool) typeDefT
 	return Unknown
 }
 
-func findStructName(expr ast.Expr, pkgName string) (string, string, string) {
-	var typeName string
-	var fullName string
+func findTypeReference(expr ast.Expr, pkgName string) typeReference {
+	typeRef := typeReference{pkgName: pkgName}
 	switch t := expr.(type) {
 	case *ast.Ident:
-		typeName = t.Name
+		typeRef.typeName = t.Name
 	case *ast.SelectorExpr:
-		pkgName = t.X.(*ast.Ident).Name
-		typeName = t.Sel.Name
+		typeRef.pkgName = t.X.(*ast.Ident).Name
+		typeRef.typeName = t.Sel.Name
 	case *ast.ArrayType:
-		pkgName, typeName, _ = findStructName(t.Elt, pkgName)
-		typeName = "[]" + typeName
+		typeRef = findTypeReference(t.Elt, pkgName)
+		typeRef.typeName = "[]" + typeRef.typeName
 	case *ast.StarExpr:
-		pkgName, typeName, _ = findStructName(t.X, pkgName)
-		typeName = "*" + typeName
+		typeRef = findTypeReference(t.X, pkgName)
+		typeRef.typeName = "*" + typeRef.typeName
 	default:
 		panic(fmt.Errorf("unknown type to find name: %T", expr))
 	}
-	if pkgName != curPackage {
-		fullName = pkgName + "." + typeName
-	} else {
-		fullName = typeName
-	}
 
-	return pkgName, typeName, fullName
+	return typeRef
 }
 
 func findStructs(node *ast.File) []*ast.TypeSpec {
@@ -184,9 +191,9 @@ func loadTypes(node *ast.File) {
 	}
 }
 
-func maybeAddImport(structName string, imports map[string]bool) {
-	if parts := strings.Split(structName, "."); len(parts) == 2 {
-		imports[fmt.Sprintf("\"%s\"", importPkgs[parts[0]])] = true
+func maybeAddImport(typeRef typeReference, imports map[string]bool) {
+	if typeRef.pkgName != "" && typeRef.pkgName != curPackage {
+		imports[fmt.Sprintf("\"%s\"", importPkgs[typeRef.pkgName])] = true
 	}
 }
 
@@ -215,7 +222,8 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeInterface(ctx, buf, %s); err != nil { return err }\n", fieldName))
 			imports[gobtoolsImport] = true
 		default:
-			generateEncodeForCustomType(encodeBody, fieldName, pkgName, t.Name, imports)
+			typeRef := findTypeReference(t, pkgName)
+			generateEncodeForCustomType(encodeBody, fieldName, typeRef, imports)
 		}
 	case *ast.MapType:
 		generateEncodeForNillable(encodeBody, fieldName)
@@ -242,10 +250,10 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 			encodeBody.WriteString(fmt.Sprintf("\t%s := %s.ToSlice()\n", listName, fieldName))
 			encodeArray(encodeBody, pkgName, t.Index, listName, imports)
 		} else if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "DepSet" {
-			pkgName, typName, _ := findStructName(t.Index, pkgName)
-			if typName == "string" {
+			typeRef := findTypeReference(t.Index, pkgName)
+			if typeRef.typeName == "string" {
 				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.EncodeString(ctx, buf); err != nil { return err }\n", fieldName))
-			} else if findType(pkgName, typName, imports) == Interface {
+			} else if findType(typeRef, imports) == Interface {
 				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.EncodeInterface(ctx, buf); err != nil { return err }\n", fieldName))
 			} else {
 				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.Encode(ctx, buf); err != nil { return err }\n", fieldName))
@@ -255,8 +263,8 @@ func generateEncodeForType(encodeBody *strings.Builder, pkgName string, field as
 		}
 	// type from other package such as "path android.Path".
 	case *ast.SelectorExpr:
-		pkgName, typName, _ := findStructName(t, pkgName)
-		generateEncodeForCustomType(encodeBody, fieldName, pkgName, typName, imports)
+		typeRef := findTypeReference(t, pkgName)
+		generateEncodeForCustomType(encodeBody, fieldName, typeRef, imports)
 	// anonymous struct
 	case *ast.StructType:
 		generateEncodeForStruct(encodeBody, pkgName, t, fieldName, imports)
@@ -281,10 +289,10 @@ func generateEncodeForNillable(encodeBody *strings.Builder, fieldName string) {
 	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(%d)); err != nil { return err }\n", valueIsNil))
 	encodeBody.WriteString(fmt.Sprintf("\t} else {\n"))
 }
-func generateEncodeForCustomType(encodeBody *strings.Builder, fieldName string, pkgName string, typeName string, imports map[string]bool) {
-	typ := findType(pkgName, typeName, imports)
+func generateEncodeForCustomType(encodeBody *strings.Builder, fieldName string, typeRef typeReference, imports map[string]bool) {
+	typ := findType(typeRef, imports)
 	if fieldName[len(fieldName)-1] == '.' {
-		fieldName += typeName
+		fieldName += typeRef.typeName
 	}
 	switch typ {
 	case Struct:
@@ -293,24 +301,21 @@ func generateEncodeForCustomType(encodeBody *strings.Builder, fieldName string, 
 		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeInterface(ctx, buf, %s); err != nil { return err }\n", fieldName))
 		imports[gobtoolsImport] = true
 	case Ident:
-		// new type declarations such as "type OsClass int".
-		_, _, origType := findStructName(pkgStructs[pkgName][typeName].Type, pkgName)
-		maybeAddImport(origType, imports)
-		newFieldName := fmt.Sprintf("%s(%s)", origType, fieldName)
-		generateEncodeForType(encodeBody, pkgName, pkgStructs[pkgName][typeName].Type, newFieldName, imports)
+		// type alias declarations such as "type OsClass int".
+		aliasedTypeRef := findTypeReference(pkgStructs[typeRef.pkgName][typeRef.typeName].Type, typeRef.pkgName)
+		maybeAddImport(typeRef, imports)
+		maybeAddImport(aliasedTypeRef, imports)
+		newFieldName := fmt.Sprintf("%s(%s)", aliasedTypeRef.fullName(), fieldName)
+		generateEncodeForType(encodeBody, aliasedTypeRef.pkgName, pkgStructs[typeRef.pkgName][typeRef.typeName].Type, newFieldName, imports)
 	default:
-		generateEncodeForType(encodeBody, pkgName, pkgStructs[pkgName][typeName].Type, fieldName, imports)
+		generateEncodeForType(encodeBody, typeRef.pkgName, pkgStructs[typeRef.pkgName][typeRef.typeName].Type, fieldName, imports)
 	}
 }
 
-func generateDecodeForCustomType(decodeBody *strings.Builder, fieldName string, pkgName string, typeName string, imports map[string]bool) {
-	typ := findType(pkgName, typeName, imports)
+func generateDecodeForCustomType(decodeBody *strings.Builder, fieldName string, typeRef typeReference, imports map[string]bool) {
+	typ := findType(typeRef, imports)
 	if fieldName[len(fieldName)-1] == '.' {
-		fieldName += typeName
-	}
-	fullName := typeName
-	if pkgName != curPackage {
-		fullName = pkgName + "." + typeName
+		fieldName += typeRef.typeName
 	}
 
 	switch typ {
@@ -320,20 +325,20 @@ func generateDecodeForCustomType(decodeBody *strings.Builder, fieldName string, 
 		tmpVar := nextVar()
 		decodeBody.WriteString(fmt.Sprintf("\tif %s, err := gobtools.DecodeInterface(ctx, buf); err != nil { return err } else if %s == nil {\n", tmpVar, tmpVar))
 		decodeBody.WriteString(fmt.Sprintf("\t%s = nil } else {\n", fieldName))
-		decodeBody.WriteString(fmt.Sprintf("\t%s = %s.(%s) }\n", fieldName, tmpVar, fullName))
+		decodeBody.WriteString(fmt.Sprintf("\t%s = %s.(%s) }\n", fieldName, tmpVar, typeRef.fullName()))
 		imports[gobtoolsImport] = true
-		maybeAddImport(fullName, imports)
+		maybeAddImport(typeRef, imports)
 	case Ident:
-		// new type declarations such as "type OsClass int".
-		_, _, origType := findStructName(pkgStructs[pkgName][typeName].Type, pkgName)
+		// type alias declarations such as "type OsClass int".
+		aliasedTypeRef := findTypeReference(pkgStructs[typeRef.pkgName][typeRef.typeName].Type, typeRef.pkgName)
 		tmpVar := nextVar()
-		decodeBody.WriteString(fmt.Sprintf("\tvar %s %s\n", tmpVar, origType))
-		generateDecodeForType(decodeBody, pkgName, pkgStructs[pkgName][typeName].Type, tmpVar, imports)
-		decodeBody.WriteString(fmt.Sprintf("\t%s = %s(%s)\n", fieldName, fullName, tmpVar))
-		maybeAddImport(fullName, imports)
-		maybeAddImport(origType, imports)
+		decodeBody.WriteString(fmt.Sprintf("\tvar %s %s\n", tmpVar, aliasedTypeRef.fullName()))
+		generateDecodeForType(decodeBody, aliasedTypeRef.pkgName, pkgStructs[typeRef.pkgName][typeRef.typeName].Type, tmpVar, imports)
+		decodeBody.WriteString(fmt.Sprintf("\t%s = %s(%s)\n", fieldName, typeRef.fullName(), tmpVar))
+		maybeAddImport(typeRef, imports)
+		maybeAddImport(aliasedTypeRef, imports)
 	default:
-		generateDecodeForType(decodeBody, pkgName, pkgStructs[pkgName][typeName].Type, fieldName, imports)
+		generateDecodeForType(decodeBody, typeRef.pkgName, pkgStructs[typeRef.pkgName][typeRef.typeName].Type, fieldName, imports)
 	}
 }
 
@@ -363,23 +368,24 @@ func generateDecodeForType(decodeBody *strings.Builder, pkgName string, field as
 			decodeBody.WriteString(fmt.Sprintf("\t%s = %s }\n", fieldName, tmpVar))
 			imports[gobtoolsImport] = true
 		default:
-			generateDecodeForCustomType(decodeBody, fieldName, pkgName, t.Name, imports)
+			typeRef := findTypeReference(t, pkgName)
+			generateDecodeForCustomType(decodeBody, fieldName, typeRef, imports)
 		}
 	case *ast.MapType:
-		_, _, kName := findStructName(t.Key, pkgName)
-		_, _, vName := findStructName(t.Value, pkgName)
+		kTypeRef := findTypeReference(t.Key, pkgName)
+		vTypeRef := findTypeReference(t.Value, pkgName)
 		decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
 		decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int32](buf, &%s); if err != nil { return err }\n", valId))
 		decodeBody.WriteString(fmt.Sprintf("\tif %s != %d {\n", valId, valueIsNil))
-		decodeBody.WriteString(fmt.Sprintf("\t%s = make(map[%s]%s, %s)\n", fieldName, kName, vName, valId))
-		maybeAddImport(kName, imports)
-		maybeAddImport(vName, imports)
+		decodeBody.WriteString(fmt.Sprintf("\t%s = make(map[%s]%s, %s)\n", fieldName, kTypeRef.fullName(), vTypeRef.fullName(), valId))
+		maybeAddImport(kTypeRef, imports)
+		maybeAddImport(vTypeRef, imports)
 		index := nextVar()
 		decodeBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < int(%s); %s++ {\n", index, index, valId, index))
-		decodeBody.WriteString(fmt.Sprintf("\tvar k %s\n", kName))
-		decodeBody.WriteString(fmt.Sprintf("\tvar v %s\n", vName))
-		maybeAddImport(kName, imports)
-		maybeAddImport(vName, imports)
+		decodeBody.WriteString(fmt.Sprintf("\tvar k %s\n", kTypeRef.fullName()))
+		decodeBody.WriteString(fmt.Sprintf("\tvar v %s\n", vTypeRef.fullName()))
+		maybeAddImport(kTypeRef, imports)
+		maybeAddImport(vTypeRef, imports)
 		generateDecodeForType(decodeBody, pkgName, t.Key, "k", imports)
 		generateDecodeForType(decodeBody, pkgName, t.Value, "v", imports)
 		decodeBody.WriteString(fmt.Sprintf("\t%s[k] = v\n", fieldName))
@@ -392,26 +398,26 @@ func generateDecodeForType(decodeBody *strings.Builder, pkgName string, field as
 		decodeBody.WriteString(fmt.Sprintf("\tvar %s bool\n", isNil))
 		decodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.DecodeSimple(buf, &%s); err != nil { return err }\n", isNil))
 		decodeBody.WriteString(fmt.Sprintf("\tif !%s {\n", isNil))
-		_, _, typName := findStructName(t.X, pkgName)
-		decodeBody.WriteString(fmt.Sprintf("\tvar %s %s\n", valId, typName))
-		maybeAddImport(typName, imports)
+		typeRef := findTypeReference(t.X, pkgName)
+		decodeBody.WriteString(fmt.Sprintf("\tvar %s %s\n", valId, typeRef.fullName()))
+		maybeAddImport(typeRef, imports)
 		generateDecodeForType(decodeBody, pkgName, t.X, valId, imports)
 		decodeBody.WriteString(fmt.Sprintf("\t%s = &%s\n", fieldName, valId))
 		decodeBody.WriteString("\t}\n")
 	case *ast.IndexExpr:
 		if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "UniqueList" {
 			listName := nextVar()
-			_, _, typName := findStructName(t.Index, pkgName)
-			decodeBody.WriteString(fmt.Sprintf("\tvar %s []%s\n", listName, typName))
-			maybeAddImport(typName, imports)
+			typeRef := findTypeReference(t.Index, pkgName)
+			decodeBody.WriteString(fmt.Sprintf("\tvar %s []%s\n", listName, typeRef.fullName()))
+			maybeAddImport(typeRef, imports)
 			decodeArray(decodeBody, pkgName, t.Index, listName, imports)
 			decodeBody.WriteString(fmt.Sprintf("\t%s = uniquelist.Make(%s)\n", fieldName, listName))
 			imports[`"github.com/google/blueprint/uniquelist"`] = true
 		} else if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "DepSet" {
-			pkgName, typName, _ := findStructName(t.Index, pkgName)
-			if typName == "string" {
+			typeRef := findTypeReference(t.Index, pkgName)
+			if typeRef.typeName == "string" {
 				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.DecodeString(ctx, buf); err != nil { return err }\n", fieldName))
-			} else if findType(pkgName, typName, imports) == Interface {
+			} else if findType(typeRef, imports) == Interface {
 				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.DecodeInterface(ctx, buf); err != nil { return err }\n", fieldName))
 			} else {
 				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.Decode(ctx, buf); err != nil { return err }\n", fieldName))
@@ -420,8 +426,8 @@ func generateDecodeForType(decodeBody *strings.Builder, pkgName string, field as
 			decodeBody.WriteString(fmt.Sprintf("\tif err = %s.Decode(ctx, buf); err != nil { return err }\n", fieldName))
 		}
 	case *ast.SelectorExpr:
-		pkgName, typName, _ := findStructName(t, pkgName)
-		generateDecodeForCustomType(decodeBody, fieldName, pkgName, typName, imports)
+		typeRef := findTypeReference(t, pkgName)
+		generateDecodeForCustomType(decodeBody, fieldName, typeRef, imports)
 	// anonymous struct
 	case *ast.StructType:
 		generateDecodeForStruct(decodeBody, pkgName, t, fieldName, imports)
@@ -453,12 +459,12 @@ func encodeArray(encodeBody *strings.Builder, pkgName string, t ast.Expr, fieldN
 
 func decodeArray(decodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string, imports map[string]bool) {
 	valId := nextVar()
-	_, _, typName := findStructName(t, pkgName)
+	typeRef := findTypeReference(t, pkgName)
 	decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
 	decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int32](buf, &%s); if err != nil { return err }\n", valId))
 	decodeBody.WriteString(fmt.Sprintf("\tif %s != %d {\n", valId, valueIsNil))
-	decodeBody.WriteString(fmt.Sprintf("\t%s = make([]%s, %s)\n", fieldName, typName, valId))
-	maybeAddImport(typName, imports)
+	decodeBody.WriteString(fmt.Sprintf("\t%s = make([]%s, %s)\n", fieldName, typeRef.fullName(), valId))
+	maybeAddImport(typeRef, imports)
 	index := nextVar()
 	decodeBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < int(%s); %s++ {\n", index, index, valId, index))
 	generateDecodeForType(decodeBody, pkgName, t, fmt.Sprintf("%s[%s]", fieldName, index), imports)
