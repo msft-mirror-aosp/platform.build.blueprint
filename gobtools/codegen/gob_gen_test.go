@@ -16,7 +16,9 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/blueprint/depset"
@@ -158,5 +160,38 @@ func TestEncDec(t *testing.T) {
 		if !reflect.DeepEqual(tc.origin, tc.decoded) {
 			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.origin, tc.decoded)
 		}
+	}
+}
+
+func TestGenerate(t *testing.T) {
+	g := newGobGen()
+	curDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current directory: %v", err)
+	}
+
+	parts := strings.Split(curDir, blueprintPkgPath)
+	if len(parts) < 2 {
+		t.Fatalf("could not determine source root from path %q, which does not contain %q",
+			curDir, blueprintPkgPath)
+	}
+	g.sourceDir = parts[0]
+
+	sourceFile := "gob_test_data.go"
+	expectedOutputFile := "gob_test_data_gob_enc.go"
+
+	generatedBytes, err := g.generate(sourceFile)
+	if err != nil {
+		t.Fatalf("g.generate() failed for %s: %v", sourceFile, err)
+	}
+
+	expectedBytes, err := os.ReadFile(expectedOutputFile)
+	if err != nil {
+		t.Fatalf("failed to read expected output file %s: %v", expectedOutputFile, err)
+	}
+
+	if !bytes.Equal(generatedBytes, expectedBytes) {
+		t.Errorf("Generated code from %s does not match expected output in %s.\nexpected:\n%s\ngot:\n%s",
+			sourceFile, expectedOutputFile, expectedBytes, generatedBytes)
 	}
 }
