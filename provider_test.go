@@ -50,6 +50,10 @@ func (s *providerTestParallelSingleton) GenerateBuildActions(ctx SingletonContex
 	ctx.SetSingletonProvider(providerTestSingletonProvider, true)
 }
 
+func (s *providerTestParallelSingleton) IncrementalSupported() bool {
+	return true
+}
+
 type providerTestSequentialSingleton struct {
 	getModuleProvider bool
 	setModuleProvider bool
@@ -67,6 +71,10 @@ func (s *providerTestSequentialSingleton) GenerateBuildActions(ctx SingletonCont
 	ctx.VisitAllSingletons(func(s SingletonProxy) {
 		ctx.OtherSingletonProvider(s, providerTestSingletonProvider)
 	})
+}
+
+func (s *providerTestSequentialSingleton) IncrementalSupported() bool {
+	return true
 }
 
 type providerTestMutatorInfo struct {

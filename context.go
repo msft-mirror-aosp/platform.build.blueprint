@@ -614,6 +614,7 @@ type singletonInfo struct {
 	providerInfo
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
+	incrementalSupported         bool
 }
 
 type mutatorInfo struct {
@@ -3528,11 +3529,12 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 	scope := newLocalScope(nil, singletonNamespacePrefix(info.name))
 
 	sctx := &singletonContext{
-		singleton: info,
-		context:   c,
-		config:    config,
-		scope:     scope,
-		globals:   liveGlobals,
+		singleton:    info,
+		context:      c,
+		config:       config,
+		scope:        scope,
+		globals:      liveGlobals,
+		depProviders: make(map[int]bool),
 	}
 
 	info.startedGenerateBuildActions = true
@@ -3549,7 +3551,26 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 				}
 			}
 		}()
-		info.singleton.GenerateBuildActions(sctx)
+
+		cacheKey, restored := c.restoreSingleton(info)
+		if !restored {
+			info.singleton.GenerateBuildActions(sctx)
+		}
+		// A caching entry for singletons is only written if the singleton
+		// depends on at least one provider. If zero providers are consumed,
+		// the cache restore process would fail to locate
+		// a cache entry, forcing the singleton to re-execute on every build.
+		//
+		// An edge case where a coding change removes a provider dependency is safely handled
+		// because any detected code change automatically invalidates the entire global cache,
+		// ensuring system consistency.
+		if cacheKey != nil && !restored && len(sctx.depProviders) > 0 {
+			cache := make(map[int]uint64)
+			for k, _ := range sctx.depProviders {
+				cache[k] = c.providerValueHashes[k]
+			}
+			c.buildActionsCache.writeSingletonBuildAction(c.EncContext, cacheKey, &SingletonActionCachedData{ProviderHashes: cache})
+		}
 	}()
 
 	info.finishedGenerateBuildActions = true
@@ -3565,6 +3586,37 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 		&sctx.actionDefs, liveGlobals)
 	errs = append(errs, newErrs...)
 	return deps, errs
+}
+
+func (c *Context) restoreSingleton(info *singletonInfo) (*BuildActionCacheKey, bool) {
+	var cacheKey *BuildActionCacheKey
+	restored := false
+	info.incrementalSupported = c.GetIncrementalEnabled() && info.singleton.IncrementalSupported()
+	if info.incrementalSupported {
+		cacheKey = &BuildActionCacheKey{
+			Id: info.name,
+		}
+		// We can pursue a incremental analysis because there is no soong coding change, no
+		// product config and env variable changes.
+		if c.GetIncrementalAnalysis() {
+			data, err := c.buildActionsCache.readSingletonBuildAction(c.EncContext, cacheKey)
+			if err != nil {
+				panic(err)
+			}
+			if data != nil {
+				// This logic here assumes a singleton's behavior is a pure function of its providers.
+				// Conditional access to certain providers must also be based on other provider
+				// values, ensuring that any behavioral change is captured by the input providers hashes.
+				restored = len(data.ProviderHashes) != 0
+				for k, v := range data.ProviderHashes {
+					if c.providerValueHashes[k] != v {
+						restored = false
+					}
+				}
+			}
+		}
+	}
+	return cacheKey, restored
 }
 
 func (c *Context) generateParallelSingletonBuildActions(config interface{},
@@ -3627,10 +3679,18 @@ func (c *Context) calculateProvidersHashes() {
 			defer wg.Done()
 			buf := make([]byte, 8)
 			hashers[i] = fnv.New64()
-			c.visitAllModuleInfos(func(m *moduleInfo) {
-				binary.BigEndian.PutUint64(buf, m.providerInitialValueHashes[i])
-				hashers[i].Write(buf)
-			})
+			// For singleton providers we collect provider hashes from singletons.
+			if providerRegistry[i].mutator == singletonTag {
+				c.VisitAllSingletons(func(s SingletonProxy) {
+					binary.BigEndian.PutUint64(buf, s.singleton.providerInitialValueHashes[i])
+					hashers[i].Write(buf)
+				})
+			} else {
+				c.visitAllModuleInfos(func(m *moduleInfo) {
+					binary.BigEndian.PutUint64(buf, m.providerInitialValueHashes[i])
+					hashers[i].Write(buf)
+				})
+			}
 		}()
 	}
 	wg.Wait()
