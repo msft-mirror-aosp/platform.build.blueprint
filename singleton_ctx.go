@@ -22,6 +22,7 @@ import (
 
 type Singleton interface {
 	GenerateBuildActions(SingletonContext)
+	IncrementalSupported() bool
 }
 
 type SingletonContext interface {
@@ -230,6 +231,8 @@ type singletonContext struct {
 	visitingDep depInfo
 
 	actionDefs localBuildActions
+
+	depProviders map[int]bool
 }
 
 func (s *singletonContext) Config() interface{} {
@@ -257,6 +260,7 @@ func (s *singletonContext) ModuleType(logicModule ModuleOrProxy) string {
 }
 
 func (s *singletonContext) ModuleProvider(logicModule ModuleOrProxy, provider AnyProviderKey) (any, bool) {
+	s.depProviders[provider.provider().id] = true
 	return s.context.ModuleProvider(logicModule, provider)
 }
 
@@ -265,6 +269,7 @@ func (s *singletonContext) SetSingletonProvider(provider AnyProviderKey, value a
 }
 
 func (s *singletonContext) OtherSingletonProvider(singleton SingletonProxy, provider AnyProviderKey) (any, bool) {
+	s.depProviders[provider.provider().id] = true
 	return s.context.singletonProvider(singleton.singleton, provider.provider())
 }
 

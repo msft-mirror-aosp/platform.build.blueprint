@@ -28,6 +28,7 @@ import (
 //go:generate go run gobtools/codegen/gob_gen.go
 
 const moduleActionsDbName = "module_actions.db"
+const singletonActionsDbName = "singleton_actions.db"
 const providersDbName = "providers.db"
 const referencesDbName = "references.db"
 const ninjaDbName = "ninja.db"
@@ -66,8 +67,14 @@ type ModuleActionCachedData struct {
 	GlobCache        []globResultCache
 }
 
+// @auto-generate: gob
+type SingletonActionCachedData struct {
+	ProviderHashes map[int]uint64
+}
+
 type BuildActionCache struct {
-	moduleActionsDb dbtools.KeyValueStore
+	moduleActionsDb    dbtools.KeyValueStore
+	singletonActionsDb dbtools.KeyValueStore
 	// Use a separate DB for providers so that we only read them when necessary.
 	providerDb   dbtools.KeyValueStore
 	referencesDb dbtools.KeyValueStore
@@ -76,6 +83,7 @@ type BuildActionCache struct {
 
 func (b *BuildActionCache) openForTests() error {
 	b.moduleActionsDb = &dbtools.InMemKeyValueStore{}
+	b.singletonActionsDb = &dbtools.InMemKeyValueStore{}
 	b.providerDb = &dbtools.InMemKeyValueStore{}
 	b.referencesDb = &dbtools.InMemKeyValueStore{}
 	b.ninjaDb = &dbtools.InMemKeyValueStore{}
@@ -83,39 +91,31 @@ func (b *BuildActionCache) openForTests() error {
 }
 
 func (b *BuildActionCache) open(dbPath string) error {
-	if b.moduleActionsDb != nil || b.providerDb != nil || b.referencesDb != nil {
-		panic(fmt.Errorf("db is already open"))
+	return errors.Join(
+		openDb(dbPath, moduleActionsDbName, &b.moduleActionsDb),
+		openDb(dbPath, singletonActionsDbName, &b.singletonActionsDb),
+		openDb(dbPath, providersDbName, &b.providerDb),
+		openDb(dbPath, referencesDbName, &b.referencesDb),
+		openDb(dbPath, ninjaDbName, &b.ninjaDb),
+	)
+}
+
+func openDb(dbPath string, dbName string, dbToOpen *dbtools.KeyValueStore) error {
+	if *dbToOpen != nil {
+		panic(fmt.Errorf("db %s is already open", dbName))
 	}
-	db, err := pogreb.Open(filepath.Join(dbPath, moduleActionsDbName), nil)
+	db, err := pogreb.Open(filepath.Join(dbPath, dbName), nil)
 	if err != nil {
 		return err
 	}
-	b.moduleActionsDb = db
-
-	db, err = pogreb.Open(filepath.Join(dbPath, providersDbName), nil)
-	if err != nil {
-		return err
-	}
-	b.providerDb = db
-
-	db, err = pogreb.Open(filepath.Join(dbPath, referencesDbName), nil)
-	if err != nil {
-		return err
-	}
-	b.referencesDb = db
-
-	db, err = pogreb.Open(filepath.Join(dbPath, ninjaDbName), nil)
-	if err != nil {
-		return err
-	}
-	b.ninjaDb = db
-
+	*dbToOpen = db
 	return nil
 }
 
 func (b *BuildActionCache) close() error {
 	return errors.Join(
 		b.moduleActionsDb.Close(),
+		b.singletonActionsDb.Close(),
 		b.providerDb.Close(),
 		b.referencesDb.Close(),
 		b.ninjaDb.Close())
@@ -124,6 +124,7 @@ func (b *BuildActionCache) close() error {
 func (b *BuildActionCache) reset(c *Context, dbPath string) error {
 	return errors.Join(
 		c.fs.Remove(filepath.Join(dbPath, moduleActionsDbName)),
+		c.fs.Remove(filepath.Join(dbPath, singletonActionsDbName)),
 		c.fs.Remove(filepath.Join(dbPath, providersDbName)),
 		c.fs.Remove(filepath.Join(dbPath, referencesDbName)),
 		c.fs.Remove(filepath.Join(dbPath, ninjaDbName)))
@@ -132,6 +133,14 @@ func (b *BuildActionCache) reset(c *Context, dbPath string) error {
 func (b *BuildActionCache) readModuleBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*ModuleActionCachedData, error) {
 	var ret ModuleActionCachedData
 	if err := read(ctx, b.moduleActionsDb, key, &ret); err != nil {
+		return nil, err
+	}
+	return &ret, nil
+}
+
+func (b *BuildActionCache) readSingletonBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*SingletonActionCachedData, error) {
+	var ret SingletonActionCachedData
+	if err := read(ctx, b.singletonActionsDb, key, &ret); err != nil {
 		return nil, err
 	}
 	return &ret, nil
@@ -164,6 +173,10 @@ func read(ctx gobtools.EncContext, db dbtools.KeyValueStore, key *BuildActionCac
 
 func (b *BuildActionCache) writeModuleBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey, data *ModuleActionCachedData) error {
 	return write(ctx, b.moduleActionsDb, key, data)
+}
+
+func (b *BuildActionCache) writeSingletonBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey, data *SingletonActionCachedData) error {
+	return write(ctx, b.singletonActionsDb, key, data)
 }
 
 func (b *BuildActionCache) writeProviders(ctx gobtools.EncContext, key *BuildActionCacheKey, data *ProviderCachedData) error {

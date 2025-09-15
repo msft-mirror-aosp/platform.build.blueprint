@@ -883,6 +883,10 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 	})
 }
 
+func (s *singleton) IncrementalSupported() bool {
+	return false
+}
+
 // packageRoot returns the module-specific package root directory path.  This
 // directory is where the final package .a files are output and where dependant
 // modules search for this package via -I arguments.
