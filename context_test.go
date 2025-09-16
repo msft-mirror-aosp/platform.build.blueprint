@@ -65,17 +65,17 @@ type depsProvider interface {
 	IgnoreDeps() []string
 }
 
-type IncrementalTestProvider struct {
+type IncrementalTestInfo struct {
 	Value string
 }
 
-var IncrementalTestProviderKey = NewProvider[IncrementalTestProvider]()
+var IncrementalTestProviderKey = NewProvider[IncrementalTestInfo]()
 
 func init() {
-	IncrementalTestProviderGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(IncrementalTestProvider) })
+	IncrementalTestProviderGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(IncrementalTestInfo) })
 }
 
-func (r IncrementalTestProvider) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+func (r IncrementalTestInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	var err error
 
 	if err = gobtools.EncodeString(buf, r.Value); err != nil {
@@ -84,7 +84,7 @@ func (r IncrementalTestProvider) Encode(ctx gobtools.EncContext, buf *bytes.Buff
 	return err
 }
 
-func (r *IncrementalTestProvider) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+func (r *IncrementalTestInfo) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
 	err = gobtools.DecodeString(buf, &r.Value)
@@ -97,7 +97,7 @@ func (r *IncrementalTestProvider) Decode(ctx gobtools.EncContext, buf *bytes.Rea
 
 var IncrementalTestProviderGobRegId int16
 
-func (r IncrementalTestProvider) GetTypeId() int16 {
+func (r IncrementalTestInfo) GetTypeId() int16 {
 	return IncrementalTestProviderGobRegId
 }
 
@@ -150,7 +150,7 @@ func (b *baseTestModule) GenerateBuildActions(ctx ModuleContext) {
 	ctx.VisitDirectDeps(func(module Module) {
 		OtherModuleProvider(ctx, module, IncrementalTestProviderKey)
 	})
-	SetProvider(ctx, IncrementalTestProviderKey, IncrementalTestProvider{
+	SetProvider(ctx, IncrementalTestProviderKey, IncrementalTestInfo{
 		Value: ctx.ModuleName(),
 	})
 }
@@ -1610,7 +1610,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 	// Use fixed value since SetProvider hasn't been called yet, so we can't go
 	// through the providers of the module.
 	for k, v := range map[providerKey]any{
-		IncrementalTestProviderKey.providerKey: IncrementalTestProvider{
+		IncrementalTestProviderKey.providerKey: IncrementalTestInfo{
 			Value: barInfo.Name(),
 		},
 	} {
@@ -1621,7 +1621,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 		providerHashes[k.id] = hash
 	}
 	cacheKey, hash := calculateHashKey(incInfo, [][]uint64{providerHashes})
-	var providerValue any = IncrementalTestProvider{Value: "MyIncrementalModule"}
+	var providerValue any = IncrementalTestInfo{Value: "MyIncrementalModule"}
 	providerHash, _ := proptools.CalculateHash(providerValue)
 	ctx.buildActionsCache.writeModuleBuildAction(ctx.EncContext, &cacheKey, &ModuleActionCachedData{
 		InputHash: hash,
@@ -1710,7 +1710,7 @@ func TestCacheBuildActions(t *testing.T) {
 	if cache == nil {
 		t.Errorf("failed to find cached build actions for the incremental module")
 	}
-	var providerValue any = IncrementalTestProvider{Value: "MyIncrementalModule"}
+	var providerValue any = IncrementalTestInfo{Value: "MyIncrementalModule"}
 	providerHash, _ := proptools.CalculateHash(providerValue)
 	expectedCache := ModuleActionCachedData{
 		InputHash: hash,
@@ -2299,11 +2299,7 @@ func Benchmark_parallelVisit(b *testing.B) {
 	}
 }
 
-type singletonNameInfo struct {
-	name string
-}
-
-var singletonNameInfoProvider = NewSingletonProvider[singletonNameInfo]()
+var singletonTestInfoProvider = NewSingletonProvider[IncrementalTestInfo]()
 
 type sequentialSingleton struct {
 	GenerateBuildActionsCalled int
@@ -2311,12 +2307,17 @@ type sequentialSingleton struct {
 
 func (s *sequentialSingleton) GenerateBuildActions(ctx SingletonContext) {
 	s.GenerateBuildActionsCalled++
+	ctx.Build(pctx, BuildParams{
+		Rule:    Phony,
+		Outputs: []string{sequentialSingletonName},
+	})
 	ctx.VisitAllSingletons(func(singleton SingletonProxy) {
-		ctx.OtherSingletonProvider(singleton, singletonNameInfoProvider)
+		ctx.OtherSingletonProvider(singleton, singletonTestInfoProvider)
 	})
 	ctx.VisitAllModules(func(module Module) {
 		ctx.ModuleProvider(module, IncrementalTestProviderKey)
 	})
+	ctx.SetSingletonProvider(singletonTestInfoProvider, IncrementalTestInfo{Value: sequentialSingletonName})
 }
 
 func (s *sequentialSingleton) IncrementalSupported() bool {
@@ -2327,20 +2328,14 @@ func sequentialSingletonFactory() Singleton {
 	return &sequentialSingleton{}
 }
 
-type parallelSingleton struct {
-	name string
-}
+type parallelSingleton struct{}
 
 func (s *parallelSingleton) GenerateBuildActions(ctx SingletonContext) {
-	ctx.SetSingletonProvider(singletonNameInfoProvider, singletonNameInfo{name: s.name})
+	ctx.SetSingletonProvider(singletonTestInfoProvider, IncrementalTestInfo{Value: parallelSingletonName})
 }
 
-func newParallelSingletonFactory(name string) func() Singleton {
-	return func() Singleton {
-		return &parallelSingleton{
-			name: name,
-		}
-	}
+func parallelSingletonFactory() Singleton {
+	return &parallelSingleton{}
 }
 
 func (s *parallelSingleton) IncrementalSupported() bool {
@@ -2358,7 +2353,7 @@ func singletonCacheSetup(t *testing.T) *Context {
 			}
 		`
 	ctx := bpSetup(t, bp)
-	ctx.RegisterSingletonType(parallelSingletonName, newParallelSingletonFactory(parallelSingletonName), true)
+	ctx.RegisterSingletonType(parallelSingletonName, parallelSingletonFactory, true)
 	ctx.RegisterSingletonType(sequentialSingletonName, sequentialSingletonFactory, false)
 
 	cache := &BuildActionCache{}
@@ -2379,28 +2374,72 @@ func TestSingletonCache(t *testing.T) {
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	singleton := ctx.singletonInfo[1].singleton.(*sequentialSingleton)
+	seqSingleton := ctx.singletonInfo[1].singleton.(*sequentialSingleton)
 
 	// 1. Verify GenerateBuildActions was called
-	if singleton.GenerateBuildActionsCalled != 1 {
-		t.Errorf("expected GenerateBuildActions to be called once, got %d", singleton.GenerateBuildActionsCalled)
+	if seqSingleton.GenerateBuildActionsCalled != 1 {
+		t.Errorf("expected GenerateBuildActions to be called once, got %d", sequentialSingleton{}.GenerateBuildActionsCalled)
 	}
 
 	// 2. Verify cache entry was written
-	cacheKey := &BuildActionCacheKey{Id: sequentialSingletonName}
-	data, err := ctx.buildActionsCache.readSingletonBuildAction(ctx.EncContext, cacheKey)
+	seqCacheKey := &BuildActionCacheKey{Id: sequentialSingletonName}
+	data, err := ctx.buildActionsCache.readSingletonBuildAction(ctx.EncContext, seqCacheKey)
 	if err != nil {
 		t.Fatalf("failed to read cache: %v", err)
 	}
 	if data == nil || len(data.ProviderHashes) != 2 {
 		t.Errorf("expected cache entry to be written with 2 provider hashes, got nil or %d hashes", len(data.ProviderHashes))
 	}
+
+	// 3. Verify providers were cached
+	providers, err := ctx.buildActionsCache.readProviders(ctx.EncContext, seqCacheKey)
+	if err != nil {
+		t.Fatalf("read failed with an error: %s", err)
+	}
+	if providers == nil {
+		t.Errorf("failed to find cached build actions for singleton")
+	}
+	var providerValue any = IncrementalTestInfo{Value: sequentialSingletonName}
+	expectedProviders := ProviderCachedData{
+		Providers: []CachedProvider{{
+			Id:    &singletonTestInfoProvider.providerKey,
+			Value: &providerValue,
+		}},
+	}
+	if !reflect.DeepEqual(expectedProviders, *providers) {
+		t.Errorf("expected: %v actual %v", expectedProviders, *providers)
+	}
+
+	// 4. Verify ninja statement was cached
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	if err := ctx.writeAllSingletonActions(w); err != nil {
+		t.Fatalf("failed to write all singleton actions: %v", err)
+	}
+	ninja, err := ctx.buildActionsCache.readNinjaStatements(seqCacheKey)
+	if err != nil {
+		t.Fatalf("failed to read cache: %v", err)
+	}
+	if !strings.Contains(string(ninja), "build sequential_singleton: phony") {
+		t.Errorf("expected ninja statement to be cached")
+	}
+
+	// 5. Verify ninja file was written
+	if !strings.Contains(buf.String(), "build sequential_singleton: phony") {
+		t.Errorf("ninja file doesn't have build statements for singleton: %s", buf.String())
+	}
 }
+
 func TestSingletonRestore(t *testing.T) {
 	ctx := singletonCacheSetup(t)
 	_, errs := ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
+	}
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	if err := ctx.writeAllSingletonActions(w); err != nil {
+		t.Fatalf("failed to write all singleton actions: %v", err)
 	}
 
 	cacheKey := &BuildActionCacheKey{Id: sequentialSingletonName}
@@ -2408,18 +2447,46 @@ func TestSingletonRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read cache: %v", err)
 	}
+	ninja, err := ctx.buildActionsCache.readNinjaStatements(cacheKey)
+	if err != nil {
+		t.Fatalf("failed to read ninja statements: %v", err)
+	}
+	providers, err := ctx.buildActionsCache.readProviders(ctx.EncContext, cacheKey)
+	if err != nil {
+		t.Fatalf("failed to read providers: %v", err)
+	}
 
+	// Now simulate an incremental build
 	ctx = singletonCacheSetup(t)
 	ctx.buildActionsCache.writeSingletonBuildAction(ctx.EncContext, cacheKey, data)
+	ctx.buildActionsCache.writeNinjaStatements(cacheKey, ninja)
+	ctx.buildActionsCache.writeProviders(ctx.EncContext, cacheKey, providers)
 
 	_, errs = ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	singleton := ctx.singletonInfo[1].singleton.(*sequentialSingleton)
+	seqSingletonInfo := ctx.singletonInfo[1]
+	seqSingleton := seqSingletonInfo.singleton.(*sequentialSingleton)
 
-	// 1. Verify GenerateBuildActions was called
-	if singleton.GenerateBuildActionsCalled != 0 {
-		t.Errorf("expected GenerateBuildActions to be not called, got %d", singleton.GenerateBuildActionsCalled)
+	// 1. Verify GenerateBuildActions was not called
+	if seqSingleton.GenerateBuildActionsCalled != 0 {
+		t.Errorf("expected GenerateBuildActions to be not called, got %d", seqSingleton.GenerateBuildActionsCalled)
+	}
+
+	// 2. Verify that the provider is set correctly for the singleton
+	expected := IncrementalTestInfo{Value: sequentialSingletonName}
+	actual, found := ctx.singletonProvider(seqSingletonInfo, singletonTestInfoProvider.provider())
+	if !found || !reflect.DeepEqual(expected, actual) {
+		t.Errorf("expected: %v actual %v", expected, actual)
+	}
+
+	// 3. Verify ninja statement was restored
+	buf.Reset()
+	if err := ctx.writeAllSingletonActions(w); err != nil {
+		t.Fatalf("failed to write all singleton actions: %v", err)
+	}
+	if !strings.Contains(buf.String(), "build sequential_singleton: phony") {
+		t.Errorf("ninja file doesn't have build statements for singleton: %s", buf.String())
 	}
 }
