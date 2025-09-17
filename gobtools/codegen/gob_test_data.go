@@ -111,3 +111,9 @@ type testEchoMap map[TestEcho]*TestEcho
 type TestEmbedPtr struct {
 	f37 string
 }
+
+// @auto-generate: gob
+type TestPtrs struct {
+	f1 *TestEcho
+	f2 *TestEcho
+}
