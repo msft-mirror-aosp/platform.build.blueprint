@@ -214,7 +214,7 @@ func (c *Context) setProviderInternal(info *providerInfo, provider *providerKey,
 // provider(type T)(m *moduleInfo, provider ProviderKey(T)) T
 func (c *Context) provider(m *moduleInfo, provider *providerKey) (any, bool) {
 	validateProvider(c, m, provider)
-	maybeRestoreProviders(c, m, provider)
+	maybeRestoreProviders(c, &m.commonIncrementalInfo, provider)
 	if len(m.providers) > provider.id {
 		if p := m.providers[provider.id]; p != nil {
 			return p, true
@@ -226,7 +226,19 @@ func (c *Context) provider(m *moduleInfo, provider *providerKey) (any, bool) {
 
 func (c *Context) singletonProvider(s *singletonInfo, provider *providerKey) (any, bool) {
 	validateSingletonProvider(s, provider)
-	//maybeRestoreProviders(c, m, provider)
+	maybeRestoreProviders(c, &s.commonIncrementalInfo, provider)
+	if s.providerInitialValueHashes == nil {
+		s.providerInitialValueHashes = make([]uint64, len(providerRegistry))
+	}
+	for i, provider := range s.providers {
+		if provider != nil {
+			if hash, err := proptools.CalculateHash(provider); err != nil {
+				panic(err)
+			} else {
+				s.providerInitialValueHashes[i] = hash
+			}
+		}
+	}
 	if len(s.providers) > provider.id {
 		if p := s.providers[provider.id]; p != nil {
 			return p, true
@@ -238,7 +250,7 @@ func (c *Context) singletonProvider(s *singletonInfo, provider *providerKey) (an
 
 func (c *Context) hasProvider(m *moduleInfo, provider *providerKey) bool {
 	validateProvider(c, m, provider)
-	maybeRestoreProviders(c, m, provider)
+	maybeRestoreProviders(c, &m.commonIncrementalInfo, provider)
 	if len(m.providers) > provider.id {
 		if p := m.providers[provider.id]; p != nil {
 			return true
@@ -248,8 +260,8 @@ func (c *Context) hasProvider(m *moduleInfo, provider *providerKey) bool {
 	return false
 }
 
-func maybeRestoreProviders(c *Context, m *moduleInfo, provider *providerKey) {
-	if provider.mutator != "" {
+func maybeRestoreProviders(c *Context, m *commonIncrementalInfo, provider *providerKey) {
+	if provider.mutator != "" && provider.mutator != singletonTag {
 		return
 	}
 

@@ -404,8 +404,6 @@ type moduleInfo struct {
 	actionDefs  localBuildActions
 	buildParams *[]BuildParams
 
-	providerInfo
-
 	startedMutator  int
 	finishedMutator int
 
@@ -424,7 +422,7 @@ type moduleInfo struct {
 	// modules.
 	cachedUniqueName string
 
-	incrementalInfo
+	moduleIncrementalInfo
 }
 
 type providerInfo struct {
@@ -439,17 +437,22 @@ type globResultCache struct {
 	Result   uint64
 }
 
-type incrementalInfo struct {
+type moduleIncrementalInfo struct {
+	commonIncrementalInfo
+	buildActionInputHash uint64
+	orderOnlyStrings     []string
+	incrementalDebugInfo []byte
+	globCache            []globResultCache
+}
+
+type commonIncrementalInfo struct {
 	incrementalRestored bool
 	providersRestored   bool
 	// Whether this module support incremental build.
 	incrementalSupported bool
 	providerRestoreLock  sync.Mutex
 	buildActionCacheKey  *BuildActionCacheKey
-	buildActionInputHash uint64
-	orderOnlyStrings     []string
-	incrementalDebugInfo []byte
-	globCache            []globResultCache
+	providerInfo
 }
 
 type variant struct {
@@ -610,11 +613,10 @@ type singletonInfo struct {
 	parallel  bool
 
 	// set during PrepareBuildActions
-	actionDefs localBuildActions
-	providerInfo
+	actionDefs                   localBuildActions
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
-	incrementalSupported         bool
+	commonIncrementalInfo
 }
 
 type mutatorInfo struct {
@@ -3552,8 +3554,8 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 			}
 		}()
 
-		cacheKey, restored := c.restoreSingleton(info)
-		if !restored {
+		c.restoreSingleton(info)
+		if !info.incrementalRestored {
 			info.singleton.GenerateBuildActions(sctx)
 		}
 		// A caching entry for singletons is only written if the singleton
@@ -3564,12 +3566,31 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 		// An edge case where a coding change removes a provider dependency is safely handled
 		// because any detected code change automatically invalidates the entire global cache,
 		// ensuring system consistency.
-		if cacheKey != nil && !restored && len(sctx.depProviders) > 0 {
+		if info.buildActionCacheKey != nil && !info.incrementalRestored && len(sctx.depProviders) > 0 {
 			cache := make(map[int]uint64)
 			for k, _ := range sctx.depProviders {
 				cache[k] = c.providerValueHashes[k]
 			}
-			c.buildActionsCache.writeSingletonBuildAction(c.EncContext, cacheKey, &SingletonActionCachedData{ProviderHashes: cache})
+			if err := c.buildActionsCache.writeSingletonBuildAction(c.EncContext, info.buildActionCacheKey,
+				&SingletonActionCachedData{ProviderHashes: cache}); err != nil {
+				panic(err)
+			}
+
+			var providers []CachedProvider
+			for i, p := range info.providers {
+				if p == nil {
+					continue
+				}
+				providers = append(providers,
+					CachedProvider{
+						Id:    providerRegistry[i],
+						Value: &p,
+					})
+			}
+			if err := c.buildActionsCache.writeProviders(c.EncContext, info.buildActionCacheKey,
+				&ProviderCachedData{Providers: providers}); err != nil {
+				panic(err)
+			}
 		}
 	}()
 
@@ -3588,18 +3609,16 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 	return deps, errs
 }
 
-func (c *Context) restoreSingleton(info *singletonInfo) (*BuildActionCacheKey, bool) {
-	var cacheKey *BuildActionCacheKey
-	restored := false
+func (c *Context) restoreSingleton(info *singletonInfo) {
 	info.incrementalSupported = c.GetIncrementalEnabled() && info.singleton.IncrementalSupported()
 	if info.incrementalSupported {
-		cacheKey = &BuildActionCacheKey{
+		info.buildActionCacheKey = &BuildActionCacheKey{
 			Id: info.name,
 		}
 		// We can pursue a incremental analysis because there is no soong coding change, no
 		// product config and env variable changes.
 		if c.GetIncrementalAnalysis() {
-			data, err := c.buildActionsCache.readSingletonBuildAction(c.EncContext, cacheKey)
+			data, err := c.buildActionsCache.readSingletonBuildAction(c.EncContext, info.buildActionCacheKey)
 			if err != nil {
 				panic(err)
 			}
@@ -3607,16 +3626,15 @@ func (c *Context) restoreSingleton(info *singletonInfo) (*BuildActionCacheKey, b
 				// This logic here assumes a singleton's behavior is a pure function of its providers.
 				// Conditional access to certain providers must also be based on other provider
 				// values, ensuring that any behavioral change is captured by the input providers hashes.
-				restored = len(data.ProviderHashes) != 0
+				info.incrementalRestored = len(data.ProviderHashes) != 0
 				for k, v := range data.ProviderHashes {
 					if c.providerValueHashes[k] != v {
-						restored = false
+						info.incrementalRestored = false
 					}
 				}
 			}
 		}
 	}
-	return cacheKey, restored
 }
 
 func (c *Context) generateParallelSingletonBuildActions(config interface{},
@@ -5184,46 +5202,64 @@ func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 	}
 
 	buf := bytes.NewBuffer(nil)
+	var ninjaBytes []byte
+	inMemoryWriter := bytes.NewBuffer(nil)
 
 	for _, info := range c.singletonInfo {
-		if len(info.actionDefs.variables)+len(info.actionDefs.rules)+len(info.actionDefs.buildDefs) == 0 {
-			continue
-		}
+		if info.incrementalRestored {
+			// Read from the cache if the singleton is restored.
+			ninjaBytes, err = c.buildActionsCache.readNinjaStatements(info.buildActionCacheKey)
+			if err != nil {
+				return err
+			}
+		} else {
+			if len(info.actionDefs.variables)+len(info.actionDefs.rules)+len(info.actionDefs.buildDefs) == 0 {
+				continue
+			}
 
-		// Get the name of the factory function for the module.
-		factory := info.factory
-		factoryFunc := runtime.FuncForPC(reflect.ValueOf(factory).Pointer())
-		factoryName := factoryFunc.Name()
+			inMemoryWriter.Reset()
+			sWriter := newNinjaWriter(inMemoryWriter)
+			// Get the name of the factory function for the module.
+			factory := info.factory
+			factoryFunc := runtime.FuncForPC(reflect.ValueOf(factory).Pointer())
+			factoryName := factoryFunc.Name()
 
-		buf.Reset()
-		infoMap := map[string]interface{}{
-			"name":      info.name,
-			"goFactory": factoryName,
-		}
-		err = headerTemplate.Execute(buf, infoMap)
-		if err != nil {
-			return err
-		}
+			buf.Reset()
+			infoMap := map[string]interface{}{
+				"name":      info.name,
+				"goFactory": factoryName,
+			}
+			err = headerTemplate.Execute(buf, infoMap)
+			if err != nil {
+				return err
+			}
 
-		err = nw.Comment(buf.String())
-		if err != nil {
-			return err
-		}
+			err = sWriter.Comment(buf.String())
+			if err != nil {
+				return err
+			}
 
-		err = nw.BlankLine()
-		if err != nil {
-			return err
-		}
+			err = sWriter.BlankLine()
+			if err != nil {
+				return err
+			}
 
-		err = c.writeLocalBuildActions(nw, &info.actionDefs)
-		if err != nil {
-			return err
-		}
+			err = c.writeLocalBuildActions(sWriter, &info.actionDefs)
+			if err != nil {
+				return err
+			}
 
-		err = nw.BlankLine()
-		if err != nil {
-			return err
+			err = sWriter.BlankLine()
+			if err != nil {
+				return err
+			}
+			ninjaBytes = inMemoryWriter.Bytes()
+
+			if info.incrementalSupported {
+				c.buildActionsCache.writeNinjaStatements(info.buildActionCacheKey, ninjaBytes)
+			}
 		}
+		nw.writer.Write(ninjaBytes)
 	}
 
 	return nil

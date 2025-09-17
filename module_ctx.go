@@ -794,7 +794,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 			m.module.providerInitialValueHashes[provider.Id.id] = provider.Hash
 			// We need to restore all the providers before we cache singletons, so do
 			// it here so the work can be run more in parallel.
-			maybeRestoreProviders(m.context, m.module, provider.Id)
+			maybeRestoreProviders(m.context, &m.module.commonIncrementalInfo, provider.Id)
 		}
 
 		m.module.orderOnlyStrings = data.OrderOnlyStrings
