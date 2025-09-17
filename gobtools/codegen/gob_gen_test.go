@@ -24,7 +24,6 @@ import (
 	"github.com/google/blueprint/depset"
 	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/gobtools/test"
-	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/uniquelist"
 )
 
@@ -55,14 +54,6 @@ func TestEncDec(t *testing.T) {
 				f24: test.TypeStruct{Name: "fffffffff"},
 			},
 			decoded: &TestStruct{},
-		},
-		{
-			name: "duplicate pointer",
-			origin: &TestPtrs{
-				f1: &defaultEcho,
-				f2: &defaultEcho,
-			},
-			decoded: &TestPtrs{},
 		},
 		{
 			name: "TestStruct",
@@ -162,34 +153,20 @@ func TestEncDec(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			buf := new(bytes.Buffer)
-			ctx := gobtools.NewReferencesEncoderForTest()
-			if err := tc.origin.Encode(ctx, buf); err != nil {
-				t.Errorf("failed to encode %s: %v", tc.name, err)
-			}
-			if err := ctx.EncodeReferences(); err != nil {
-				t.Errorf("failed to encode references: %v", err)
-			}
-			if err := tc.decoded.Decode(ctx, bytes.NewReader(buf.Bytes())); err != nil {
-				t.Errorf("failed to decode %s: %v", tc.name, err)
-			}
-			if !reflect.DeepEqual(tc.origin, tc.decoded) {
-				t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.origin, tc.decoded)
-			}
-
-			originalHash, err := proptools.CalculateHash(tc.origin)
-			if err != nil {
-				t.Fatal(err)
-			}
-			decodedHash, err := proptools.CalculateHash(tc.decoded)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if originalHash != decodedHash {
-				t.Errorf("the decoded data has a different hash from the origin: expected: %v got %v", originalHash, decodedHash)
-			}
-		})
+		buf := new(bytes.Buffer)
+		ctx := gobtools.NewReferencesEncoderForTest()
+		if err := tc.origin.Encode(ctx, buf); err != nil {
+			t.Errorf("failed to encode %s: %v", tc.name, err)
+		}
+		if err := ctx.EncodeReferences(); err != nil {
+			t.Errorf("failed to encode references: %v", err)
+		}
+		if err := tc.decoded.Decode(ctx, bytes.NewReader(buf.Bytes())); err != nil {
+			t.Errorf("failed to decode %s: %v", tc.name, err)
+		}
+		if !reflect.DeepEqual(tc.origin, tc.decoded) {
+			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.origin, tc.decoded)
+		}
 	}
 }
 

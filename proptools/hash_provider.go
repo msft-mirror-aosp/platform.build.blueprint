@@ -180,30 +180,29 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 			// Circular dependency detected (we have this in Scope at least), just return nil for now.
 			return nil
 		}
+		if hash, ok := hasher.ptrs[addr]; ok {
+			hasher.writeUint64(hash)
+			return nil
+		}
 		// The special logic below is to avoid hashing the same pointer more than once.
 		// We store the current hash value, then reset the hasher to a clean state in
 		// order to calculate the hash of the pointer which will be cached for future
 		// encounters. Once we have the hash value of the pointer, we hash both the
-		// stored hash value and the hash value of the pointer.
+		// stored hash value and the hash value of the pointer. This will still give
+		// us a unique hash value even though it is different from the case where we
+		// don't apply this special logic.
 		prevHash := hasher.Sum64()
 		hasher.Reset()
-
-		ptrHash, ok := hasher.ptrs[addr]
-		if !ok {
-			hasher.visiting[addr] = true
-			err := hasher.calculateHash(v.Elem())
-			if err != nil {
-				return fmt.Errorf("in pointer: %s", err.Error())
-			}
-			ptrHash = hasher.Sum64()
-			hasher.ptrs[addr] = ptrHash
-			delete(hasher.visiting, addr)
+		hasher.visiting[addr] = true
+		err := hasher.calculateHash(v.Elem())
+		if err != nil {
+			return fmt.Errorf("in pointer: %s", err.Error())
 		}
-
-		hasher.Reset()
+		ptrHash := hasher.Sum64()
+		hasher.ptrs[addr] = ptrHash
 		hasher.writeUint64(prevHash)
 		hasher.writeUint64(ptrHash)
-
+		delete(hasher.visiting, addr)
 	case reflect.Interface:
 		if v.IsNil() {
 			hasher.writeByte(0)
