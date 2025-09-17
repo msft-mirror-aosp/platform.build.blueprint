@@ -207,6 +207,37 @@ func TestContainsConfigurable(t *testing.T) {
 	}
 }
 
+func TestHashingDuplicatePointers(t *testing.T) {
+	str1 := "this is a hash test for pointers"
+	str2 := "this is a hash test for pointers"
+	data1 := struct {
+		f1 *string
+		f2 *string
+	}{
+		f1: &str1,
+		f2: &str1,
+	}
+	data2 := struct {
+		f1 *string
+		f2 *string
+	}{
+		f1: &str1,
+		f2: &str2,
+	}
+	hash1, err := CalculateHash(data1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash2, err := CalculateHash(data2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash1 != hash2 {
+		t.Errorf("hashing pointers to same string vs pointers to identical strings should be equal")
+	}
+
+}
+
 func BenchmarkCalculateHash(b *testing.B) {
 	for _, testCase := range hashTestCases {
 		b.Run(testCase.name, func(b *testing.B) {
