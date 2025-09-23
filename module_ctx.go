@@ -168,8 +168,20 @@ func (m ModuleProxy) IsNil() bool {
 	return m.moduleInfo == nil
 }
 
-func (m ModuleProxy) IncrementalInfo() (bool, bool) {
-	return m.moduleInfo.incrementalSupported, m.moduleInfo.incrementalRestored
+type IncrementalMetricsInfo struct {
+	IncrementalRestored        bool
+	HasUnrestoredProvider      []bool
+	ProviderInitialValueHashes []uint64
+	IncrementalSupported       bool
+}
+
+func (m ModuleProxy) IncrementalInfo() *IncrementalMetricsInfo {
+	return &IncrementalMetricsInfo{
+		IncrementalRestored:        m.moduleInfo.incrementalRestored,
+		HasUnrestoredProvider:      m.moduleInfo.hasUnrestoredProvider,
+		ProviderInitialValueHashes: m.moduleInfo.providerInitialValueHashes,
+		IncrementalSupported:       m.moduleInfo.incrementalSupported,
+	}
 }
 
 func (m ModuleProxy) Name() string {

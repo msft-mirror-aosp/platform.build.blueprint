@@ -3628,6 +3628,8 @@ func (c *Context) restoreSingleton(info *singletonInfo) {
 				// This logic here assumes a singleton's behavior is a pure function of its providers.
 				// Conditional access to certain providers must also be based on other provider
 				// values, ensuring that any behavioral change is captured by the input providers hashes.
+				// When a incremental doesn't have any cached provider, it means the input of the singleton
+				// was not captured or it doesn't depend on any input, so we always run it.
 				info.incrementalRestored = len(data.ProviderHashes) != 0
 				for k, v := range data.ProviderHashes {
 					if c.providerValueHashes[k] != v {

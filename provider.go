@@ -116,6 +116,20 @@ func NewMutatorProvider[K any](mutator string) ProviderKey[K] {
 	return provider
 }
 
+func ProviderType(id int) string {
+	if id >= 0 && id < len(providerRegistry) {
+		return providerRegistry[id].typ
+	}
+	return "unknown"
+}
+
+func ProviderMutator(id int) string {
+	if id >= 0 && id < len(providerRegistry) {
+		return providerRegistry[id].mutator
+	}
+	return "unknown"
+}
+
 // initProviders fills c.providerMutators with the *mutatorInfo associated with each provider ID,
 // if any.
 func (c *Context) initProviders() {

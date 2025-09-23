@@ -218,6 +218,13 @@ type SingletonProxy struct {
 
 var _ SingletonContext = (*singletonContext)(nil)
 
+func (s SingletonProxy) IncrementalInfo() *IncrementalMetricsInfo {
+	return &IncrementalMetricsInfo{
+		IncrementalRestored:  s.singleton.incrementalRestored,
+		IncrementalSupported: s.singleton.incrementalSupported,
+	}
+}
+
 type singletonContext struct {
 	singleton *singletonInfo
 	context   *Context
