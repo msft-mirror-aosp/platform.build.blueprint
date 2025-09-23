@@ -265,25 +265,27 @@ func maybeRestoreProviders(c *Context, m *commonIncrementalInfo, provider *provi
 		return
 	}
 
-	if m.incrementalRestored && !m.providersRestored {
+	if m.incrementalRestored && (m.hasUnrestoredProvider == nil || m.hasUnrestoredProvider[provider.id]) {
 		func() {
 			m.providerRestoreLock.Lock()
 			defer m.providerRestoreLock.Unlock()
-			if !m.providersRestored {
-				providers, err := c.buildActionsCache.readProviders(c.EncContext, m.buildActionCacheKey)
+			if m.hasUnrestoredProvider == nil || m.hasUnrestoredProvider[provider.id] {
+				p, err := c.buildActionsCache.readProvider(c.EncContext, m.buildActionCacheKey, provider)
 				if err != nil {
 					panic(err)
 				}
 				if m.providers == nil {
 					m.providers = make([]any, len(providerRegistry))
 				}
-				for _, provider := range providers.Providers {
-					if m.providers[provider.Id.id] != nil {
-						panic(fmt.Sprintf("Value of provider %s is already set", provider.Id.typ))
-					}
-					m.providers[provider.Id.id] = *provider.Value
+				if m.providers[provider.id] != nil {
+					panic(fmt.Sprintf("Value of provider %s is already set", provider.typ))
 				}
-				m.providersRestored = true
+				if p.Value != nil {
+					m.providers[provider.id] = *p.Value
+				}
+				if m.hasUnrestoredProvider != nil {
+					m.hasUnrestoredProvider[provider.id] = false
+				}
 			}
 		}()
 	}
