@@ -1826,7 +1826,7 @@ func TestSkipNinjaForCacheHit(t *testing.T) {
 		t.Errorf("ninja file doesn't have build statements for MyBarModule: %s", string(content))
 	}
 
-	file, err = ctx.fs.Open("test.incremental.ninja")
+	file, err = ctx.fs.Open("test.2.ninja")
 	if err != nil {
 		t.Errorf("no ninja file for MyIncrementalModule")
 	}
@@ -1865,7 +1865,7 @@ func TestNotSkipNinjaForCacheMiss(t *testing.T) {
 		t.Errorf("ninja file doesn't have build statements for MyBarModule: %s", string(content))
 	}
 
-	file, err = ctx.fs.Open("test.incremental.ninja")
+	file, err = ctx.fs.Open("test.2.ninja")
 	if err != nil {
 		t.Errorf("no ninja file for MyIncrementalModule")
 	}

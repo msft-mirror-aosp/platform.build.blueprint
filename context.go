@@ -4885,13 +4885,8 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	defer c.EndEvent("modules")
 
 	var modules []*moduleInfo
-	var incModules []*moduleInfo
 
 	for module := range c.iterateAllVariants() {
-		if module.incrementalSupported {
-			incModules = append(incModules, module)
-			continue
-		}
 		modules = append(modules, module)
 	}
 
@@ -4911,9 +4906,8 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	}
 
 	slices.SortFunc(modules, cachedNameModuleLess)
-	slices.SortFunc(incModules, cachedNameModuleLess)
 
-	phonys := c.deduplicateOrderOnlyDeps(append(modules, incModules...))
+	phonys := c.deduplicateOrderOnlyDeps(modules)
 
 	c.EventHandler.Do("sort_phony_builddefs", func() {
 		// sorting for determinism, the phony output names are stable
@@ -4961,7 +4955,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 					}
 				}()
 				writer := newNinjaWriter(buf)
-				err = c.writeModuleAction(batchModules, writer, headerTemplate)
+				err = c.writeIncrementalModules(batchModules, writer, headerTemplate)
 				if err != nil {
 					errorCh <- err
 				}
@@ -4969,26 +4963,13 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			nw.Subninja(file)
 		}
 
-		suffix := ".ninja"
-		base := strings.TrimSuffix(ninjaFileName, suffix)
-		file := fmt.Sprintf("%s.incremental%s", base, suffix)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			err := writeIncrementalModules(c, file, incModules, headerTemplate)
-			if err != nil {
-				errorCh <- err
-			}
-		}()
-		nw.Subninja(file)
-
 		if c.GetIncrementalEnabled() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				parallelVisitSimple(slices.Values(incModules), parallelVisitLimit,
+				parallelVisitSimple(slices.Values(modules), parallelVisitLimit,
 					func(m *moduleInfo, _ int) []error {
-						if !m.incrementalRestored {
+						if m.incrementalSupported && !m.incrementalRestored {
 							c.cacheModuleBuildActions(m)
 						}
 						return nil
@@ -5002,7 +4983,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 		}()
 
 		if c.incrementalDebugFile != "" {
-			c.WriteIncrementalDebugInfo(c.incrementalDebugFile, incModules)
+			c.WriteIncrementalDebugInfo(c.incrementalDebugFile, modules)
 		}
 
 		var errors []error
@@ -5059,19 +5040,7 @@ func parallelVisitSimple(moduleIter iter.Seq[*moduleInfo], limit int, visit func
 	}
 	return errors
 }
-
-func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
-	c.BeginEvent("write_incremental_modules")
-	defer c.EndEvent("write_incremental_modules")
-	bf, err := c.fs.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
-	if err != nil {
-		return err
-	}
-	defer bf.Close()
-	baseBuf := bufio.NewWriterSize(bf, 16*1024*1024)
-	defer baseBuf.Flush()
-	baseWriter := newNinjaWriter(baseBuf)
-
+func (c *Context) writeIncrementalModules(modules []*moduleInfo, baseWriter *ninjaWriter, headerTemplate *template.Template) error {
 	// Use a sync.Pool to reuse buffers and reduce memory allocations.
 	bufferPool := sync.Pool{
 		New: func() any {
@@ -5108,8 +5077,8 @@ func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo,
 			if err == nil {
 				// Make a copy of the bytes, as the buffer will be reused.
 				moduleBytes = slices.Clone(inMemoryWriter.Bytes())
-				// Write the newly generated statements back to the cache when in incremental mode.
-				if c.GetIncrementalEnabled() {
+				// Write the newly generated statements back to the cache for incremental module.
+				if m.buildActionCacheKey != nil {
 					err = c.buildActionsCache.writeNinjaStatements(m.buildActionCacheKey, moduleBytes)
 				}
 			}
