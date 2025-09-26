@@ -5,6 +5,7 @@ package blueprint
 import (
 	"bytes"
 	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/proptools"
 )
 
 func init() {
@@ -301,17 +302,17 @@ func (r *SingletonActionCachedData) Decode(ctx gobtools.EncContext, buf *bytes.R
 		return err
 	}
 	if val1 != -1 {
-		r.ProviderHashes = make(map[int]uint64, val1)
+		r.ProviderHashes = make(map[int]proptools.Hash, val1)
 		for val2 := 0; val2 < int(val1); val2++ {
 			var k int
-			var v uint64
+			var v proptools.Hash
 			var val3 int64
 			err = gobtools.DecodeSimple[int64](buf, &val3)
 			if err != nil {
 				return err
 			}
 			k = int(val3)
-			err = gobtools.DecodeSimple[uint64](buf, &v)
+			err = gobtools.DecodeSimple(buf, &v)
 			if err != nil {
 				return err
 			}
