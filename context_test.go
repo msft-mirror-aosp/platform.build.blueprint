@@ -2373,6 +2373,8 @@ func TestSingletonCache(t *testing.T) {
 		t.Errorf("expected GenerateBuildActions to be called once, got %d", sequentialSingleton{}.GenerateBuildActionsCalled)
 	}
 
+	ctx.buildActionsCache.flush()
+
 	// 2. Verify cache entry was written
 	seqCacheKey := &BuildActionCacheKey{Id: sequentialSingletonName}
 	data, err := ctx.buildActionsCache.readSingletonBuildAction(ctx.EncContext, seqCacheKey)
@@ -2428,6 +2430,8 @@ func TestSingletonRestore(t *testing.T) {
 		t.Fatalf("failed to write all singleton actions: %v", err)
 	}
 
+	ctx.buildActionsCache.flush()
+
 	cacheKey := &BuildActionCacheKey{Id: sequentialSingletonName}
 	data, err := ctx.buildActionsCache.readSingletonBuildAction(ctx.EncContext, cacheKey)
 	if err != nil {
@@ -2447,6 +2451,8 @@ func TestSingletonRestore(t *testing.T) {
 	ctx.buildActionsCache.writeSingletonBuildAction(ctx.EncContext, cacheKey, data)
 	ctx.buildActionsCache.writeNinjaStatements(cacheKey, ninja)
 	ctx.buildActionsCache.writeProviders(ctx.EncContext, cacheKey, []CachedProvider{provider})
+
+	ctx.buildActionsCache.flush()
 
 	_, errs = ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
