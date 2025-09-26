@@ -1632,10 +1632,10 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 		OrderOnlyStrings: orderOnlyStrings,
 		GlobCache:        calculateGlobCache(),
 	})
-	ctx.buildActionsCache.writeProviders(ctx.EncContext, &cacheKey, []CachedProvider{{
+	ctx.buildActionsCache.writeProvider(ctx.EncContext, providerHash, CachedProvider{
 		Id:    &IncrementalTestProviderKey.providerKey,
-		Value: &providerValue,
-	}})
+		Value: providerValue,
+	})
 	ctx.buildActionsCache.writeNinjaStatements(&cacheKey, []byte(incrementalModuleNinja))
 	ctx.SetIncrementalEnabled(true)
 	ctx.SetIncrementalAnalysis(true)
@@ -1723,15 +1723,15 @@ func TestCacheBuildActions(t *testing.T) {
 		t.Errorf("expected: %v actual %v", expectedCache, *cache)
 	}
 
-	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, &cacheKey, &IncrementalTestProviderKey.providerKey)
+	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, providerHash, &IncrementalTestProviderKey.providerKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}
 	if *provider.Id != IncrementalTestProviderKey.providerKey {
 		t.Errorf("expected restored id: %v actual %v", IncrementalTestProviderKey.providerKey, *provider.Id)
 	}
-	if !reflect.DeepEqual(*provider.Value, providerValue) {
-		t.Errorf("expected: %v actual %v", providerValue, *provider.Value)
+	if !reflect.DeepEqual(provider.Value, providerValue) {
+		t.Errorf("expected: %v actual %v", providerValue, provider.Value)
 	}
 
 	ninja, err := ctx.buildActionsCache.readNinjaStatements(&cacheKey)
@@ -2381,12 +2381,14 @@ func TestSingletonCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read cache: %v", err)
 	}
-	if data == nil || len(data.ProviderHashes) != 2 {
-		t.Errorf("expected cache entry to be written with 2 provider hashes, got nil or %d hashes", len(data.ProviderHashes))
+	if data == nil || len(data.DependencyProviderHashes) != 2 {
+		t.Errorf("expected cache entry to be written with 2 provider hashes, got nil or %d hashes", len(data.DependencyProviderHashes))
 	}
 
 	// 3. Verify providers were cached
-	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, seqCacheKey, &singletonTestInfoProvider.providerKey)
+	seqSingletonProviderHash := ctx.singletonInfo[1].providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
+
+	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, seqSingletonProviderHash, &singletonTestInfoProvider.providerKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}
@@ -2394,8 +2396,8 @@ func TestSingletonCache(t *testing.T) {
 		t.Errorf("expected restored id: %v actual %v", IncrementalTestProviderKey.providerKey, *provider.Id)
 	}
 	var providerValue any = IncrementalTestInfo{Value: sequentialSingletonName}
-	if !reflect.DeepEqual(*provider.Value, providerValue) {
-		t.Errorf("expected: %v actual %v", providerValue, *provider.Value)
+	if !reflect.DeepEqual(provider.Value, providerValue) {
+		t.Errorf("expected: %v actual %v", providerValue, provider.Value)
 	}
 
 	// 4. Verify ninja statement was cached
@@ -2441,7 +2443,8 @@ func TestSingletonRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read ninja statements: %v", err)
 	}
-	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, cacheKey, &singletonTestInfoProvider.providerKey)
+	seqSingletonProviderHash := ctx.singletonInfo[1].providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
+	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, seqSingletonProviderHash, &singletonTestInfoProvider.providerKey)
 	if err != nil {
 		t.Fatalf("failed to read provider: %v", err)
 	}
@@ -2450,7 +2453,7 @@ func TestSingletonRestore(t *testing.T) {
 	ctx = singletonCacheSetup(t)
 	ctx.buildActionsCache.writeSingletonBuildAction(ctx.EncContext, cacheKey, data)
 	ctx.buildActionsCache.writeNinjaStatements(cacheKey, ninja)
-	ctx.buildActionsCache.writeProviders(ctx.EncContext, cacheKey, []CachedProvider{provider})
+	ctx.buildActionsCache.writeProvider(ctx.EncContext, seqSingletonProviderHash, provider)
 
 	ctx.buildActionsCache.flush()
 

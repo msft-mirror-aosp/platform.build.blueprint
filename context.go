@@ -3572,23 +3572,31 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 			for k, _ := range sctx.depProviders {
 				cache[k] = c.providerValueHashes[k]
 			}
-			if err := c.buildActionsCache.writeSingletonBuildAction(c.EncContext, info.buildActionCacheKey,
-				&SingletonActionCachedData{ProviderHashes: cache}); err != nil {
-				panic(err)
-			}
 
-			var providers []CachedProvider
+			var providerHashes []ProviderHash
 			for i, p := range info.providers {
 				if p == nil {
 					continue
 				}
-				providers = append(providers,
-					CachedProvider{
-						Id:    providerRegistry[i],
-						Value: &p,
+				err := c.buildActionsCache.writeProvider(c.EncContext, info.providerInitialValueHashes[i], CachedProvider{
+					Id:    providerRegistry[i],
+					Value: p,
+				})
+				if err != nil {
+					panic(err)
+				}
+				providerHashes = append(providerHashes,
+					ProviderHash{
+						Id:   providerRegistry[i],
+						Hash: info.providerInitialValueHashes[i],
 					})
 			}
-			if err := c.buildActionsCache.writeProviders(c.EncContext, info.buildActionCacheKey, providers); err != nil {
+
+			if err := c.buildActionsCache.writeSingletonBuildAction(c.EncContext, info.buildActionCacheKey,
+				&SingletonActionCachedData{
+					ProviderHashes:           providerHashes,
+					DependencyProviderHashes: cache,
+				}); err != nil {
 				panic(err)
 			}
 		}
@@ -3628,10 +3636,16 @@ func (c *Context) restoreSingleton(info *singletonInfo) {
 				// values, ensuring that any behavioral change is captured by the input providers hashes.
 				// When a incremental doesn't have any cached provider, it means the input of the singleton
 				// was not captured or it doesn't depend on any input, so we always run it.
-				info.incrementalRestored = len(data.ProviderHashes) != 0
-				for k, v := range data.ProviderHashes {
+				info.incrementalRestored = len(data.DependencyProviderHashes) != 0
+				for k, v := range data.DependencyProviderHashes {
 					if c.providerValueHashes[k] != v {
 						info.incrementalRestored = false
+					}
+				}
+				if info.incrementalRestored {
+					info.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+					for _, provider := range data.ProviderHashes {
+						info.providerInitialValueHashes[provider.Id.id] = provider.Hash
 					}
 				}
 			}
@@ -5313,16 +5327,18 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 }
 
 func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
-	var providers []CachedProvider
 	var providerHashes []ProviderHash
 
 	for i, p := range module.providers {
 		if p != nil && providerRegistry[i].mutator == "" {
-			providers = append(providers,
+			err := c.buildActionsCache.writeProvider(c.EncContext, module.providerInitialValueHashes[i],
 				CachedProvider{
 					Id:    providerRegistry[i],
-					Value: &p,
+					Value: p,
 				})
+			if err != nil {
+				panic(err)
+			}
 			providerHashes = append(providerHashes,
 				ProviderHash{
 					Id:   providerRegistry[i],
@@ -5338,8 +5354,7 @@ func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
 		GlobCache:        module.globCache,
 	}
 
-	err := errors.Join(c.buildActionsCache.writeModuleBuildAction(c.EncContext, module.buildActionCacheKey, &buildActionData),
-		c.buildActionsCache.writeProviders(c.EncContext, module.buildActionCacheKey, providers))
+	err := c.buildActionsCache.writeModuleBuildAction(c.EncContext, module.buildActionCacheKey, &buildActionData)
 	if err != nil {
 		panic(err)
 	}
