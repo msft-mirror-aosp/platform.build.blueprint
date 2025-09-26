@@ -78,6 +78,7 @@ const (
 	Alias
 	Interface
 	Slice
+	Array
 	Map
 	Pointer
 	Ident
@@ -134,7 +135,7 @@ func (g *gobGen) findType(typeRef typeReference) typeDefTypes {
 	}
 
 	// 2. If not an alias, inspect ts.Type
-	switch ts.Type.(type) {
+	switch t := ts.Type.(type) {
 	case *ast.InterfaceType:
 		return Interface
 	case *ast.StructType:
@@ -144,7 +145,13 @@ func (g *gobGen) findType(typeRef typeReference) typeDefTypes {
 	case *ast.MapType:
 		return Map
 	case *ast.ArrayType:
-		return Slice
+		{
+			if t.Len == nil {
+				return Slice
+			} else {
+				return Array
+			}
+		}
 	case *ast.StarExpr:
 		return Pointer
 	}
@@ -168,7 +175,13 @@ func (g *gobGen) findTypeReference(expr ast.Expr, pkgName string) typeReference 
 		typeRef.typeName = t.Sel.Name
 	case *ast.ArrayType:
 		typeRef = g.findTypeReference(t.Elt, pkgName)
-		typeRef.prefix = "[]" + typeRef.prefix
+		if t.Len == nil {
+			// slice
+			typeRef.prefix = "[]" + typeRef.prefix
+		} else {
+			// array
+			typeRef.prefix = "[" + t.Len.(*ast.BasicLit).Value + "]" + typeRef.prefix
+		}
 		return typeRef
 	case *ast.StarExpr:
 		typeRef = g.findTypeReference(t.X, pkgName)
@@ -258,7 +271,12 @@ func (g *gobGen) generateEncodeForType(encodeBody *strings.Builder, pkgName stri
 		encodeBody.WriteString("\t}\n")
 		encodeBody.WriteString("\t}\n")
 	case *ast.ArrayType:
-		g.encodeArray(encodeBody, pkgName, t.Elt, fieldName)
+		if t.Len == nil {
+			g.encodeSlice(encodeBody, pkgName, t.Elt, fieldName)
+		} else {
+			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, %s); err != nil { return err }\n", fieldName))
+			g.imports[gobtoolsImport] = true
+		}
 	// pointers.
 	case *ast.StarExpr:
 		isNil := g.nextVar()
@@ -272,7 +290,7 @@ func (g *gobGen) generateEncodeForType(encodeBody *strings.Builder, pkgName stri
 		if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "UniqueList" {
 			listName := g.nextVar()
 			encodeBody.WriteString(fmt.Sprintf("\t%s := %s.ToSlice()\n", listName, fieldName))
-			g.encodeArray(encodeBody, pkgName, t.Index, listName)
+			g.encodeSlice(encodeBody, pkgName, t.Index, listName)
 		} else if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "DepSet" {
 			typeRef := g.findTypeReference(t.Index, pkgName)
 			if typeRef.typeName == "string" {
@@ -420,7 +438,12 @@ func (g *gobGen) generateDecodeForType(decodeBody *strings.Builder, pkgName stri
 		decodeBody.WriteString("\t}\n")
 		decodeBody.WriteString("\t}\n")
 	case *ast.ArrayType:
-		g.decodeArray(decodeBody, pkgName, t.Elt, fieldName)
+		if t.Len == nil {
+			g.decodeSlice(decodeBody, pkgName, t.Elt, fieldName)
+		} else {
+			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple(buf, &%s); if err != nil { return err }\n", fieldName))
+			g.imports[gobtoolsImport] = true
+		}
 	case *ast.StarExpr:
 		isNil := g.nextVar()
 		decodeBody.WriteString(fmt.Sprintf("\tvar %s bool\n", isNil))
@@ -438,7 +461,7 @@ func (g *gobGen) generateDecodeForType(decodeBody *strings.Builder, pkgName stri
 			typeRef := g.findTypeReference(t.Index, pkgName)
 			decodeBody.WriteString(fmt.Sprintf("\tvar %s []%s\n", listName, typeRef.fullName()))
 			g.maybeAddImport(typeRef)
-			g.decodeArray(decodeBody, pkgName, t.Index, listName)
+			g.decodeSlice(decodeBody, pkgName, t.Index, listName)
 			decodeBody.WriteString(fmt.Sprintf("\t%s = uniquelist.Make(%s)\n", fieldName, listName))
 			g.imports[`"github.com/google/blueprint/uniquelist"`] = true
 		} else if typ, ok := t.X.(*ast.SelectorExpr); ok && typ.Sel.Name == "DepSet" {
@@ -479,7 +502,7 @@ func (g *gobGen) generateDecodeForStruct(decodeBody *strings.Builder, pkgName st
 	}
 }
 
-func (g *gobGen) encodeArray(encodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
+func (g *gobGen) encodeSlice(encodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
 	g.generateEncodeForNillable(encodeBody, fieldName)
 	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return err }\n", fieldName))
 	index := g.nextVar()
@@ -489,7 +512,7 @@ func (g *gobGen) encodeArray(encodeBody *strings.Builder, pkgName string, t ast.
 	encodeBody.WriteString("\t}\n")
 }
 
-func (g *gobGen) decodeArray(decodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
+func (g *gobGen) decodeSlice(decodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
 	valId := g.nextVar()
 	typeRef := g.findTypeReference(t, pkgName)
 	decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
