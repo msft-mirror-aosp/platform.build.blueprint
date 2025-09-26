@@ -1,11 +1,12 @@
 package proptools
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
 
-func mustHash(t *testing.T, data interface{}) uint64 {
+func mustHash(t *testing.T, data interface{}) Hash {
 	t.Helper()
 	result, err := CalculateHash(data)
 	if err != nil {
@@ -236,6 +237,19 @@ func TestHashingDuplicatePointers(t *testing.T) {
 		t.Errorf("hashing pointers to same string vs pointers to identical strings should be equal")
 	}
 
+}
+
+func TestHashBytes(t *testing.T) {
+	hash := Hash{0x1234567890ABCDEF}
+	bytes := hash.Bytes()
+	if len(bytes) != HashSize {
+		t.Fatalf("Expected %d bytes, got %d", HashSize, len(bytes))
+	}
+
+	expected := []byte{0xef, 0xcd, 0xab, 0x90, 0x78, 0x56, 0x34, 0x12}
+	if !slices.Equal(bytes, expected) {
+		t.Fatalf("Expected %#v, got %#v", expected, bytes)
+	}
 }
 
 func BenchmarkCalculateHash(b *testing.B) {

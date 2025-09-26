@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/blueprint/dbtools"
 	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/proptools"
 )
 
 //go:generate go run gobtools/codegen/gob_gen.go
@@ -66,12 +67,12 @@ type CachedProvider struct {
 // @auto-generate: gob
 type ProviderHash struct {
 	Id   *providerKey
-	Hash uint64
+	Hash proptools.Hash
 }
 
 // @auto-generate: gob
 type ModuleActionCachedData struct {
-	InputHash        uint64
+	InputHash        proptools.Hash
 	ProviderHashes   []ProviderHash
 	OrderOnlyStrings []string
 	GlobCache        []globResultCache
@@ -279,8 +280,8 @@ func (b *BuildActionCache) write(ctx gobtools.EncContext, db dbtools.KeyValueSto
 type OrderOnlyStringsCache map[string][]string
 
 type ModuleBuildActionCacheInput struct {
-	PropertiesHash uint64
-	ProvidersHash  [][]uint64
+	PropertiesHash proptools.Hash
+	ProvidersHash  [][]proptools.Hash
 }
 
 type Incremental interface {
