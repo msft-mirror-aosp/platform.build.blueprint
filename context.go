@@ -3470,8 +3470,11 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				mctx.module.cachedName = mctx.module.logicModule.Name()
 				mctx.module.cachedString = mctx.module.logicModule.String()
 				mctx.module.logicModule = nil
-				mctx.module.properties = nil
-				mctx.module.propertyPos = nil
+				// When soong debug data is requested, don't remove these info, they will show up in soong-debug-info.json.
+				if c.moduleDebugDataChannel == nil {
+					mctx.module.properties = nil
+					mctx.module.propertyPos = nil
+				}
 			}
 
 			module.cachedUniqueName = uniqueName
