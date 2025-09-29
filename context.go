@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -383,7 +384,7 @@ type moduleInfo struct {
 	// incomingTransitionInfosLock.  It is invalid after the TransitionMutator top down mutator has run on
 	// this module.
 	incomingTransitionInfos      map[string]TransitionInfo
-	incomingTransitionInfoHashes map[string]proptools.Hash
+	incomingTransitionInfoHashes map[string]uint64
 	incomingTransitionInfosLock  sync.Mutex
 	// splitTransitionInfos and splitTransitionVariations stores the list of TransitionInfo objects, and their
 	// corresponding variations, returned by Split or requested by reverse dependencies.  They are valid after the
@@ -426,19 +427,19 @@ type moduleInfo struct {
 
 type providerInfo struct {
 	providers                  []interface{}
-	providerInitialValueHashes []proptools.Hash
+	providerInitialValueHashes []uint64
 }
 
 // @auto-generate: gob
 type globResultCache struct {
 	Pattern  string
 	Excludes []string
-	Result   proptools.Hash
+	Result   uint64
 }
 
 type moduleIncrementalInfo struct {
 	commonIncrementalInfo
-	buildActionInputHash proptools.Hash
+	buildActionInputHash uint64
 	orderOnlyStrings     []string
 	incrementalDebugInfo []byte
 	globCache            []globResultCache
@@ -510,7 +511,7 @@ func calculateFileNameHash(name string) string {
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate hash for file name: %s", name))
 	}
-	return hash.FormatUint(16)
+	return strconv.FormatUint(hash, 16)
 }
 
 func (c *Context) setModuleTransitionInfo(module *moduleInfo, t *transitionMutatorImpl, info TransitionInfo) {
@@ -3698,17 +3699,17 @@ func (c *Context) calculateProvidersHashes() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			buf := make([]byte, proptools.HashSize)
+			buf := make([]byte, 8)
 			hashers[i] = fnv.New64()
 			// For singleton providers we collect provider hashes from singletons.
 			if providerRegistry[i].mutator == singletonTag {
 				c.VisitAllSingletons(func(s SingletonProxy) {
-					s.singleton.providerInitialValueHashes[i].PutBigEndian(buf)
+					binary.BigEndian.PutUint64(buf, s.singleton.providerInitialValueHashes[i])
 					hashers[i].Write(buf)
 				})
 			} else {
 				c.visitAllModuleInfos(func(m *moduleInfo) {
-					m.providerInitialValueHashes[i].PutBigEndian(buf)
+					binary.BigEndian.PutUint64(buf, m.providerInitialValueHashes[i])
 					hashers[i].Write(buf)
 				})
 			}
@@ -4559,7 +4560,7 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 				if m.providerInitialValueHashes[i] != hash {
 					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set", providerRegistry[i].typ, m.Name()))
 				}
-			} else if m.providerInitialValueHashes[i] != proptools.ZeroHash && !m.hasUnrestoredProvider[i] {
+			} else if m.providerInitialValueHashes[i] != 0 && !m.hasUnrestoredProvider[i] {
 				// This should be unreachable, because in setProvider we check if the provider has already been set.
 				errors = append(errors, fmt.Errorf("provider %q on module %q was unset somehow, this is an internal error", providerRegistry[i].typ, m.Name()))
 			}

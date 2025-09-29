@@ -63,7 +63,7 @@ func (r *globResultCache) Decode(ctx gobtools.EncContext, buf *bytes.Reader) err
 		}
 	}
 
-	err = gobtools.DecodeSimple(buf, &r.Result)
+	err = gobtools.DecodeSimple[uint64](buf, &r.Result)
 	if err != nil {
 		return err
 	}

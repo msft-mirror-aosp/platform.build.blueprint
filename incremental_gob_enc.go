@@ -141,7 +141,7 @@ func (r *ProviderHash) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error 
 		r.Id = &val1
 	}
 
-	err = gobtools.DecodeSimple(buf, &r.Hash)
+	err = gobtools.DecodeSimple[uint64](buf, &r.Hash)
 	if err != nil {
 		return err
 	}
@@ -212,49 +212,49 @@ func (r ModuleActionCachedData) Encode(ctx gobtools.EncContext, buf *bytes.Buffe
 func (r *ModuleActionCachedData) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
-	err = gobtools.DecodeSimple(buf, &r.InputHash)
+	err = gobtools.DecodeSimple[uint64](buf, &r.InputHash)
 	if err != nil {
 		return err
 	}
 
-	var val4 int32
-	err = gobtools.DecodeSimple[int32](buf, &val4)
+	var val3 int32
+	err = gobtools.DecodeSimple[int32](buf, &val3)
 	if err != nil {
 		return err
 	}
-	if val4 != -1 {
-		r.ProviderHashes = make([]ProviderHash, val4)
-		for val5 := 0; val5 < int(val4); val5++ {
-			if err = r.ProviderHashes[val5].Decode(ctx, buf); err != nil {
+	if val3 != -1 {
+		r.ProviderHashes = make([]ProviderHash, val3)
+		for val4 := 0; val4 < int(val3); val4++ {
+			if err = r.ProviderHashes[val4].Decode(ctx, buf); err != nil {
 				return err
 			}
 		}
 	}
 
-	var val8 int32
-	err = gobtools.DecodeSimple[int32](buf, &val8)
+	var val7 int32
+	err = gobtools.DecodeSimple[int32](buf, &val7)
 	if err != nil {
 		return err
 	}
-	if val8 != -1 {
-		r.OrderOnlyStrings = make([]string, val8)
-		for val9 := 0; val9 < int(val8); val9++ {
-			err = gobtools.DecodeString(buf, &r.OrderOnlyStrings[val9])
+	if val7 != -1 {
+		r.OrderOnlyStrings = make([]string, val7)
+		for val8 := 0; val8 < int(val7); val8++ {
+			err = gobtools.DecodeString(buf, &r.OrderOnlyStrings[val8])
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	var val12 int32
-	err = gobtools.DecodeSimple[int32](buf, &val12)
+	var val11 int32
+	err = gobtools.DecodeSimple[int32](buf, &val11)
 	if err != nil {
 		return err
 	}
-	if val12 != -1 {
-		r.GlobCache = make([]globResultCache, val12)
-		for val13 := 0; val13 < int(val12); val13++ {
-			if err = r.GlobCache[val13].Decode(ctx, buf); err != nil {
+	if val11 != -1 {
+		r.GlobCache = make([]globResultCache, val11)
+		for val12 := 0; val12 < int(val11); val12++ {
+			if err = r.GlobCache[val12].Decode(ctx, buf); err != nil {
 				return err
 			}
 		}

@@ -17,14 +17,12 @@ package proptools
 import (
 	"cmp"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"hash"
 	"hash/fnv"
 	"math"
 	"reflect"
 	"slices"
-	"strconv"
 	"unsafe"
 
 	"github.com/google/blueprint/pool"
@@ -37,43 +35,7 @@ var recordSeparator []byte = []byte{36}
 
 var hasherPool = pool.New[hasher]()
 
-const HashSize = 8
-
-type Hash [1]uint64
-
-func (h *Hash) UnmarshalJSON(bytes []byte) error {
-	var s []uint64
-	err := json.Unmarshal(bytes, &s)
-	if err != nil {
-		return err
-	}
-	if len(s) != len(h) {
-		return fmt.Errorf("expected %d elements, got %d", len(h), len(s))
-	}
-	copy(h[:], s)
-	return nil
-}
-
-func (h *Hash) MarshalJSON() ([]byte, error) {
-	return json.Marshal(h[:])
-}
-
-var ZeroHash Hash
-
-func (h *Hash) FormatUint(base int) string {
-	return strconv.FormatUint(h[0], base)
-}
-
-func (h *Hash) PutBigEndian(buf []byte) {
-	binary.BigEndian.PutUint64(buf, h[0])
-}
-
-func (h *Hash) Bytes() []byte {
-	ptr := unsafe.Pointer(unsafe.SliceData(h[:]))
-	return unsafe.Slice((*byte)(ptr), len(h)*int(unsafe.Sizeof(h[0])))
-}
-
-func CalculateHash(value interface{}) (Hash, error) {
+func CalculateHash(value interface{}) (uint64, error) {
 	hasher := hasherPool.Get()
 	defer hasherPool.Put(hasher)
 	hasher.reset()
@@ -82,7 +44,7 @@ func CalculateHash(value interface{}) (Hash, error) {
 	if v.IsValid() {
 		err = hasher.calculateHash(v)
 	}
-	return Hash{hasher.Sum64()}, err
+	return hasher.Sum64(), err
 }
 
 type hasher struct {

@@ -171,7 +171,7 @@ func (m ModuleProxy) IsNil() bool {
 type IncrementalMetricsInfo struct {
 	IncrementalRestored        bool
 	HasUnrestoredProvider      []bool
-	ProviderInitialValueHashes []proptools.Hash
+	ProviderInitialValueHashes []uint64
 	IncrementalSupported       bool
 }
 
@@ -797,7 +797,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		}
 
 		if m.module.providerInitialValueHashes == nil {
-			m.module.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+			m.module.providerInitialValueHashes = make([]uint64, len(providerRegistry))
 		}
 
 		m.module.hasUnrestoredProvider = make([]bool, len(providerRegistry))
@@ -855,7 +855,7 @@ func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *Modul
 		CacheKey  string         `json:"cache_key"`
 		Type      string         `json:"type"`
 		Variant   string         `json:"variant"`
-		PropHash  proptools.Hash `json:"properties_hash"`
+		PropHash  uint64         `json:"properties_hash"`
 		Providers []depProviders `json:"providers"`
 	}{
 		Name:     m.module.logicModule.Name(),
@@ -873,7 +873,7 @@ func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *Modul
 					Variant: dep.variant.name,
 				}
 				for _, p := range providerRegistry {
-					if dep.providerInitialValueHashes[p.id] == proptools.ZeroHash {
+					if dep.providerInitialValueHashes[p.id] == 0 {
 						continue
 					}
 					dp.Providers = append(dp.Providers,

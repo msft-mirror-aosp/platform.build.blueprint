@@ -207,7 +207,7 @@ func (c *Context) setProviderInternal(info *providerInfo, provider *providerKey,
 	}()
 
 	if info.providerInitialValueHashes == nil {
-		info.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+		info.providerInitialValueHashes = make([]uint64, len(providerRegistry))
 	}
 	hash, err := proptools.CalculateHash(value)
 	if err != nil {
@@ -242,7 +242,7 @@ func (c *Context) singletonProvider(s *singletonInfo, provider *providerKey) (an
 	validateSingletonProvider(s, provider)
 	maybeRestoreProviders(c, &s.commonIncrementalInfo, provider)
 	if s.providerInitialValueHashes == nil {
-		s.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+		s.providerInitialValueHashes = make([]uint64, len(providerRegistry))
 	}
 	for i, provider := range s.providers {
 		if provider != nil {
