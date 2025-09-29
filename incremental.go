@@ -80,7 +80,7 @@ type ModuleActionCachedData struct {
 
 // @auto-generate: gob
 type SingletonActionCachedData struct {
-	ProviderHashes map[int]proptools.Hash
+	ProviderHashes map[int]uint64
 }
 
 // A dbWriteRequest is passed to writer() through writerCh to write a key-value pair to a database.

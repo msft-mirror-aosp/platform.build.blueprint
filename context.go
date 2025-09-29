@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"hash/fnv"
 	"io"
 	"io/ioutil"
@@ -186,7 +187,7 @@ type Context struct {
 	orderOnlyStrings        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
 	incrementalDebugFile    string
 	EncContext              gobtools.EncContext
-	providerValueHashes     []proptools.Hash
+	providerValueHashes     []uint64
 
 	moduleDebugDataChannel chan []byte
 
@@ -3568,7 +3569,7 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 		// because any detected code change automatically invalidates the entire global cache,
 		// ensuring system consistency.
 		if info.buildActionCacheKey != nil && !info.incrementalRestored && len(sctx.depProviders) > 0 {
-			cache := make(map[int]proptools.Hash)
+			cache := make(map[int]uint64)
 			for k, _ := range sctx.depProviders {
 				cache[k] = c.providerValueHashes[k]
 			}
@@ -3691,32 +3692,32 @@ func (c *Context) generateParallelSingletonBuildActions(config interface{},
 }
 
 func (c *Context) calculateProvidersHashes() {
-	c.providerValueHashes = make([]proptools.Hash, len(providerRegistry))
+	hashers := make([]hash.Hash64, len(providerRegistry))
 	var wg sync.WaitGroup
-	for i := range len(providerRegistry) {
+	for i := range hashers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-
-			var providerHashes []proptools.Hash
+			buf := make([]byte, proptools.HashSize)
+			hashers[i] = fnv.New64()
 			// For singleton providers we collect provider hashes from singletons.
 			if providerRegistry[i].mutator == singletonTag {
 				c.VisitAllSingletons(func(s SingletonProxy) {
-					providerHashes = append(providerHashes, s.singleton.providerInitialValueHashes[i])
+					s.singleton.providerInitialValueHashes[i].PutBigEndian(buf)
+					hashers[i].Write(buf)
 				})
 			} else {
 				c.visitAllModuleInfos(func(m *moduleInfo) {
-					providerHashes = append(providerHashes, m.providerInitialValueHashes[i])
+					m.providerInitialValueHashes[i].PutBigEndian(buf)
+					hashers[i].Write(buf)
 				})
-			}
-			var err error
-			c.providerValueHashes[i], err = proptools.CalculateHash(providerHashes)
-			if err != nil {
-				panic(err)
 			}
 		}()
 	}
 	wg.Wait()
+	for i := range hashers {
+		c.providerValueHashes = append(c.providerValueHashes, hashers[i].Sum64())
+	}
 }
 
 func (c *Context) generateSingletonBuildActions(config interface{},
