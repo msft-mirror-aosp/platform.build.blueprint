@@ -587,6 +587,21 @@ func (d *baseModuleContext) HasMutatorFinished(mutatorName string) bool {
 	return d.context.HasMutatorFinished(mutatorName)
 }
 
+// storeCoreModuleInfo creates a copy of moduleInfo in moduleGroup.
+// This is intended to be called at the end of defaults mutator.
+func (d *baseModuleContext) storeCoreModuleInfo() {
+	// Create a minimal copy of the properties of moduleInfo.
+	// TODO (b/448182009): Add more properties if needed.
+	newLogicModule, newProperties := d.context.cloneLogicModule(d.module)
+	newModule := moduleInfo{
+		logicModule: newLogicModule,
+		properties:  newProperties,
+		directDeps:  slices.Clone(d.module.directDeps),
+		factory:     d.module.factory,
+	}
+	d.module.group.coreModuleInfo = newModule
+}
+
 var _ ModuleContext = (*moduleContext)(nil)
 
 type moduleContext struct {
