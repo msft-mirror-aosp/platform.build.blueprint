@@ -1,0 +1,5 @@
+bootstrap_go_package {
+    name: "blueprint-proptools-type_test2",
+    pkgPath: "github.com/google/blueprint/proptools/type_test2/type_test",
+    srcs: ["type.go"],
+}

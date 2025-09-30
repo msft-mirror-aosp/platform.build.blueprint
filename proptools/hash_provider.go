@@ -77,9 +77,19 @@ func CalculateHash(value interface{}) (Hash, error) {
 	hasher := hasherPool.Get()
 	defer hasherPool.Put(hasher)
 	hasher.reset()
+
 	v := reflect.ValueOf(value)
 	var err error
 	if v.IsValid() {
+		var h Hash
+		// Include the hash of the type so that hashes of types with the same contents, for example
+		// empty slices of different types, produce different hashes.  The hash of each type is cached,
+		// so this should be very fast.
+		h, err = typeHash(v.Type())
+		if err != nil {
+			return Hash{}, err
+		}
+		hasher.writeHash(h)
 		err = hasher.calculateHash(v)
 	}
 	return Hash{hasher.Sum64()}, err
@@ -129,6 +139,27 @@ func (hasher *hasher) writeByte(i byte) {
 	hasher.Write(hasher.int64Buf[:1])
 }
 
+func (hasher *hasher) writeString(s string) {
+	strLen := len(s)
+	if strLen == 0 {
+		// unsafe.StringData is unspecified in this case
+		hasher.writeByte(0)
+		return
+	}
+
+	hasher.Write(unsafe.Slice(unsafe.StringData(s), strLen))
+}
+
+func (hasher *hasher) writeHash(h Hash) {
+	for _, e := range h {
+		hasher.writeUint64(e)
+	}
+}
+
+func (hasher *hasher) writeRecordSeparator() {
+	hasher.Write(recordSeparator)
+}
+
 func (hasher *hasher) getMapState(size int) *mapState {
 	s := hasher.mapStateCache
 	// Clear hasher.mapStateCache so that any recursive uses don't collide with this frame.
@@ -160,7 +191,7 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 		l := v.NumField()
 		hasher.writeInt(l)
 		for i := 0; i < l; i++ {
-			hasher.Write(recordSeparator)
+			hasher.writeRecordSeparator()
 			err := hasher.calculateHash(v.Field(i))
 			if err != nil {
 				return fmt.Errorf("in field %s: %s", v.Type().Field(i).Name, err.Error())
@@ -180,12 +211,12 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 			return compare_values(s.keys[i], s.keys[j])
 		})
 		for i := 0; i < l; i++ {
-			hasher.Write(recordSeparator)
+			hasher.writeRecordSeparator()
 			err := hasher.calculateHash(s.keys[s.indexes[i]])
 			if err != nil {
 				return fmt.Errorf("in map: %s", err.Error())
 			}
-			hasher.Write(recordSeparator)
+			hasher.writeRecordSeparator()
 			err = hasher.calculateHash(s.values[s.indexes[i]])
 			if err != nil {
 				return fmt.Errorf("in map: %s", err.Error())
@@ -196,7 +227,7 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 		l := v.Len()
 		hasher.writeInt(l)
 		for i := 0; i < l; i++ {
-			hasher.Write(recordSeparator)
+			hasher.writeRecordSeparator()
 			err := hasher.calculateHash(v.Index(i))
 			if err != nil {
 				return fmt.Errorf("in %s at index %d: %s", v.Kind().String(), i, err.Error())
@@ -246,21 +277,24 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 		if v.IsNil() {
 			hasher.writeByte(0)
 		} else {
+			// Include the hash of the type so that hashes of types with the same contents, for example
+			// empty slices of different types, produce different hashes.  The hash of each type is cached,
+			// so this should be very fast.
+			h, err := typeHash(v.Elem().Type())
+			if err != nil {
+				return err
+			}
+			hasher.writeHash(h)
+			hasher.writeRecordSeparator()
 			// The only way get the pointer out of an interface to hash it or check for cycles
 			// would be InterfaceData(), but that's deprecated and seems like it has undefined behavior.
-			err := hasher.calculateHash(v.Elem())
+			err = hasher.calculateHash(v.Elem())
 			if err != nil {
 				return fmt.Errorf("in interface: %s", err.Error())
 			}
 		}
 	case reflect.String:
-		strLen := len(v.String())
-		if strLen == 0 {
-			// unsafe.StringData is unspecified in this case
-			hasher.writeByte(0)
-			return nil
-		}
-		hasher.Write(unsafe.Slice(unsafe.StringData(v.String()), strLen))
+		hasher.writeString(v.String())
 	case reflect.Bool:
 		if v.Bool() {
 			hasher.writeByte(1)
