@@ -25,6 +25,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"text/scanner"
 	"unsafe"
 
 	"github.com/google/blueprint/pool"
@@ -157,6 +158,14 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 	v.IsValid()
 	switch v.Kind() {
 	case reflect.Struct:
+		// The scanner.Position is intentionally excluded from the hash calculation.
+		// This field should only be used for printing user-facing error messages,
+		// as it is sensitive to formatting changes like comments and whitespace.
+		// Including it would cause the hash to change and trigger an unnecessary
+		// re-analysis when no actual property has been modified.
+		if v.Type() == reflect.TypeOf(scanner.Position{}) {
+			return nil
+		}
 		l := v.NumField()
 		hasher.writeInt(l)
 		for i := 0; i < l; i++ {

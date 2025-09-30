@@ -4,6 +4,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"text/scanner"
+
+	"github.com/google/blueprint/parser"
 )
 
 func mustHash(t *testing.T, data interface{}) Hash {
@@ -263,5 +266,26 @@ func BenchmarkCalculateHash(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func TestHashCalculationExcludePosition(t *testing.T) {
+	instance1 := &parser.String{
+		LiteralPos: scanner.Position{
+			Line: 10,
+		},
+		Value: "-Wall",
+	}
+	instance2 := &parser.String{
+		LiteralPos: scanner.Position{
+			Line: 20,
+		},
+		Value: "-Wall",
+	}
+
+	hash1, _ := CalculateHash(instance1)
+	hash2, _ := CalculateHash(instance2)
+	if hash1 != hash2 {
+		t.Fatalf("Expect hash values to be equal: %d %d", hash1, hash2)
 	}
 }
