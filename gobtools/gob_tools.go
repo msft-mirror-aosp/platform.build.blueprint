@@ -43,7 +43,7 @@ func NewEncContext(db dbtools.KeyValueStore) EncContext {
 
 type ReferencesEncoder struct {
 	encodedReferences syncmap.SyncMap[any, *encodedReference]
-	decodedReferences syncmap.SyncMap[proptools.Hash, any]
+	decodedReferences syncmap.SyncMap[uint64, any]
 	db                dbtools.KeyValueStore
 }
 
@@ -64,8 +64,8 @@ func NewReferencesEncoderForTest() *ReferencesEncoder {
 
 // encodedReference stores information about an encoded value reference.
 type encodedReference struct {
-	valueRefId          proptools.Hash // The unique hash ID for the value.
-	valueEncodingBuffer *bytes.Buffer  // The buffer containing the encoded actual value (including its own ref ID and length).
+	valueRefId          uint64        // The unique hash ID for the value.
+	valueEncodingBuffer *bytes.Buffer // The buffer containing the encoded actual value (including its own ref ID and length).
 }
 
 func (b *ReferencesEncoder) openForTests() error {
@@ -80,7 +80,7 @@ func (b *ReferencesEncoder) openForTests() error {
 func (c *ReferencesEncoder) EncodeReferences() error {
 	var err error
 	c.encodedReferences.Range(func(_ any, value *encodedReference) bool {
-		if err = c.db.Put(hashToBytes(value.valueRefId), value.valueEncodingBuffer.Bytes()); err != nil {
+		if err = c.db.Put(uint64ToBytes(value.valueRefId), value.valueEncodingBuffer.Bytes()); err != nil {
 			return false
 		}
 		return true
@@ -130,16 +130,16 @@ func (c *ReferencesEncoder) EncodeReference(value any, buf *bytes.Buffer, typ st
 }
 
 func (c *ReferencesEncoder) DecodeReference(buf *bytes.Reader, decode func(buf *bytes.Reader) (any, error)) (any, error) {
-	var ref proptools.Hash // Variable to store the decoded reference ID.
+	var ref uint64 // Variable to store the decoded reference ID.
 
 	// Decode the reference ID of the value from the input stream.
-	if err := DecodeSimple[proptools.Hash](buf, &ref); err != nil {
+	if err := DecodeSimple[uint64](buf, &ref); err != nil {
 		return nil, err // Return error if decoding the reference fails.
 	}
 
 	// Try to load the value using its reference ID from the decoded values cache.
 	if v, ok := c.decodedReferences.Load(ref); !ok {
-		data, err := c.db.Get(hashToBytes(ref))
+		data, err := c.db.Get(uint64ToBytes(ref))
 		if err != nil {
 			panic(fmt.Errorf("failed to Get from db: %v", err))
 			return nil, err
@@ -164,9 +164,9 @@ type valueHashConfig struct {
 	value any
 }
 
-func hashToBytes(value proptools.Hash) []byte {
-	ret := make([]byte, proptools.HashSize)
-	value.PutBigEndian(ret)
+func uint64ToBytes(value uint64) []byte {
+	ret := make([]byte, 8)
+	binary.BigEndian.PutUint64(ret, value)
 	return ret
 }
 
