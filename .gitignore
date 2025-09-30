@@ -1,4 +1,5 @@
 out.test
 src.test
 *.iml
+*.swp
 .idea/
