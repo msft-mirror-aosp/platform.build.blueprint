@@ -241,7 +241,7 @@ func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation st
 	} else {
 		if m.incomingTransitionInfos == nil {
 			m.incomingTransitionInfos = make(map[string]TransitionInfo)
-			m.incomingTransitionInfoHashes = make(map[string]uint64)
+			m.incomingTransitionInfoHashes = make(map[string]proptools.Hash)
 		}
 		m.incomingTransitionInfos[variation] = transitionInfo
 		m.incomingTransitionInfoHashes[variation] = hash
