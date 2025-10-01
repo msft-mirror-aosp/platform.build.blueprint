@@ -1,0 +1,7 @@
+bootstrap_go_package {
+    name: "blueprint-pool",
+    pkgPath: "github.com/google/blueprint/pool",
+    srcs: [
+        "pool.go",
+    ],
+}

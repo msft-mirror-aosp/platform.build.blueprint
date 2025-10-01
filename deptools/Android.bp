@@ -1,0 +1,10 @@
+bootstrap_go_package {
+    name: "blueprint-deptools",
+    pkgPath: "github.com/google/blueprint/deptools",
+    srcs: ["depfile.go"],
+    visibility: [
+        "//build/blueprint:__subpackages__",
+        "//build/make/tools/compliance",
+        "//build/soong:__subpackages__",
+    ],
+}

@@ -1,0 +1,21 @@
+bootstrap_go_package {
+    name: "blueprint-pathtools",
+    pkgPath: "github.com/google/blueprint/pathtools",
+    deps: [
+        "blueprint-deptools",
+    ],
+    srcs: [
+        "lists.go",
+        "fs.go",
+        "glob.go",
+    ],
+    testSrcs: [
+        "fs_test.go",
+        "glob_test.go",
+        "lists_test.go",
+    ],
+    visibility: [
+        // used by plugins
+        "//visibility:public",
+    ],
+}
