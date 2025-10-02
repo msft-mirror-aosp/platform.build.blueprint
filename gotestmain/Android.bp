@@ -1,0 +1,17 @@
+blueprint_go_binary {
+    name: "gotestmain",
+    srcs: ["gotestmain.go"],
+}
+
+// gotestmain tests can't be on the gotestmain module because it is an implicit dependency of tests.
+// Put the tests in their own package and make it a dependency of minibp to make sure they run.
+bootstrap_go_package {
+    name: "gotestmain-tests",
+    pkgPath: "github.com/google/blueprint/gotestmain",
+    srcs: [
+        "dummy.go",
+    ],
+    testSrcs: [
+        "testmain_test.go",
+    ],
+}

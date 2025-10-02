@@ -1,0 +1,7 @@
+bootstrap_go_package {
+    name: "blueprint-optional",
+    pkgPath: "github.com/google/blueprint/optional",
+    srcs: [
+        "optional.go",
+    ],
+}
