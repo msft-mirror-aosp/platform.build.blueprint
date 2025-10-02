@@ -74,6 +74,10 @@ var hashTestCases = []struct {
 		data: "foo",
 	},
 	{
+		name: "empty string",
+		data: "",
+	},
+	{
 		name: "*string",
 		data: StringPtr("foo"),
 	},
@@ -141,6 +145,16 @@ var hashTestCases = []struct {
 				},
 			},
 		},
+	}, {
+		name: "recursive pointer",
+		data: func() any {
+			type t struct {
+				p *t
+			}
+			v := &t{}
+			v.p = v
+			return v
+		}(),
 	},
 }
 
@@ -252,6 +266,59 @@ func TestHashBytes(t *testing.T) {
 	expected := []byte{0xef, 0xcd, 0xab, 0x90, 0x78, 0x56, 0x34, 0x12}
 	if !slices.Equal(bytes, expected) {
 		t.Fatalf("Expected %#v, got %#v", expected, bytes)
+	}
+}
+
+func TestHashOfDifferentTypesIsDifferent(t *testing.T) {
+	type t1 struct {
+		s string
+	}
+	type t2 struct {
+		s string
+	}
+
+	s1 := t1{"foo"}
+	s2 := t2{"foo"}
+
+	h1, err := CalculateHash(s1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := CalculateHash(s2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if h1 == h2 {
+		t.Errorf("expected hashes of %#v and %#v to be different, got %v and %v", s1, s2, h1, h2)
+	}
+}
+
+func TestHashOfDifferentTypesInInterfaceIsDifferent(t *testing.T) {
+	type i struct {
+		v any
+	}
+	type t1 struct {
+		s string
+	}
+	type t2 struct {
+		s string
+	}
+
+	s1 := i{t1{"foo"}}
+	s2 := i{t2{"foo"}}
+
+	h1, err := CalculateHash(s1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := CalculateHash(s2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if h1 == h2 {
+		t.Errorf("expected hashes of %#v and %#v to be different, got %v and %v", s1, s2, h1, h2)
 	}
 }
 
