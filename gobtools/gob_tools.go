@@ -273,26 +273,74 @@ func DecodeSimple[T any](buf *bytes.Reader, data *T) error {
 	return binary.Read(buf, binary.BigEndian, data)
 }
 
-func EncodeBool(buf *bytes.Buffer, b bool) error     { return EncodeSimple(buf, b) }
-func EncodeInt16(buf *bytes.Buffer, i int16) error   { return EncodeSimple(buf, i) }
-func EncodeInt32(buf *bytes.Buffer, i int32) error   { return EncodeSimple(buf, i) }
-func EncodeInt64(buf *bytes.Buffer, i int64) error   { return EncodeSimple(buf, i) }
-func EncodeUint16(buf *bytes.Buffer, i uint16) error { return EncodeSimple(buf, i) }
-func EncodeUint32(buf *bytes.Buffer, i uint32) error { return EncodeSimple(buf, i) }
-func EncodeUint64(buf *bytes.Buffer, i uint64) error { return EncodeSimple(buf, i) }
+func EncodeBool(buf *bytes.Buffer, b bool) error {
+	var c byte = 0
+	if b {
+		c = 1
+	}
+	_, err := buf.Write([]byte{c})
+	return err
+}
 
-func DecodeBool(buf *bytes.Reader, b *bool) error     { return DecodeSimple(buf, b) }
-func DecodeInt16(buf *bytes.Reader, i *int16) error   { return DecodeSimple(buf, i) }
-func DecodeInt32(buf *bytes.Reader, i *int32) error   { return DecodeSimple(buf, i) }
-func DecodeInt64(buf *bytes.Reader, i *int64) error   { return DecodeSimple(buf, i) }
-func DecodeUint16(buf *bytes.Reader, i *uint16) error { return DecodeSimple(buf, i) }
-func DecodeUint32(buf *bytes.Reader, i *uint32) error { return DecodeSimple(buf, i) }
-func DecodeUint64(buf *bytes.Reader, i *uint64) error { return DecodeSimple(buf, i) }
+func DecodeBool(buf *bytes.Reader, b *bool) error {
+	c, err := buf.ReadByte()
+	if err != nil {
+		return err
+	}
+	*b = c != 0
+	return nil
+}
 
-func EncodeInt(buf *bytes.Buffer, i int) error { return EncodeSimple(buf, int64(i)) }
+func EncodeVarint[T int | int16 | int32 | int64](buf *bytes.Buffer, i T) error {
+	var b [binary.MaxVarintLen64]byte
+	n := binary.PutVarint(b[:], int64(i))
+	_, err := buf.Write(b[:n])
+	return err
+}
+
+func EncodeUvarint[T uint | uint16 | uint32 | uint64](buf *bytes.Buffer, i T) error {
+	var b [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(b[:], uint64(i))
+	_, err := buf.Write(b[:n])
+	return err
+}
+
+func DecodeVarint[T int | int16 | int32 | int64](buf *bytes.Reader, i *T) error {
+	n, err := binary.ReadVarint(buf)
+	if err != nil {
+		return err
+	}
+	*i = T(n)
+	return nil
+}
+
+func DecodeUvarint[T uint | uint16 | uint32 | uint64](buf *bytes.Reader, i *T) error {
+	n, err := binary.ReadUvarint(buf)
+	if err != nil {
+		return err
+	}
+	*i = T(n)
+	return nil
+}
+
+func EncodeInt16(buf *bytes.Buffer, i int16) error   { return EncodeVarint(buf, i) }
+func EncodeInt32(buf *bytes.Buffer, i int32) error   { return EncodeVarint(buf, i) }
+func EncodeInt64(buf *bytes.Buffer, i int64) error   { return EncodeVarint(buf, i) }
+func EncodeUint16(buf *bytes.Buffer, i uint16) error { return EncodeUvarint(buf, i) }
+func EncodeUint32(buf *bytes.Buffer, i uint32) error { return EncodeUvarint(buf, i) }
+func EncodeUint64(buf *bytes.Buffer, i uint64) error { return EncodeUvarint(buf, i) }
+
+func DecodeInt16(buf *bytes.Reader, i *int16) error   { return DecodeVarint(buf, i) }
+func DecodeInt32(buf *bytes.Reader, i *int32) error   { return DecodeVarint(buf, i) }
+func DecodeInt64(buf *bytes.Reader, i *int64) error   { return DecodeVarint(buf, i) }
+func DecodeUint16(buf *bytes.Reader, i *uint16) error { return DecodeUvarint(buf, i) }
+func DecodeUint32(buf *bytes.Reader, i *uint32) error { return DecodeUvarint(buf, i) }
+func DecodeUint64(buf *bytes.Reader, i *uint64) error { return DecodeUvarint(buf, i) }
+
+func EncodeInt(buf *bytes.Buffer, i int) error { return EncodeVarint(buf, int64(i)) }
 func DecodeInt(buf *bytes.Reader, i *int) error {
 	var i64 int64
-	err := DecodeSimple(buf, &i64)
+	err := DecodeVarint(buf, &i64)
 	if err != nil {
 		return err
 	}
