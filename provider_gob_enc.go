@@ -14,7 +14,7 @@ func init() {
 func (r providerKey) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	var err error
 
-	if err = gobtools.EncodeSimple(buf, int64(r.id)); err != nil {
+	if err = gobtools.EncodeInt(buf, r.id); err != nil {
 		return err
 	}
 
@@ -31,12 +31,10 @@ func (r providerKey) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 func (r *providerKey) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
-	var val1 int64
-	err = gobtools.DecodeSimple[int64](buf, &val1)
+	err = gobtools.DecodeInt(buf, &r.id)
 	if err != nil {
 		return err
 	}
-	r.id = int(val1)
 
 	err = gobtools.DecodeString(buf, &r.typ)
 	if err != nil {

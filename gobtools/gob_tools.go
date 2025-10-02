@@ -273,6 +273,33 @@ func DecodeSimple[T any](buf *bytes.Reader, data *T) error {
 	return binary.Read(buf, binary.BigEndian, data)
 }
 
+func EncodeBool(buf *bytes.Buffer, b bool) error     { return EncodeSimple(buf, b) }
+func EncodeInt16(buf *bytes.Buffer, i int16) error   { return EncodeSimple(buf, i) }
+func EncodeInt32(buf *bytes.Buffer, i int32) error   { return EncodeSimple(buf, i) }
+func EncodeInt64(buf *bytes.Buffer, i int64) error   { return EncodeSimple(buf, i) }
+func EncodeUint16(buf *bytes.Buffer, i uint16) error { return EncodeSimple(buf, i) }
+func EncodeUint32(buf *bytes.Buffer, i uint32) error { return EncodeSimple(buf, i) }
+func EncodeUint64(buf *bytes.Buffer, i uint64) error { return EncodeSimple(buf, i) }
+
+func DecodeBool(buf *bytes.Reader, b *bool) error     { return DecodeSimple(buf, b) }
+func DecodeInt16(buf *bytes.Reader, i *int16) error   { return DecodeSimple(buf, i) }
+func DecodeInt32(buf *bytes.Reader, i *int32) error   { return DecodeSimple(buf, i) }
+func DecodeInt64(buf *bytes.Reader, i *int64) error   { return DecodeSimple(buf, i) }
+func DecodeUint16(buf *bytes.Reader, i *uint16) error { return DecodeSimple(buf, i) }
+func DecodeUint32(buf *bytes.Reader, i *uint32) error { return DecodeSimple(buf, i) }
+func DecodeUint64(buf *bytes.Reader, i *uint64) error { return DecodeSimple(buf, i) }
+
+func EncodeInt(buf *bytes.Buffer, i int) error { return EncodeSimple(buf, int64(i)) }
+func DecodeInt(buf *bytes.Reader, i *int) error {
+	var i64 int64
+	err := DecodeSimple(buf, &i64)
+	if err != nil {
+		return err
+	}
+	*i = int(i64)
+	return nil
+}
+
 // Encode a struct. It uses type assert to leverage Gob to encode the value when
 // the struct hasn't be converted to use codegen to generate encoding logic, this
 // should be removed once all are converted.

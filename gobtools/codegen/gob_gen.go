@@ -249,11 +249,8 @@ func (g *gobGen) generateEncodeForType(encodeBody *strings.Builder, pkgName stri
 		case "string":
 			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeString(buf, %s); err != nil { return err }\n", fieldName))
 			g.imports[gobtoolsImport] = true
-		case "int":
-			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int64(%s)); err != nil { return err }\n", fieldName))
-			g.imports[gobtoolsImport] = true
-		case "bool", "int16", "int32", "int64", "uint16", "uint32", "uint64":
-			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, %s); err != nil { return err }\n", fieldName))
+		case "bool", "int", "int16", "int32", "int64", "uint16", "uint32", "uint64":
+			encodeBody.WriteString(fmt.Sprintf("\tif err = %s(buf, %s); err != nil { return err }\n", integerTypeToEncoder(t.Name), fieldName))
 			g.imports[gobtoolsImport] = true
 		case "any":
 			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeInterface(ctx, buf, %s); err != nil { return err }\n", fieldName))
@@ -264,7 +261,7 @@ func (g *gobGen) generateEncodeForType(encodeBody *strings.Builder, pkgName stri
 		}
 	case *ast.MapType:
 		g.generateEncodeForNillable(encodeBody, fieldName)
-		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return err }\n", fieldName))
+		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeInt(buf, len(%s)); err != nil { return err }\n", fieldName))
 		encodeBody.WriteString(fmt.Sprintf("\tfor k, v := range %s {\n", fieldName))
 		g.generateEncodeForType(encodeBody, pkgName, t.Key, "k")
 		g.generateEncodeForType(encodeBody, pkgName, t.Value, "v")
@@ -274,14 +271,13 @@ func (g *gobGen) generateEncodeForType(encodeBody *strings.Builder, pkgName stri
 		if t.Len == nil {
 			g.encodeSlice(encodeBody, pkgName, t.Elt, fieldName)
 		} else {
-			encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, %s); err != nil { return err }\n", fieldName))
-			g.imports[gobtoolsImport] = true
+			g.encodeArray(encodeBody, pkgName, t.Elt, fieldName)
 		}
 	// pointers.
 	case *ast.StarExpr:
 		isNil := g.nextVar()
 		encodeBody.WriteString(fmt.Sprintf("\t%s := %s == nil\n", isNil, fieldName))
-		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, %s); err != nil { return err }\n", isNil))
+		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeBool(buf, %s); err != nil { return err }\n", isNil))
 		encodeBody.WriteString(fmt.Sprintf("\tif !%s {\n", isNil))
 		g.generateEncodeForType(encodeBody, pkgName, t.X, "(*"+fieldName+")")
 		encodeBody.WriteString("\t}\n")
@@ -332,7 +328,7 @@ func (g *gobGen) generateEncodeForStruct(encodeBody *strings.Builder, pkgName st
 
 func (g *gobGen) generateEncodeForNillable(encodeBody *strings.Builder, fieldName string) {
 	encodeBody.WriteString(fmt.Sprintf("\tif %s == nil {\n", fieldName))
-	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(%d)); err != nil { return err }\n", valueIsNil))
+	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeInt(buf, %d); err != nil { return err }\n", valueIsNil))
 	encodeBody.WriteString(fmt.Sprintf("\t} else {\n"))
 }
 func (g *gobGen) generateEncodeForCustomType(encodeBody *strings.Builder, fieldName string, typeRef typeReference) {
@@ -399,13 +395,8 @@ func (g *gobGen) generateDecodeForType(decodeBody *strings.Builder, pkgName stri
 		case "string":
 			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeString(buf, &%s); if err != nil { return err }\n", fieldName))
 			g.imports[gobtoolsImport] = true
-		case "int":
-			decodeBody.WriteString(fmt.Sprintf("\tvar %s int64\n", valId))
-			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int64](buf, &%s); if err != nil { return err }\n", valId))
-			decodeBody.WriteString(fmt.Sprintf("\t%s = int(%s)\n", fieldName, valId))
-			g.imports[gobtoolsImport] = true
-		case "bool", "int16", "int32", "int64", "uint16", "uint32", "uint64":
-			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[%s](buf, &%s); if err != nil { return err }\n", t.Name, fieldName))
+		case "bool", "int", "int16", "int32", "int64", "uint16", "uint32", "uint64":
+			decodeBody.WriteString(fmt.Sprintf("\terr = %s(buf, &%s); if err != nil { return err }\n", integerTypeToDecoder(t.Name), fieldName))
 			g.imports[gobtoolsImport] = true
 		case "any":
 			tmpVar := g.nextVar()
@@ -420,8 +411,8 @@ func (g *gobGen) generateDecodeForType(decodeBody *strings.Builder, pkgName stri
 	case *ast.MapType:
 		kTypeRef := g.findTypeReference(t.Key, pkgName)
 		vTypeRef := g.findTypeReference(t.Value, pkgName)
-		decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
-		decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int32](buf, &%s); if err != nil { return err }\n", valId))
+		decodeBody.WriteString(fmt.Sprintf("\tvar %s int\n", valId))
+		decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeInt(buf, &%s); if err != nil { return err }\n", valId))
 		decodeBody.WriteString(fmt.Sprintf("\tif %s != %d {\n", valId, valueIsNil))
 		decodeBody.WriteString(fmt.Sprintf("\t%s = make(map[%s]%s, %s)\n", fieldName, kTypeRef.fullName(), vTypeRef.fullName(), valId))
 		g.maybeAddImport(kTypeRef)
@@ -441,13 +432,12 @@ func (g *gobGen) generateDecodeForType(decodeBody *strings.Builder, pkgName stri
 		if t.Len == nil {
 			g.decodeSlice(decodeBody, pkgName, t.Elt, fieldName)
 		} else {
-			decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple(buf, &%s); if err != nil { return err }\n", fieldName))
-			g.imports[gobtoolsImport] = true
+			g.decodeArray(decodeBody, pkgName, t.Elt, fieldName)
 		}
 	case *ast.StarExpr:
 		isNil := g.nextVar()
 		decodeBody.WriteString(fmt.Sprintf("\tvar %s bool\n", isNil))
-		decodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.DecodeSimple(buf, &%s); err != nil { return err }\n", isNil))
+		decodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.DecodeBool(buf, &%s); err != nil { return err }\n", isNil))
 		decodeBody.WriteString(fmt.Sprintf("\tif !%s {\n", isNil))
 		typeRef := g.findTypeReference(t.X, pkgName)
 		decodeBody.WriteString(fmt.Sprintf("\tvar %s %s\n", valId, typeRef.fullName()))
@@ -504,7 +494,7 @@ func (g *gobGen) generateDecodeForStruct(decodeBody *strings.Builder, pkgName st
 
 func (g *gobGen) encodeSlice(encodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
 	g.generateEncodeForNillable(encodeBody, fieldName)
-	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeSimple(buf, int32(len(%s))); err != nil { return err }\n", fieldName))
+	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeInt(buf, len(%s)); err != nil { return err }\n", fieldName))
 	index := g.nextVar()
 	encodeBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < len(%s); %s++ {\n", index, index, fieldName, index))
 	g.generateEncodeForType(encodeBody, pkgName, t, fmt.Sprintf("%s[%s]", fieldName, index))
@@ -515,8 +505,8 @@ func (g *gobGen) encodeSlice(encodeBody *strings.Builder, pkgName string, t ast.
 func (g *gobGen) decodeSlice(decodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
 	valId := g.nextVar()
 	typeRef := g.findTypeReference(t, pkgName)
-	decodeBody.WriteString(fmt.Sprintf("\tvar %s int32\n", valId))
-	decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeSimple[int32](buf, &%s); if err != nil { return err }\n", valId))
+	decodeBody.WriteString(fmt.Sprintf("\tvar %s int\n", valId))
+	decodeBody.WriteString(fmt.Sprintf("\terr = gobtools.DecodeInt(buf, &%s); if err != nil { return err }\n", valId))
 	decodeBody.WriteString(fmt.Sprintf("\tif %s != %d {\n", valId, valueIsNil))
 	decodeBody.WriteString(fmt.Sprintf("\t%s = make([]%s, %s)\n", fieldName, typeRef.fullName(), valId))
 	g.maybeAddImport(typeRef)
@@ -524,6 +514,20 @@ func (g *gobGen) decodeSlice(decodeBody *strings.Builder, pkgName string, t ast.
 	decodeBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < int(%s); %s++ {\n", index, index, valId, index))
 	g.generateDecodeForType(decodeBody, pkgName, t, fmt.Sprintf("%s[%s]", fieldName, index))
 	decodeBody.WriteString("\t}\n")
+	decodeBody.WriteString("\t}\n")
+}
+
+func (g *gobGen) encodeArray(encodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
+	index := g.nextVar()
+	encodeBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < len(%s); %s++ {\n", index, index, fieldName, index))
+	g.generateEncodeForType(encodeBody, pkgName, t, fmt.Sprintf("%s[%s]", fieldName, index))
+	encodeBody.WriteString("\t}\n")
+}
+
+func (g *gobGen) decodeArray(decodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
+	index := g.nextVar()
+	decodeBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < len(%s); %s++ {\n", index, index, fieldName, index))
+	g.generateDecodeForType(decodeBody, pkgName, t, fmt.Sprintf("%s[%s]", fieldName, index))
 	decodeBody.WriteString("\t}\n")
 }
 
@@ -807,4 +811,22 @@ func expectNotExist(file string) error {
 		return err
 	}
 	return fmt.Errorf("expected %s to not exist, delete it", file)
+}
+
+func integerTypeToEncoder(t string) string {
+	switch t {
+	case "bool", "int", "int16", "int32", "int64", "uint16", "uint32", "uint64":
+		return "gobtools.Encode" + strings.ToUpper(t[:1]) + t[1:]
+	default:
+		panic(fmt.Errorf("unknown integer type: %s", t))
+	}
+}
+
+func integerTypeToDecoder(t string) string {
+	switch t {
+	case "bool", "int", "int16", "int32", "int64", "uint16", "uint32", "uint64":
+		return "gobtools.Decode" + strings.ToUpper(t[:1]) + t[1:]
+	default:
+		panic(fmt.Errorf("unknown integer type: %s", t))
+	}
 }
