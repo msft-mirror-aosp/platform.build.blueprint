@@ -284,7 +284,7 @@ func maybeRestoreProviders(c *Context, m *commonIncrementalInfo, provider *provi
 			m.providerRestoreLock.Lock()
 			defer m.providerRestoreLock.Unlock()
 			if m.hasUnrestoredProvider == nil || m.hasUnrestoredProvider[provider.id] {
-				p, err := c.buildActionsCache.readProvider(c.EncContext, m.buildActionCacheKey, provider)
+				p, err := c.buildActionsCache.readProvider(c.EncContext, m.providerInitialValueHashes[provider.id], provider)
 				if err != nil {
 					panic(err)
 				}
@@ -295,7 +295,7 @@ func maybeRestoreProviders(c *Context, m *commonIncrementalInfo, provider *provi
 					panic(fmt.Sprintf("Value of provider %s is already set", provider.typ))
 				}
 				if p.Value != nil {
-					m.providers[provider.id] = *p.Value
+					m.providers[provider.id] = p.Value
 				}
 				if m.hasUnrestoredProvider != nil {
 					m.hasUnrestoredProvider[provider.id] = false

@@ -56,14 +56,8 @@ func (r CachedProvider) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error
 		}
 	}
 
-	val2 := r.Value == nil
-	if err = gobtools.EncodeSimple(buf, val2); err != nil {
+	if err = gobtools.EncodeInterface(ctx, buf, r.Value); err != nil {
 		return err
-	}
-	if !val2 {
-		if err = gobtools.EncodeInterface(ctx, buf, (*r.Value)); err != nil {
-			return err
-		}
 	}
 	return err
 }
@@ -83,20 +77,12 @@ func (r *CachedProvider) Decode(ctx gobtools.EncContext, buf *bytes.Reader) erro
 		r.Id = &val1
 	}
 
-	var val5 bool
-	if err = gobtools.DecodeSimple(buf, &val5); err != nil {
+	if val5, err := gobtools.DecodeInterface(ctx, buf); err != nil {
 		return err
-	}
-	if !val5 {
-		var val4 any
-		if val7, err := gobtools.DecodeInterface(ctx, buf); err != nil {
-			return err
-		} else if val7 == nil {
-			val4 = nil
-		} else {
-			val4 = val7
-		}
-		r.Value = &val4
+	} else if val5 == nil {
+		r.Value = nil
+	} else {
+		r.Value = val5
 	}
 
 	return err
@@ -281,7 +267,22 @@ func (r SingletonActionCachedData) Encode(ctx gobtools.EncContext, buf *bytes.Bu
 		if err = gobtools.EncodeSimple(buf, int32(len(r.ProviderHashes))); err != nil {
 			return err
 		}
-		for k, v := range r.ProviderHashes {
+		for val1 := 0; val1 < len(r.ProviderHashes); val1++ {
+			if err = r.ProviderHashes[val1].Encode(ctx, buf); err != nil {
+				return err
+			}
+		}
+	}
+
+	if r.DependencyProviderHashes == nil {
+		if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeSimple(buf, int32(len(r.DependencyProviderHashes))); err != nil {
+			return err
+		}
+		for k, v := range r.DependencyProviderHashes {
 			if err = gobtools.EncodeSimple(buf, int64(k)); err != nil {
 				return err
 			}
@@ -296,27 +297,41 @@ func (r SingletonActionCachedData) Encode(ctx gobtools.EncContext, buf *bytes.Bu
 func (r *SingletonActionCachedData) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
-	var val1 int32
-	err = gobtools.DecodeSimple[int32](buf, &val1)
+	var val2 int32
+	err = gobtools.DecodeSimple[int32](buf, &val2)
 	if err != nil {
 		return err
 	}
-	if val1 != -1 {
-		r.ProviderHashes = make(map[int]proptools.Hash, val1)
-		for val2 := 0; val2 < int(val1); val2++ {
+	if val2 != -1 {
+		r.ProviderHashes = make([]ProviderHash, val2)
+		for val3 := 0; val3 < int(val2); val3++ {
+			if err = r.ProviderHashes[val3].Decode(ctx, buf); err != nil {
+				return err
+			}
+		}
+	}
+
+	var val5 int32
+	err = gobtools.DecodeSimple[int32](buf, &val5)
+	if err != nil {
+		return err
+	}
+	if val5 != -1 {
+		r.DependencyProviderHashes = make(map[int]proptools.Hash, val5)
+		for val6 := 0; val6 < int(val5); val6++ {
 			var k int
 			var v proptools.Hash
-			var val3 int64
-			err = gobtools.DecodeSimple[int64](buf, &val3)
+			var val7 int64
+			err = gobtools.DecodeSimple[int64](buf, &val7)
 			if err != nil {
 				return err
 			}
-			k = int(val3)
+			k = int(val7)
 			err = gobtools.DecodeSimple(buf, &v)
 			if err != nil {
 				return err
 			}
-			r.ProviderHashes[k] = v
+			r.DependencyProviderHashes[k] = v
 		}
 	}
 
