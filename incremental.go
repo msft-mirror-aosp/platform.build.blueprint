@@ -209,8 +209,10 @@ func (b *BuildActionCache) reset(c *Context, dbPath string) error {
 
 func (b *BuildActionCache) readModuleBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*ModuleActionCachedData, error) {
 	var ret ModuleActionCachedData
-	if err := read(ctx, b.moduleActionsDb, key.bytes(), &ret); err != nil {
+	if ok, err := read(ctx, b.moduleActionsDb, key.bytes(), &ret); err != nil {
 		return nil, err
+	} else if !ok {
+		return nil, nil
 	}
 	return &ret, nil
 }
@@ -221,8 +223,10 @@ func (b *BuildActionCache) readNinjaStatements(key *BuildActionCacheKey) ([]byte
 
 func (b *BuildActionCache) readSingletonBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey) (*SingletonActionCachedData, error) {
 	var ret SingletonActionCachedData
-	if err := read(ctx, b.singletonActionsDb, key.bytes(), &ret); err != nil {
+	if ok, err := read(ctx, b.singletonActionsDb, key.bytes(), &ret); err != nil {
 		return nil, err
+	} else if !ok {
+		return nil, nil
 	}
 	return &ret, nil
 }
@@ -242,10 +246,13 @@ func (b *BuildActionCache) readProvider(ctx gobtools.EncContext, hash proptools.
 
 	// Read from the disk cache.
 	var ret CachedProvider
-	err := read(ctx, b.providerDb, hash.Bytes(), &ret)
+	ok, err := read(ctx, b.providerDb, hash.Bytes(), &ret)
 	if err != nil {
+		return CachedProvider{}, err
+	} else if !ok {
 		return CachedProvider{}, nil
 	}
+
 	checkProvider(ret)
 
 	// Insert into the in-memory cache.
@@ -257,17 +264,17 @@ func (b *BuildActionCache) readProvider(ctx gobtools.EncContext, hash proptools.
 	return ret, nil
 }
 
-func read(ctx gobtools.EncContext, db dbtools.KeyValueStore, key []byte, ret gobtools.CustomDec) error {
+func read(ctx gobtools.EncContext, db dbtools.KeyValueStore, key []byte, ret gobtools.CustomDec) (bool, error) {
 	v, err := db.Get(key)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if v == nil {
-		return nil
+		return false, nil
 	}
 
 	buf := bytes.NewReader(v)
-	return ret.Decode(ctx, buf)
+	return true, ret.Decode(ctx, buf)
 }
 
 func (b *BuildActionCache) writeModuleBuildAction(ctx gobtools.EncContext, key *BuildActionCacheKey, data *ModuleActionCachedData) error {
