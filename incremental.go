@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/blueprint/dbtools"
 	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/pool"
 	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/syncmap"
 )
@@ -88,7 +89,7 @@ type SingletonActionCachedData struct {
 // A dbWriteRequest is passed to providerDbWriter() through writerCh to write a key-value pair to a database.
 type dbWriteRequest struct {
 	key   proptools.Hash
-	value []byte
+	value *bytes.Buffer
 }
 
 type BuildActionCache struct {
@@ -105,6 +106,8 @@ type BuildActionCache struct {
 	hashesInProviderDb   map[proptools.Hash]struct{}
 	cachedProviderHashes syncmap.SyncMap[proptools.Hash, CachedProvider]
 }
+
+var bufferPool = pool.New[bytes.Buffer]()
 
 func (b *BuildActionCache) openForTests() error {
 	b.hashesInProviderDb = make(map[proptools.Hash]struct{})
@@ -139,16 +142,23 @@ func (b *BuildActionCache) providerDbWriter() {
 	go func() {
 		defer close(b.writerDone)
 		for req := range b.writerCh {
-			if _, stored := b.hashesInProviderDb[req.key]; stored {
-				continue
-			}
-			b.hashesInProviderDb[req.key] = struct{}{}
-			err := b.providerDb.Put(req.key.Bytes(), req.value)
-			if err != nil {
-				panic(err)
-			}
+			b.handleDbWriteRequest(req)
 		}
 	}()
+}
+
+func (b *BuildActionCache) handleDbWriteRequest(req dbWriteRequest) {
+	// The request contains a buffer in req.value that should be returned to the pool.
+	defer bufferPool.Put(req.value)
+
+	if _, stored := b.hashesInProviderDb[req.key]; stored {
+		return
+	}
+	b.hashesInProviderDb[req.key] = struct{}{}
+	err := b.providerDb.Put(req.key.Bytes(), req.value.Bytes())
+	if err != nil {
+		panic(err)
+	}
 }
 
 func openDb(dbPath string, dbName string, dbToOpen *dbtools.KeyValueStore) error {
@@ -269,14 +279,19 @@ func (b *BuildActionCache) writeSingletonBuildAction(ctx gobtools.EncContext, ke
 }
 
 func (b *BuildActionCache) writeProvider(ctx gobtools.EncContext, hash proptools.Hash, provider CachedProvider) error {
-	buf := &bytes.Buffer{}
+	buf := bufferPool.Get()
+	buf.Reset()
+
 	err := provider.Encode(ctx, buf)
 	if err != nil {
+		bufferPool.Put(buf)
 		return err
 	}
+
+	// The buffer is transferred to the dbWriteRequest, so it must not be returned to the pool.
 	b.writerCh <- dbWriteRequest{
 		key:   hash,
-		value: buf.Bytes(),
+		value: buf,
 	}
 	return nil
 }
@@ -288,7 +303,10 @@ func (b *BuildActionCache) writeNinjaStatements(key *BuildActionCacheKey, data [
 // write encodes data to a byte buffer, and then sends a write request to the providerDbWriter goroutine to write it to the
 // database.
 func (b *BuildActionCache) write(ctx gobtools.EncContext, db dbtools.KeyValueStore, key []byte, data gobtools.CustomEnc) error {
-	buf := &bytes.Buffer{}
+	buf := bufferPool.Get()
+	defer bufferPool.Put(buf)
+	buf.Reset()
+
 	err := data.Encode(ctx, buf)
 	if err != nil {
 		return err
