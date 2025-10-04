@@ -618,6 +618,12 @@ type singletonInfo struct {
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
 	commonIncrementalInfo
+	// The provider hashes of all the singletons that this singleton might depend on.
+	// These values are calculated before calling the GenerateBuildAction of the current
+	// singleton, and combined with the hashes of all the module providers that this
+	// singleton might depend on, we can decide if the input of the GenerateBuildAction
+	// has any change, and skip the execution of it if there is no change.
+	providerValueHashes []proptools.Hash
 }
 
 type mutatorInfo struct {
@@ -3573,7 +3579,14 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 		if info.buildActionCacheKey != nil && !info.incrementalRestored && len(sctx.depProviders) > 0 {
 			cache := make(map[int]proptools.Hash)
 			for k, _ := range sctx.depProviders {
-				cache[k] = c.providerValueHashes[k]
+				// A singleton might depend on both module providers and singleton providers, and
+				// the hashes of all the former are stored in context globally, and the hashes of
+				// the latter are stored inside the current singletonInfo.
+				if providerRegistry[k].mutator == singletonTag {
+					cache[k] = info.providerValueHashes[k]
+				} else {
+					cache[k] = c.providerValueHashes[k]
+				}
 			}
 
 			var providerHashes []ProviderHash
@@ -3641,8 +3654,15 @@ func (c *Context) restoreSingleton(info *singletonInfo) {
 				// was not captured or it doesn't depend on any input, so we always run it.
 				info.incrementalRestored = len(data.DependencyProviderHashes) != 0
 				for k, v := range data.DependencyProviderHashes {
-					if c.providerValueHashes[k] != v {
+					var hash proptools.Hash
+					if providerRegistry[k].mutator == singletonTag {
+						hash = info.providerValueHashes[k]
+					} else {
+						hash = c.providerValueHashes[k]
+					}
+					if hash != v {
 						info.incrementalRestored = false
+						break
 					}
 				}
 				if info.incrementalRestored {
@@ -3717,13 +3737,11 @@ func (c *Context) calculateProvidersHashes() {
 
 			var providerHashes []proptools.Hash
 			// For singleton providers we collect provider hashes from singletons.
-			if providerRegistry[i].mutator == singletonTag {
-				c.VisitAllSingletons(func(s SingletonProxy) {
-					providerHashes = append(providerHashes, s.singleton.providerInitialValueHashes[i])
-				})
-			} else {
+			if providerRegistry[i].mutator != singletonTag {
 				c.visitAllModuleInfos(func(m *moduleInfo) {
-					providerHashes = append(providerHashes, m.providerInitialValueHashes[i])
+					if m.providerInitialValueHashes != nil {
+						providerHashes = append(providerHashes, m.providerInitialValueHashes[i])
+					}
 				})
 			}
 			var err error
@@ -3767,6 +3785,27 @@ func (c *Context) generateSingletonBuildActions(config interface{},
 
 	for _, info := range singletons {
 		if !info.parallel {
+			if c.GetIncrementalEnabled() {
+				// A singleton might depend on modules and other singletons that run before it.
+				// We already captured the provider hashes of all the modules in calculateProvidersHashes,
+				// now we calculate the hashes of all singletons that the current one might depend on.
+				info.providerValueHashes = make([]proptools.Hash, len(providerRegistry))
+				for i := range len(providerRegistry) {
+					var providerHashes []proptools.Hash
+					if providerRegistry[i].mutator == singletonTag {
+						c.VisitAllSingletons(func(s SingletonProxy) {
+							if s.singleton.providerInitialValueHashes != nil {
+								providerHashes = append(providerHashes, s.singleton.providerInitialValueHashes[i])
+							}
+						})
+					}
+					var err error
+					info.providerValueHashes[i], err = proptools.CalculateHash(providerHashes)
+					if err != nil {
+						panic(err)
+					}
+				}
+			}
 			runSingleton(info)
 			if len(errs) > maxErrors {
 				break

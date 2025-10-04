@@ -2334,7 +2334,8 @@ func (s *parallelSingleton) IncrementalSupported() bool {
 	return true
 }
 
-const parallelSingletonName = "parallel_singleton"
+var parallelSingletonName = "parallel_singleton"
+
 const sequentialSingletonName = "sequential_singleton"
 
 func singletonCacheSetup(t *testing.T) *Context {
@@ -2483,5 +2484,56 @@ func TestSingletonRestore(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "build sequential_singleton: phony") {
 		t.Errorf("ninja file doesn't have build statements for singleton: %s", buf.String())
+	}
+}
+
+func TestSingletonNotRestoreForSingletonChange(t *testing.T) {
+	ctx := singletonCacheSetup(t)
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	if err := ctx.writeAllSingletonActions(w); err != nil {
+		t.Fatalf("failed to write all singleton actions: %v", err)
+	}
+
+	ctx.buildActionsCache.flush()
+
+	cacheKey := &BuildActionCacheKey{Id: sequentialSingletonName}
+	data, err := ctx.buildActionsCache.readSingletonBuildAction(ctx.EncContext, cacheKey)
+	if err != nil {
+		t.Fatalf("failed to read cache: %v", err)
+	}
+	ninja, err := ctx.buildActionsCache.readNinjaStatements(cacheKey)
+	if err != nil {
+		t.Fatalf("failed to read ninja statements: %v", err)
+	}
+	seqSingletonProviderHash := ctx.singletonInfo[1].providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
+	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, seqSingletonProviderHash, &singletonTestInfoProvider.providerKey)
+	if err != nil {
+		t.Fatalf("failed to read provider: %v", err)
+	}
+
+	// Now simulate an incremental build
+	parallelSingletonName = parallelSingletonName + "_New"
+	ctx = singletonCacheSetup(t)
+	ctx.buildActionsCache.writeSingletonBuildAction(ctx.EncContext, cacheKey, data)
+	ctx.buildActionsCache.writeNinjaStatements(cacheKey, ninja)
+	ctx.buildActionsCache.writeProvider(ctx.EncContext, seqSingletonProviderHash, provider)
+
+	ctx.buildActionsCache.flush()
+
+	_, errs = ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	seqSingletonInfo := ctx.singletonInfo[1]
+	seqSingleton := seqSingletonInfo.singleton.(*sequentialSingleton)
+
+	// 1. Verify GenerateBuildActions was called
+	if seqSingleton.GenerateBuildActionsCalled != 1 {
+		t.Errorf("expected GenerateBuildActions to be called, got %d", seqSingleton.GenerateBuildActionsCalled)
 	}
 }
