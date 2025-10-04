@@ -182,11 +182,13 @@ func (g *gobGen) findTypeReference(expr ast.Expr, pkgName string) typeReference 
 			// array
 			typeRef.prefix = "[" + t.Len.(*ast.BasicLit).Value + "]" + typeRef.prefix
 		}
-		return typeRef
 	case *ast.StarExpr:
 		typeRef = g.findTypeReference(t.X, pkgName)
 		typeRef.prefix = "*" + typeRef.prefix
-		return typeRef
+	case *ast.MapType:
+		typeRef = g.findTypeReference(t.Value, pkgName)
+		keyTypeRef := g.findTypeReference(t.Key, pkgName)
+		typeRef.prefix = "map[" + keyTypeRef.typeName + "]" + typeRef.prefix
 	default:
 		panic(fmt.Errorf("unknown type to find name: %T", expr))
 	}
@@ -262,9 +264,11 @@ func (g *gobGen) generateEncodeForType(encodeBody *strings.Builder, pkgName stri
 	case *ast.MapType:
 		g.generateEncodeForNillable(encodeBody, fieldName)
 		encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeInt(buf, len(%s)); err != nil { return err }\n", fieldName))
-		encodeBody.WriteString(fmt.Sprintf("\tfor k, v := range %s {\n", fieldName))
-		g.generateEncodeForType(encodeBody, pkgName, t.Key, "k")
-		g.generateEncodeForType(encodeBody, pkgName, t.Value, "v")
+		k := g.nextVar()
+		v := g.nextVar()
+		encodeBody.WriteString(fmt.Sprintf("\tfor %s, %s := range %s {\n", k, v, fieldName))
+		g.generateEncodeForType(encodeBody, pkgName, t.Key, k)
+		g.generateEncodeForType(encodeBody, pkgName, t.Value, v)
 		encodeBody.WriteString("\t}\n")
 		encodeBody.WriteString("\t}\n")
 	case *ast.ArrayType:
@@ -418,14 +422,16 @@ func (g *gobGen) generateDecodeForType(decodeBody *strings.Builder, pkgName stri
 		g.maybeAddImport(kTypeRef)
 		g.maybeAddImport(vTypeRef)
 		index := g.nextVar()
+		k := g.nextVar()
+		v := g.nextVar()
 		decodeBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < int(%s); %s++ {\n", index, index, valId, index))
-		decodeBody.WriteString(fmt.Sprintf("\tvar k %s\n", kTypeRef.fullName()))
-		decodeBody.WriteString(fmt.Sprintf("\tvar v %s\n", vTypeRef.fullName()))
+		decodeBody.WriteString(fmt.Sprintf("\tvar %s %s\n", k, kTypeRef.fullName()))
+		decodeBody.WriteString(fmt.Sprintf("\tvar %s %s\n", v, vTypeRef.fullName()))
 		g.maybeAddImport(kTypeRef)
 		g.maybeAddImport(vTypeRef)
-		g.generateDecodeForType(decodeBody, pkgName, t.Key, "k")
-		g.generateDecodeForType(decodeBody, pkgName, t.Value, "v")
-		decodeBody.WriteString(fmt.Sprintf("\t%s[k] = v\n", fieldName))
+		g.generateDecodeForType(decodeBody, pkgName, t.Key, k)
+		g.generateDecodeForType(decodeBody, pkgName, t.Value, v)
+		decodeBody.WriteString(fmt.Sprintf("\t%s[%s] = %s\n", fieldName, k, v))
 		decodeBody.WriteString("\t}\n")
 		decodeBody.WriteString("\t}\n")
 	case *ast.ArrayType:

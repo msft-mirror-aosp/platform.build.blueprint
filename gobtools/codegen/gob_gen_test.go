@@ -129,6 +129,11 @@ func TestEncDec(t *testing.T) {
 				TestEmbedPtr: &TestEmbedPtr{f37: "mmmmmmmm"},
 				f38:          test.TypeBasic(1),
 				f39:          [2]uint64{1, 2},
+				f40: map[[1]string]map[int][]*bool{
+					{"llllllll"}: {
+						1: {boolPtr(true)},
+					},
+				},
 			},
 			decoded: &TestStruct{},
 		},
@@ -225,4 +230,8 @@ func TestGenerate(t *testing.T) {
 		t.Errorf("Generated code from %s does not match expected output in %s.\nexpected:\n%s\ngot:\n%s",
 			sourceFile, expectedOutputFile, expectedBytes, generatedBytes)
 	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }

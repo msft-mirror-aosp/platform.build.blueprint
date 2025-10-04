@@ -70,6 +70,7 @@ type TestStruct struct {
 	*TestEmbedPtr
 	f38 test.TypeBasic
 	f39 [2]uint64
+	f40 map[[1]string]map[int][]*bool
 }
 
 type testStrings []string

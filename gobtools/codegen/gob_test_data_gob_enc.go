@@ -89,21 +89,21 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		if err = gobtools.EncodeInt(buf, len(r.f12)); err != nil {
 			return err
 		}
-		for k, v := range r.f12 {
-			if err = gobtools.EncodeString(buf, k); err != nil {
+		for val2, val3 := range r.f12 {
+			if err = gobtools.EncodeString(buf, val2); err != nil {
 				return err
 			}
-			if err = gobtools.EncodeInt(buf, v); err != nil {
+			if err = gobtools.EncodeInt(buf, val3); err != nil {
 				return err
 			}
 		}
 	}
 
-	val2 := r.f13 == nil
-	if err = gobtools.EncodeBool(buf, val2); err != nil {
+	val4 := r.f13 == nil
+	if err = gobtools.EncodeBool(buf, val4); err != nil {
 		return err
 	}
-	if !val2 {
+	if !val4 {
 		if err = gobtools.EncodeString(buf, (*r.f13)); err != nil {
 			return err
 		}
@@ -121,8 +121,8 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		if err = gobtools.EncodeInt(buf, len(r.f15)); err != nil {
 			return err
 		}
-		for val3 := 0; val3 < len(r.f15); val3++ {
-			if err = gobtools.EncodeInt(buf, r.f15[val3]); err != nil {
+		for val5 := 0; val5 < len(r.f15); val5++ {
+			if err = gobtools.EncodeInt(buf, r.f15[val5]); err != nil {
 				return err
 			}
 		}
@@ -136,18 +136,18 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		if err = gobtools.EncodeInt(buf, len(r.f16)); err != nil {
 			return err
 		}
-		for val4 := 0; val4 < len(r.f16); val4++ {
-			if err = r.f16[val4].Encode(ctx, buf); err != nil {
+		for val6 := 0; val6 < len(r.f16); val6++ {
+			if err = r.f16[val6].Encode(ctx, buf); err != nil {
 				return err
 			}
 		}
 	}
 
-	val5 := r.f17 == nil
-	if err = gobtools.EncodeBool(buf, val5); err != nil {
+	val7 := r.f17 == nil
+	if err = gobtools.EncodeBool(buf, val7); err != nil {
 		return err
 	}
-	if !val5 {
+	if !val7 {
 		if err = (*r.f17).Encode(ctx, buf); err != nil {
 			return err
 		}
@@ -165,30 +165,14 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		if err = gobtools.EncodeInt(buf, len(r.f19)); err != nil {
 			return err
 		}
-		for val6 := 0; val6 < len(r.f19); val6++ {
-			if err = gobtools.EncodeString(buf, r.f19[val6]); err != nil {
+		for val8 := 0; val8 < len(r.f19); val8++ {
+			if err = gobtools.EncodeString(buf, r.f19[val8]); err != nil {
 				return err
 			}
 		}
 	}
 
-	val7 := r.f20.ToSlice()
-	if val7 == nil {
-		if err = gobtools.EncodeInt(buf, -1); err != nil {
-			return err
-		}
-	} else {
-		if err = gobtools.EncodeInt(buf, len(val7)); err != nil {
-			return err
-		}
-		for val8 := 0; val8 < len(val7); val8++ {
-			if err = val7[val8].Encode(ctx, buf); err != nil {
-				return err
-			}
-		}
-	}
-
-	val9 := r.f21.ToSlice()
+	val9 := r.f20.ToSlice()
 	if val9 == nil {
 		if err = gobtools.EncodeInt(buf, -1); err != nil {
 			return err
@@ -198,7 +182,23 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 			return err
 		}
 		for val10 := 0; val10 < len(val9); val10++ {
-			if err = gobtools.EncodeInterface(ctx, buf, val9[val10]); err != nil {
+			if err = val9[val10].Encode(ctx, buf); err != nil {
+				return err
+			}
+		}
+	}
+
+	val11 := r.f21.ToSlice()
+	if val11 == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(val11)); err != nil {
+			return err
+		}
+		for val12 := 0; val12 < len(val11); val12++ {
+			if err = gobtools.EncodeInterface(ctx, buf, val11[val12]); err != nil {
 				return err
 			}
 		}
@@ -216,17 +216,17 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		if err = gobtools.EncodeInt(buf, len(r.f23)); err != nil {
 			return err
 		}
-		for val11 := 0; val11 < len(r.f23); val11++ {
-			if r.f23[val11] == nil {
+		for val13 := 0; val13 < len(r.f23); val13++ {
+			if r.f23[val13] == nil {
 				if err = gobtools.EncodeInt(buf, -1); err != nil {
 					return err
 				}
 			} else {
-				if err = gobtools.EncodeInt(buf, len(r.f23[val11])); err != nil {
+				if err = gobtools.EncodeInt(buf, len(r.f23[val13])); err != nil {
 					return err
 				}
-				for val12 := 0; val12 < len(r.f23[val11]); val12++ {
-					if err = r.f23[val11][val12].Encode(ctx, buf); err != nil {
+				for val14 := 0; val14 < len(r.f23[val13]); val14++ {
+					if err = r.f23[val13][val14].Encode(ctx, buf); err != nil {
 						return err
 					}
 				}
@@ -258,20 +258,20 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		if err = gobtools.EncodeInt(buf, len(r.f28)); err != nil {
 			return err
 		}
-		for k, v := range r.f28 {
-			if err = gobtools.EncodeInt(buf, k); err != nil {
+		for val15, val16 := range r.f28 {
+			if err = gobtools.EncodeInt(buf, val15); err != nil {
 				return err
 			}
-			if v == nil {
+			if val16 == nil {
 				if err = gobtools.EncodeInt(buf, -1); err != nil {
 					return err
 				}
 			} else {
-				if err = gobtools.EncodeInt(buf, len(v)); err != nil {
+				if err = gobtools.EncodeInt(buf, len(val16)); err != nil {
 					return err
 				}
-				for val13 := 0; val13 < len(v); val13++ {
-					if err = gobtools.EncodeString(buf, v[val13]); err != nil {
+				for val17 := 0; val17 < len(val16); val17++ {
+					if err = gobtools.EncodeString(buf, val16[val17]); err != nil {
 						return err
 					}
 				}
@@ -287,17 +287,17 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		if err = gobtools.EncodeInt(buf, len(r.f29)); err != nil {
 			return err
 		}
-		for val14 := 0; val14 < len(r.f29); val14++ {
-			if r.f29[val14] == nil {
+		for val18 := 0; val18 < len(r.f29); val18++ {
+			if r.f29[val18] == nil {
 				if err = gobtools.EncodeInt(buf, -1); err != nil {
 					return err
 				}
 			} else {
-				if err = gobtools.EncodeInt(buf, len(r.f29[val14])); err != nil {
+				if err = gobtools.EncodeInt(buf, len(r.f29[val18])); err != nil {
 					return err
 				}
-				for val15 := 0; val15 < len(r.f29[val14]); val15++ {
-					if err = gobtools.EncodeString(buf, r.f29[val14][val15]); err != nil {
+				for val19 := 0; val19 < len(r.f29[val18]); val19++ {
+					if err = gobtools.EncodeString(buf, r.f29[val18][val19]); err != nil {
 						return err
 					}
 				}
@@ -321,13 +321,13 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		if err = gobtools.EncodeInt(buf, len(r.f32)); err != nil {
 			return err
 		}
-		for val16 := 0; val16 < len(r.f32); val16++ {
-			val17 := r.f32[val16] == nil
-			if err = gobtools.EncodeBool(buf, val17); err != nil {
+		for val20 := 0; val20 < len(r.f32); val20++ {
+			val21 := r.f32[val20] == nil
+			if err = gobtools.EncodeBool(buf, val21); err != nil {
 				return err
 			}
-			if !val17 {
-				if err = (*r.f32[val16]).Encode(ctx, buf); err != nil {
+			if !val21 {
+				if err = (*r.f32[val20]).Encode(ctx, buf); err != nil {
 					return err
 				}
 			}
@@ -349,11 +349,11 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		return err
 	}
 
-	val18 := r.TestEmbedPtr == nil
-	if err = gobtools.EncodeBool(buf, val18); err != nil {
+	val22 := r.TestEmbedPtr == nil
+	if err = gobtools.EncodeBool(buf, val22); err != nil {
 		return err
 	}
-	if !val18 {
+	if !val22 {
 		if err = (*r.TestEmbedPtr).Encode(ctx, buf); err != nil {
 			return err
 		}
@@ -363,9 +363,60 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		return err
 	}
 
-	for val19 := 0; val19 < len(r.f39); val19++ {
-		if err = gobtools.EncodeUint64(buf, r.f39[val19]); err != nil {
+	for val23 := 0; val23 < len(r.f39); val23++ {
+		if err = gobtools.EncodeUint64(buf, r.f39[val23]); err != nil {
 			return err
+		}
+	}
+
+	if r.f40 == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r.f40)); err != nil {
+			return err
+		}
+		for val24, val25 := range r.f40 {
+			for val26 := 0; val26 < len(val24); val26++ {
+				if err = gobtools.EncodeString(buf, val24[val26]); err != nil {
+					return err
+				}
+			}
+			if val25 == nil {
+				if err = gobtools.EncodeInt(buf, -1); err != nil {
+					return err
+				}
+			} else {
+				if err = gobtools.EncodeInt(buf, len(val25)); err != nil {
+					return err
+				}
+				for val27, val28 := range val25 {
+					if err = gobtools.EncodeInt(buf, val27); err != nil {
+						return err
+					}
+					if val28 == nil {
+						if err = gobtools.EncodeInt(buf, -1); err != nil {
+							return err
+						}
+					} else {
+						if err = gobtools.EncodeInt(buf, len(val28)); err != nil {
+							return err
+						}
+						for val29 := 0; val29 < len(val28); val29++ {
+							val30 := val28[val29] == nil
+							if err = gobtools.EncodeBool(buf, val30); err != nil {
+								return err
+							}
+							if !val30 {
+								if err = gobtools.EncodeBool(buf, (*val28[val29])); err != nil {
+									return err
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 	return err
@@ -450,31 +501,31 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	if val16 != -1 {
 		r.f12 = make(map[string]int, val16)
 		for val17 := 0; val17 < int(val16); val17++ {
-			var k string
-			var v int
-			err = gobtools.DecodeString(buf, &k)
+			var val18 string
+			var val19 int
+			err = gobtools.DecodeString(buf, &val18)
 			if err != nil {
 				return err
 			}
-			err = gobtools.DecodeInt(buf, &v)
+			err = gobtools.DecodeInt(buf, &val19)
 			if err != nil {
 				return err
 			}
-			r.f12[k] = v
+			r.f12[val18] = val19
 		}
 	}
 
-	var val21 bool
-	if err = gobtools.DecodeBool(buf, &val21); err != nil {
+	var val23 bool
+	if err = gobtools.DecodeBool(buf, &val23); err != nil {
 		return err
 	}
-	if !val21 {
-		var val20 string
-		err = gobtools.DecodeString(buf, &val20)
+	if !val23 {
+		var val22 string
+		err = gobtools.DecodeString(buf, &val22)
 		if err != nil {
 			return err
 		}
-		r.f13 = &val20
+		r.f13 = &val22
 	}
 
 	err = gobtools.DecodeInt(buf, &r.f14)
@@ -482,127 +533,127 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 		return err
 	}
 
-	var val25 int
-	err = gobtools.DecodeInt(buf, &val25)
+	var val27 int
+	err = gobtools.DecodeInt(buf, &val27)
 	if err != nil {
 		return err
 	}
-	if val25 != -1 {
-		r.f15 = make([]int, val25)
-		for val26 := 0; val26 < int(val25); val26++ {
-			err = gobtools.DecodeInt(buf, &r.f15[val26])
+	if val27 != -1 {
+		r.f15 = make([]int, val27)
+		for val28 := 0; val28 < int(val27); val28++ {
+			err = gobtools.DecodeInt(buf, &r.f15[val28])
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	var val29 int
-	err = gobtools.DecodeInt(buf, &val29)
+	var val31 int
+	err = gobtools.DecodeInt(buf, &val31)
 	if err != nil {
 		return err
 	}
-	if val29 != -1 {
-		r.f16 = make([]TestEcho, val29)
-		for val30 := 0; val30 < int(val29); val30++ {
-			if err = r.f16[val30].Decode(ctx, buf); err != nil {
+	if val31 != -1 {
+		r.f16 = make([]TestEcho, val31)
+		for val32 := 0; val32 < int(val31); val32++ {
+			if err = r.f16[val32].Decode(ctx, buf); err != nil {
 				return err
 			}
 		}
 	}
 
-	var val33 bool
-	if err = gobtools.DecodeBool(buf, &val33); err != nil {
+	var val35 bool
+	if err = gobtools.DecodeBool(buf, &val35); err != nil {
 		return err
 	}
-	if !val33 {
-		var val32 TestEcho
-		if err = val32.Decode(ctx, buf); err != nil {
+	if !val35 {
+		var val34 TestEcho
+		if err = val34.Decode(ctx, buf); err != nil {
 			return err
 		}
-		r.f17 = &val32
+		r.f17 = &val34
 	}
 
-	if val36, err := gobtools.DecodeInterface(ctx, buf); err != nil {
+	if val38, err := gobtools.DecodeInterface(ctx, buf); err != nil {
 		return err
-	} else if val36 == nil {
+	} else if val38 == nil {
 		r.f18 = nil
 	} else {
-		r.f18 = val36.(TestEchoInterface)
+		r.f18 = val38.(TestEchoInterface)
 	}
 
-	var val39 int
-	err = gobtools.DecodeInt(buf, &val39)
+	var val41 int
+	err = gobtools.DecodeInt(buf, &val41)
 	if err != nil {
 		return err
 	}
-	if val39 != -1 {
-		r.f19 = make([]string, val39)
-		for val40 := 0; val40 < int(val39); val40++ {
-			err = gobtools.DecodeString(buf, &r.f19[val40])
+	if val41 != -1 {
+		r.f19 = make([]string, val41)
+		for val42 := 0; val42 < int(val41); val42++ {
+			err = gobtools.DecodeString(buf, &r.f19[val42])
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	var val43 []TestEcho
-	var val44 int
-	err = gobtools.DecodeInt(buf, &val44)
+	var val45 []TestEcho
+	var val46 int
+	err = gobtools.DecodeInt(buf, &val46)
 	if err != nil {
 		return err
 	}
-	if val44 != -1 {
-		val43 = make([]TestEcho, val44)
-		for val45 := 0; val45 < int(val44); val45++ {
-			if err = val43[val45].Decode(ctx, buf); err != nil {
+	if val46 != -1 {
+		val45 = make([]TestEcho, val46)
+		for val47 := 0; val47 < int(val46); val47++ {
+			if err = val45[val47].Decode(ctx, buf); err != nil {
 				return err
 			}
 		}
 	}
-	r.f20 = uniquelist.Make(val43)
+	r.f20 = uniquelist.Make(val45)
 
-	var val48 []TestEchoInterface
-	var val49 int
-	err = gobtools.DecodeInt(buf, &val49)
+	var val50 []TestEchoInterface
+	var val51 int
+	err = gobtools.DecodeInt(buf, &val51)
 	if err != nil {
 		return err
 	}
-	if val49 != -1 {
-		val48 = make([]TestEchoInterface, val49)
-		for val50 := 0; val50 < int(val49); val50++ {
-			if val52, err := gobtools.DecodeInterface(ctx, buf); err != nil {
+	if val51 != -1 {
+		val50 = make([]TestEchoInterface, val51)
+		for val52 := 0; val52 < int(val51); val52++ {
+			if val54, err := gobtools.DecodeInterface(ctx, buf); err != nil {
 				return err
-			} else if val52 == nil {
-				val48[val50] = nil
+			} else if val54 == nil {
+				val50[val52] = nil
 			} else {
-				val48[val50] = val52.(TestEchoInterface)
+				val50[val52] = val54.(TestEchoInterface)
 			}
 		}
 	}
-	r.f21 = uniquelist.Make(val48)
+	r.f21 = uniquelist.Make(val50)
 
 	if err = r.f22.Decode(ctx, buf); err != nil {
 		return err
 	}
 
-	var val55 int
-	err = gobtools.DecodeInt(buf, &val55)
+	var val57 int
+	err = gobtools.DecodeInt(buf, &val57)
 	if err != nil {
 		return err
 	}
-	if val55 != -1 {
-		r.f23 = make([]test.TypeAlias, val55)
-		for val56 := 0; val56 < int(val55); val56++ {
-			var val59 int
-			err = gobtools.DecodeInt(buf, &val59)
+	if val57 != -1 {
+		r.f23 = make([]test.TypeAlias, val57)
+		for val58 := 0; val58 < int(val57); val58++ {
+			var val61 int
+			err = gobtools.DecodeInt(buf, &val61)
 			if err != nil {
 				return err
 			}
-			if val59 != -1 {
-				r.f23[val56] = make([]test.TypeStruct, val59)
-				for val60 := 0; val60 < int(val59); val60++ {
-					if err = r.f23[val56][val60].Decode(ctx, buf); err != nil {
+			if val61 != -1 {
+				r.f23[val58] = make([]test.TypeStruct, val61)
+				for val62 := 0; val62 < int(val61); val62++ {
+					if err = r.f23[val58][val62].Decode(ctx, buf); err != nil {
 						return err
 					}
 				}
@@ -610,19 +661,19 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 		}
 	}
 
-	if val63, err := gobtools.DecodeInterface(ctx, buf); err != nil {
+	if val65, err := gobtools.DecodeInterface(ctx, buf); err != nil {
 		return err
-	} else if val63 == nil {
+	} else if val65 == nil {
 		r.f24 = nil
 	} else {
-		r.f24 = val63.(test.TypeInterface)
+		r.f24 = val65.(test.TypeInterface)
 	}
 
-	var val65 test.TypeStruct
-	if err = val65.Decode(ctx, buf); err != nil {
+	var val67 test.TypeStruct
+	if err = val67.Decode(ctx, buf); err != nil {
 		return err
 	}
-	r.f25 = test.TypeIdent(val65)
+	r.f25 = test.TypeIdent(val67)
 
 	if err = r.f26.Decode(ctx, buf); err != nil {
 		return err
@@ -632,55 +683,55 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 		return err
 	}
 
-	var val69 int
-	err = gobtools.DecodeInt(buf, &val69)
+	var val71 int
+	err = gobtools.DecodeInt(buf, &val71)
 	if err != nil {
 		return err
 	}
-	if val69 != -1 {
-		r.f28 = make(map[int][]string, val69)
-		for val70 := 0; val70 < int(val69); val70++ {
-			var k int
-			var v []string
-			err = gobtools.DecodeInt(buf, &k)
-			if err != nil {
-				return err
-			}
+	if val71 != -1 {
+		r.f28 = make(map[int][]string, val71)
+		for val72 := 0; val72 < int(val71); val72++ {
 			var val73 int
+			var val74 []string
 			err = gobtools.DecodeInt(buf, &val73)
 			if err != nil {
 				return err
 			}
-			if val73 != -1 {
-				v = make([]string, val73)
-				for val74 := 0; val74 < int(val73); val74++ {
-					err = gobtools.DecodeString(buf, &v[val74])
+			var val77 int
+			err = gobtools.DecodeInt(buf, &val77)
+			if err != nil {
+				return err
+			}
+			if val77 != -1 {
+				val74 = make([]string, val77)
+				for val78 := 0; val78 < int(val77); val78++ {
+					err = gobtools.DecodeString(buf, &val74[val78])
 					if err != nil {
 						return err
 					}
 				}
 			}
-			r.f28[k] = v
+			r.f28[val73] = val74
 		}
 	}
 
-	var val77 int
-	err = gobtools.DecodeInt(buf, &val77)
+	var val81 int
+	err = gobtools.DecodeInt(buf, &val81)
 	if err != nil {
 		return err
 	}
-	if val77 != -1 {
-		r.f29 = make([][]string, val77)
-		for val78 := 0; val78 < int(val77); val78++ {
-			var val80 int
-			err = gobtools.DecodeInt(buf, &val80)
+	if val81 != -1 {
+		r.f29 = make([][]string, val81)
+		for val82 := 0; val82 < int(val81); val82++ {
+			var val84 int
+			err = gobtools.DecodeInt(buf, &val84)
 			if err != nil {
 				return err
 			}
-			if val80 != -1 {
-				r.f29[val78] = make([]string, val80)
-				for val81 := 0; val81 < int(val80); val81++ {
-					err = gobtools.DecodeString(buf, &r.f29[val78][val81])
+			if val84 != -1 {
+				r.f29[val82] = make([]string, val84)
+				for val85 := 0; val85 < int(val84); val85++ {
+					err = gobtools.DecodeString(buf, &r.f29[val82][val85])
 					if err != nil {
 						return err
 					}
@@ -693,32 +744,32 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 		return err
 	}
 
-	if val85, err := gobtools.DecodeInterface(ctx, buf); err != nil {
+	if val89, err := gobtools.DecodeInterface(ctx, buf); err != nil {
 		return err
-	} else if val85 == nil {
+	} else if val89 == nil {
 		r.f31 = nil
 	} else {
-		r.f31 = val85
+		r.f31 = val89
 	}
 
-	var val87 int
-	err = gobtools.DecodeInt(buf, &val87)
+	var val91 int
+	err = gobtools.DecodeInt(buf, &val91)
 	if err != nil {
 		return err
 	}
-	if val87 != -1 {
-		r.f32 = make([]*test.TypeStruct, val87)
-		for val88 := 0; val88 < int(val87); val88++ {
-			var val90 bool
-			if err = gobtools.DecodeBool(buf, &val90); err != nil {
+	if val91 != -1 {
+		r.f32 = make([]*test.TypeStruct, val91)
+		for val92 := 0; val92 < int(val91); val92++ {
+			var val94 bool
+			if err = gobtools.DecodeBool(buf, &val94); err != nil {
 				return err
 			}
-			if !val90 {
-				var val89 test.TypeStruct
-				if err = val89.Decode(ctx, buf); err != nil {
+			if !val94 {
+				var val93 test.TypeStruct
+				if err = val93.Decode(ctx, buf); err != nil {
 					return err
 				}
-				r.f32[val88] = &val89
+				r.f32[val92] = &val93
 			}
 		}
 	}
@@ -741,29 +792,88 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 		return err
 	}
 
-	var val98 bool
-	if err = gobtools.DecodeBool(buf, &val98); err != nil {
+	var val102 bool
+	if err = gobtools.DecodeBool(buf, &val102); err != nil {
 		return err
 	}
-	if !val98 {
-		var val97 TestEmbedPtr
-		if err = val97.Decode(ctx, buf); err != nil {
+	if !val102 {
+		var val101 TestEmbedPtr
+		if err = val101.Decode(ctx, buf); err != nil {
 			return err
 		}
-		r.TestEmbedPtr = &val97
+		r.TestEmbedPtr = &val101
 	}
 
-	var val101 int
-	err = gobtools.DecodeInt(buf, &val101)
+	var val105 int
+	err = gobtools.DecodeInt(buf, &val105)
 	if err != nil {
 		return err
 	}
-	r.f38 = test.TypeBasic(val101)
+	r.f38 = test.TypeBasic(val105)
 
-	for val104 := 0; val104 < len(r.f39); val104++ {
-		err = gobtools.DecodeUint64(buf, &r.f39[val104])
+	for val108 := 0; val108 < len(r.f39); val108++ {
+		err = gobtools.DecodeUint64(buf, &r.f39[val108])
 		if err != nil {
 			return err
+		}
+	}
+
+	var val110 int
+	err = gobtools.DecodeInt(buf, &val110)
+	if err != nil {
+		return err
+	}
+	if val110 != -1 {
+		r.f40 = make(map[[1]string]map[int][]*bool, val110)
+		for val111 := 0; val111 < int(val110); val111++ {
+			var val112 [1]string
+			var val113 map[int][]*bool
+			for val115 := 0; val115 < len(val112); val115++ {
+				err = gobtools.DecodeString(buf, &val112[val115])
+				if err != nil {
+					return err
+				}
+			}
+			var val117 int
+			err = gobtools.DecodeInt(buf, &val117)
+			if err != nil {
+				return err
+			}
+			if val117 != -1 {
+				val113 = make(map[int][]*bool, val117)
+				for val118 := 0; val118 < int(val117); val118++ {
+					var val119 int
+					var val120 []*bool
+					err = gobtools.DecodeInt(buf, &val119)
+					if err != nil {
+						return err
+					}
+					var val123 int
+					err = gobtools.DecodeInt(buf, &val123)
+					if err != nil {
+						return err
+					}
+					if val123 != -1 {
+						val120 = make([]*bool, val123)
+						for val124 := 0; val124 < int(val123); val124++ {
+							var val126 bool
+							if err = gobtools.DecodeBool(buf, &val126); err != nil {
+								return err
+							}
+							if !val126 {
+								var val125 bool
+								err = gobtools.DecodeBool(buf, &val125)
+								if err != nil {
+									return err
+								}
+								val120[val124] = &val125
+							}
+						}
+					}
+					val113[val119] = val120
+				}
+			}
+			r.f40[val112] = val113
 		}
 	}
 
@@ -863,20 +973,20 @@ func (r testStringMap) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error 
 		if err = gobtools.EncodeInt(buf, len(r)); err != nil {
 			return err
 		}
-		for k, v := range r {
-			if err = gobtools.EncodeString(buf, k); err != nil {
+		for val1, val2 := range r {
+			if err = gobtools.EncodeString(buf, val1); err != nil {
 				return err
 			}
-			if v == nil {
+			if val2 == nil {
 				if err = gobtools.EncodeInt(buf, -1); err != nil {
 					return err
 				}
 			} else {
-				if err = gobtools.EncodeInt(buf, len(v)); err != nil {
+				if err = gobtools.EncodeInt(buf, len(val2)); err != nil {
 					return err
 				}
-				for val1 := 0; val1 < len(v); val1++ {
-					if err = gobtools.EncodeString(buf, v[val1]); err != nil {
+				for val3 := 0; val3 < len(val2); val3++ {
+					if err = gobtools.EncodeString(buf, val2[val3]); err != nil {
 						return err
 					}
 				}
@@ -897,27 +1007,27 @@ func (r *testStringMap) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error
 	if val1 != -1 {
 		(*r) = make(map[string][]string, val1)
 		for val2 := 0; val2 < int(val1); val2++ {
-			var k string
-			var v []string
-			err = gobtools.DecodeString(buf, &k)
+			var val3 string
+			var val4 []string
+			err = gobtools.DecodeString(buf, &val3)
 			if err != nil {
 				return err
 			}
-			var val5 int
-			err = gobtools.DecodeInt(buf, &val5)
+			var val7 int
+			err = gobtools.DecodeInt(buf, &val7)
 			if err != nil {
 				return err
 			}
-			if val5 != -1 {
-				v = make([]string, val5)
-				for val6 := 0; val6 < int(val5); val6++ {
-					err = gobtools.DecodeString(buf, &v[val6])
+			if val7 != -1 {
+				val4 = make([]string, val7)
+				for val8 := 0; val8 < int(val7); val8++ {
+					err = gobtools.DecodeString(buf, &val4[val8])
 					if err != nil {
 						return err
 					}
 				}
 			}
-			(*r)[k] = v
+			(*r)[val3] = val4
 		}
 	}
 
@@ -941,16 +1051,16 @@ func (r testEchoMap) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		if err = gobtools.EncodeInt(buf, len(r)); err != nil {
 			return err
 		}
-		for k, v := range r {
-			if err = k.Encode(ctx, buf); err != nil {
+		for val1, val2 := range r {
+			if err = val1.Encode(ctx, buf); err != nil {
 				return err
 			}
-			val1 := v == nil
-			if err = gobtools.EncodeBool(buf, val1); err != nil {
+			val3 := val2 == nil
+			if err = gobtools.EncodeBool(buf, val3); err != nil {
 				return err
 			}
-			if !val1 {
-				if err = (*v).Encode(ctx, buf); err != nil {
+			if !val3 {
+				if err = (*val2).Encode(ctx, buf); err != nil {
 					return err
 				}
 			}
@@ -970,23 +1080,23 @@ func (r *testEchoMap) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	if val1 != -1 {
 		(*r) = make(map[TestEcho]*TestEcho, val1)
 		for val2 := 0; val2 < int(val1); val2++ {
-			var k TestEcho
-			var v *TestEcho
-			if err = k.Decode(ctx, buf); err != nil {
+			var val3 TestEcho
+			var val4 *TestEcho
+			if err = val3.Decode(ctx, buf); err != nil {
 				return err
 			}
-			var val5 bool
-			if err = gobtools.DecodeBool(buf, &val5); err != nil {
+			var val7 bool
+			if err = gobtools.DecodeBool(buf, &val7); err != nil {
 				return err
 			}
-			if !val5 {
-				var val4 TestEcho
-				if err = val4.Decode(ctx, buf); err != nil {
+			if !val7 {
+				var val6 TestEcho
+				if err = val6.Decode(ctx, buf); err != nil {
 					return err
 				}
-				v = &val4
+				val4 = &val6
 			}
-			(*r)[k] = v
+			(*r)[val3] = val4
 		}
 	}
 
