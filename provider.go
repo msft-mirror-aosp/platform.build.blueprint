@@ -150,6 +150,12 @@ func (c *Context) initProviders() {
 // Once Go has generics the value parameter can be typed:
 // setProvider(type T)(m *moduleInfo, provider ProviderKey(T), value T)
 func (c *Context) setProvider(m *moduleInfo, provider *providerKey, value any) {
+	if m.incrementalRestored {
+		if c.incrementalProviderTest {
+			return
+		}
+		panic("shouldn't set provider after the module was restored from cache")
+	}
 	if provider.mutator == "" {
 		if !m.startedGenerateBuildActions {
 			panic(fmt.Sprintf("Can't set value of provider %s before GenerateBuildActions started",
@@ -176,6 +182,12 @@ func (c *Context) setProvider(m *moduleInfo, provider *providerKey, value any) {
 }
 
 func (c *Context) setSingletonProvider(s *singletonInfo, provider *providerKey, value any) {
+	if s.incrementalRestored {
+		if c.incrementalProviderTest {
+			return
+		}
+		panic("shouldn't set provider after the singleton was restored from cache")
+	}
 	if provider.mutator != singletonTag {
 		panic(fmt.Sprintf("Can't set value of non-singleton provider %s inside singleton %s", provider.typ, s.name))
 	} else {

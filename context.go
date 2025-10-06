@@ -180,6 +180,8 @@ type Context struct {
 	// latter will depend on the flag above.
 	incrementalEnabled bool
 
+	incrementalProviderTest bool
+
 	buildActionsCache       *BuildActionCache
 	buildActionsToCacheLock sync.Mutex
 	orderOnlyStringsCache   OrderOnlyStringsCache
@@ -791,6 +793,10 @@ func (c *Context) GetIncrementalAnalysis() bool {
 
 func (c *Context) SetIncrementalEnabled(incremental bool) {
 	c.incrementalEnabled = incremental
+}
+
+func (c *Context) SetIncrementalProviderTest(test bool) {
+	c.incrementalProviderTest = test
 }
 
 func (c *Context) GetIncrementalEnabled() bool {
@@ -3446,7 +3452,7 @@ func (c *Context) generateModuleBuildActions(config interface{},
 						}
 					}
 				}()
-				if !mctx.restoreModuleBuildActions() {
+				if !mctx.restoreModuleBuildActions() || c.incrementalProviderTest {
 					mctx.module.logicModule.GenerateBuildActions(mctx)
 				}
 			}()
@@ -3565,7 +3571,7 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 		}()
 
 		c.restoreSingleton(info)
-		if !info.incrementalRestored {
+		if !info.incrementalRestored || c.incrementalProviderTest {
 			info.singleton.GenerateBuildActions(sctx)
 		}
 		// A caching entry for singletons is only written if the singleton
@@ -5113,7 +5119,7 @@ func (c *Context) writeIncrementalModules(modules []*moduleInfo, baseWriter *nin
 		var moduleBytes []byte
 		var err error
 
-		if m.incrementalRestored {
+		if m.incrementalRestored && !c.incrementalProviderTest {
 			// Read from the cache if the module is restored.
 			moduleBytes, err = c.buildActionsCache.readNinjaStatements(m.buildActionCacheKey)
 		} else {
@@ -5233,7 +5239,7 @@ func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 	inMemoryWriter := bytes.NewBuffer(nil)
 
 	for _, info := range c.singletonInfo {
-		if info.incrementalRestored {
+		if info.incrementalRestored && !c.incrementalProviderTest {
 			// Read from the cache if the singleton is restored.
 			ninjaBytes, err = c.buildActionsCache.readNinjaStatements(info.buildActionCacheKey)
 			if err != nil {
