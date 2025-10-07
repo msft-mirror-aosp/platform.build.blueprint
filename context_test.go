@@ -1637,6 +1637,9 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 		Value: providerValue,
 	})
 	ctx.buildActionsCache.writeNinjaStatements(&cacheKey, []byte(incrementalModuleNinja))
+
+	ctx.buildActionsCache.flush()
+
 	ctx.SetIncrementalEnabled(true)
 	ctx.SetIncrementalAnalysis(true)
 
@@ -1697,9 +1700,9 @@ func TestCacheBuildActions(t *testing.T) {
 
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
-	//if len(ctx.buildActionsCache) != 1 {
-	//	t.Errorf("build actions are not cached for the incremental module")
-	//}
+
+	ctx.buildActionsCache.flush()
+
 	cacheKey, hash := calculateHashKey(incInfo, [][]proptools.Hash{barInfo.providerInitialValueHashes})
 	cache, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, &cacheKey)
 	if err != nil {
@@ -1770,7 +1773,7 @@ func TestRestoreBuildActions(t *testing.T) {
 	}
 }
 
-func TestGlobChangeNotRestoreBuildActions(t *testing.T) {
+func TestGlobChangeRestoreBuildActions(t *testing.T) {
 	ctx := incrementalSetup(t)
 	incrementalSetupForRestore(ctx, nil)
 	// Now change the file system to make the old glob result invalid.
@@ -1895,6 +1898,8 @@ func TestOrderOnlyStringsCaching(t *testing.T) {
 	w := newNinjaWriter(buf)
 	ctx.writeAllModuleActions(w, true, "test.ninja")
 
+	ctx.buildActionsCache.flush()
+
 	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
 
 	// Verify dedup-d479e9a8133ff998 is written to the common ninja file.
@@ -1925,6 +1930,8 @@ func TestOrderOnlyStringsRestoring(t *testing.T) {
 	buf := bytes.NewBuffer(nil)
 	w := newNinjaWriter(buf)
 	ctx.writeAllModuleActions(w, true, "test.ninja")
+
+	ctx.buildActionsCache.flush()
 
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
@@ -1982,6 +1989,8 @@ func TestOrderOnlyStringsValidWhenOnlyRestoredModuleUseIt(t *testing.T) {
 	w := newNinjaWriter(buf)
 	ctx.writeAllModuleActions(w, true, "test.ninja")
 
+	ctx.buildActionsCache.flush()
+
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
 
@@ -2034,9 +2043,6 @@ func TestCachedModuleRemoved(t *testing.T) {
 	if len(ctx.orderOnlyStringsCache) != 0 {
 		t.Errorf("Phony target should not be cached: %s", buf.String())
 	}
-	//if len(ctx.buildActionsCache) != 0 {
-	//	t.Errorf("No module should be cached: %v", ctx.buildActionsCache)
-	//}
 }
 
 // This tests the scenario where one restored module and two non-restored modules
@@ -2066,6 +2072,8 @@ func TestSharedOrderOnlyStringsRestoringNoDuplicates(t *testing.T) {
 	buf := bytes.NewBuffer(nil)
 	w := newNinjaWriter(buf)
 	ctx.writeAllModuleActions(w, true, "test.ninja")
+
+	ctx.buildActionsCache.flush()
 
 	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
 	verifyBuildDefsShouldContain(t, fooInfo, phony)
