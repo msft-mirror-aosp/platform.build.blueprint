@@ -3682,7 +3682,9 @@ func (c *Context) restoreSingleton(info *singletonInfo) {
 	if incrementalRestored {
 		info.incrementalRestored = true
 		info.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+		info.hasUnrestoredProvider = make([]bool, len(providerRegistry))
 		for _, provider := range data.ProviderHashes {
+			info.hasUnrestoredProvider[provider.Id.id] = true
 			info.providerInitialValueHashes[provider.Id.id] = provider.Hash
 		}
 	}

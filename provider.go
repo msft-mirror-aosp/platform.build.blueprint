@@ -291,11 +291,11 @@ func maybeRestoreProviders(c *Context, m *commonIncrementalInfo, provider *provi
 		return
 	}
 
-	if m.incrementalRestored && (m.hasUnrestoredProvider == nil || m.hasUnrestoredProvider[provider.id]) {
+	if m.incrementalRestored && m.hasUnrestoredProvider[provider.id] {
 		func() {
 			m.providerRestoreLock.Lock()
 			defer m.providerRestoreLock.Unlock()
-			if m.hasUnrestoredProvider == nil || m.hasUnrestoredProvider[provider.id] {
+			if m.hasUnrestoredProvider[provider.id] {
 				p, err := c.buildActionsCache.readProvider(c.EncContext, m.providerInitialValueHashes[provider.id], provider)
 				if err != nil {
 					panic(err)
@@ -309,9 +309,7 @@ func maybeRestoreProviders(c *Context, m *commonIncrementalInfo, provider *provi
 				if p.Value != nil {
 					m.providers[provider.id] = p.Value
 				}
-				if m.hasUnrestoredProvider != nil {
-					m.hasUnrestoredProvider[provider.id] = false
-				}
+				m.hasUnrestoredProvider[provider.id] = false
 			}
 		}()
 	}
