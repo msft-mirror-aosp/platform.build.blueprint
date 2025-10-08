@@ -3582,7 +3582,7 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 		// An edge case where a coding change removes a provider dependency is safely handled
 		// because any detected code change automatically invalidates the entire global cache,
 		// ensuring system consistency.
-		if info.buildActionCacheKey != nil && !info.incrementalRestored && len(sctx.depProviders) > 0 {
+		if info.buildActionCacheKey != nil && !info.incrementalRestored {
 			cache := make(map[int]proptools.Hash)
 			for k, _ := range sctx.depProviders {
 				// A singleton might depend on both module providers and singleton providers, and
@@ -3666,9 +3666,7 @@ func (c *Context) restoreSingleton(info *singletonInfo) {
 	// This logic here assumes a singleton's behavior is a pure function of its providers.
 	// Conditional access to certain providers must also be based on other provider
 	// values, ensuring that any behavioral change is captured by the input providers hashes.
-	// When a incremental doesn't have any cached provider, it means the input of the singleton
-	// was not captured or it doesn't depend on any input, so we always run it.
-	info.incrementalRestored = len(data.DependencyProviderHashes) != 0
+	incrementalRestored := true
 	for k, v := range data.DependencyProviderHashes {
 		var hash proptools.Hash
 		if providerRegistry[k].mutator == singletonTag {
@@ -3677,11 +3675,12 @@ func (c *Context) restoreSingleton(info *singletonInfo) {
 			hash = c.providerValueHashes[k]
 		}
 		if hash != v {
-			info.incrementalRestored = false
+			incrementalRestored = false
 			break
 		}
 	}
-	if info.incrementalRestored {
+	if incrementalRestored {
+		info.incrementalRestored = true
 		info.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
 		for _, provider := range data.ProviderHashes {
 			info.providerInitialValueHashes[provider.Id.id] = provider.Hash
@@ -3807,9 +3806,11 @@ func (c *Context) generateSingletonBuildActions(config interface{},
 					var providerHashes []proptools.Hash
 					if providerRegistry[i].mutator == singletonTag {
 						c.VisitAllSingletons(func(s SingletonProxy) {
+							hash := proptools.ZeroHash
 							if s.singleton.providerInitialValueHashes != nil {
-								providerHashes = append(providerHashes, s.singleton.providerInitialValueHashes[i])
+								hash = s.singleton.providerInitialValueHashes[i]
 							}
+							providerHashes = append(providerHashes, hash)
 						})
 					}
 					var err error

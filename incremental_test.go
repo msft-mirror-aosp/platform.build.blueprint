@@ -673,9 +673,12 @@ func sequentialSingletonFactory() Singleton {
 	return &sequentialSingleton{}
 }
 
-type parallelSingleton struct{}
+type parallelSingleton struct {
+	GenerateBuildActionsCalled int
+}
 
 func (s *parallelSingleton) GenerateBuildActions(ctx SingletonContext) {
+	s.GenerateBuildActionsCalled++
 	var values []string
 	ctx.VisitAllModuleProxies(func(module ModuleProxy) {
 		if info, ok := ctx.ModuleProvider(module, IncrementalTestProviderKey); ok {
@@ -693,6 +696,23 @@ func (s *parallelSingleton) IncrementalSupported() bool {
 	return true
 }
 
+type noProviderParallelSingleton struct {
+	GenerateBuildActionsCalled int
+}
+
+func (s *noProviderParallelSingleton) GenerateBuildActions(ctx SingletonContext) {
+	s.GenerateBuildActionsCalled++
+}
+
+func noProviderParallelSingletonFactory() Singleton {
+	return &noProviderParallelSingleton{}
+}
+
+func (s *noProviderParallelSingleton) IncrementalSupported() bool {
+	return true
+}
+
+const noProviderParallelSingletonName = "no_provider_parallel_singleton"
 const parallelSingletonName = "parallel_singleton"
 const sequentialSingletonName = "sequential_singleton"
 
@@ -710,6 +730,7 @@ func singletonCacheSetup(t *testing.T, modifiers ...func(bp string) string) *Con
 
 	ctx := bpSetup(t, bp)
 	ctx.RegisterSingletonType(parallelSingletonName, parallelSingletonFactory, true)
+	ctx.RegisterSingletonType(noProviderParallelSingletonName, noProviderParallelSingletonFactory, true)
 	ctx.RegisterSingletonType(sequentialSingletonName, sequentialSingletonFactory, false)
 
 	cache := &BuildActionCache{}
@@ -807,12 +828,27 @@ func TestSingletonRestore(t *testing.T) {
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
+
 	seqSingletonInfo := ctx.singletonByName(sequentialSingletonName)
 	seqSingleton := seqSingletonInfo.singleton.(*sequentialSingleton)
 
+	parallelSingletonInfo := ctx.singletonByName(parallelSingletonName)
+	parallelSingleton := parallelSingletonInfo.singleton.(*parallelSingleton)
+
+	noProviderSingletonInfo := ctx.singletonByName(noProviderParallelSingletonName)
+	noProviderSingleton := noProviderSingletonInfo.singleton.(*noProviderParallelSingleton)
+
 	// 1. Verify GenerateBuildActions was not called
 	if seqSingleton.GenerateBuildActionsCalled != 0 {
-		t.Errorf("expected GenerateBuildActions to be not called, got %d", seqSingleton.GenerateBuildActionsCalled)
+		t.Errorf("expected sequentialSingleton GenerateBuildActions to be not called, got %d", seqSingleton.GenerateBuildActionsCalled)
+	}
+
+	if parallelSingleton.GenerateBuildActionsCalled != 0 {
+		t.Errorf("expected parallelSingleton GenerateBuildActions to be not called, got %d", parallelSingleton.GenerateBuildActionsCalled)
+	}
+
+	if noProviderSingleton.GenerateBuildActionsCalled != 0 {
+		t.Errorf("expected noProviderParallelSingleton GenerateBuildActions to be not called, got %d", noProviderSingleton.GenerateBuildActionsCalled)
 	}
 
 	// 2. Verify that the provider is set correctly for the singleton
@@ -876,8 +912,22 @@ func TestSingletonNotRestoreForSingletonChange(t *testing.T) {
 	seqSingletonInfo := ctx.singletonByName(sequentialSingletonName)
 	seqSingleton := seqSingletonInfo.singleton.(*sequentialSingleton)
 
+	parallelSingletonInfo := ctx.singletonByName(parallelSingletonName)
+	parallelSingleton := parallelSingletonInfo.singleton.(*parallelSingleton)
+
+	noProviderSingletonInfo := ctx.singletonByName(noProviderParallelSingletonName)
+	noProviderSingleton := noProviderSingletonInfo.singleton.(*noProviderParallelSingleton)
+
 	// 1. Verify GenerateBuildActions was called
 	if seqSingleton.GenerateBuildActionsCalled != 1 {
-		t.Errorf("expected GenerateBuildActions to be called, got %d", seqSingleton.GenerateBuildActionsCalled)
+		t.Errorf("expected sequentialSingleton GenerateBuildActions to be called, got %d", seqSingleton.GenerateBuildActionsCalled)
+	}
+
+	if parallelSingleton.GenerateBuildActionsCalled != 1 {
+		t.Errorf("expected parallelSingleton GenerateBuildActions to be called, got %d", parallelSingleton.GenerateBuildActionsCalled)
+	}
+
+	if noProviderSingleton.GenerateBuildActionsCalled != 0 {
+		t.Errorf("expected noProviderParallelSingleton GenerateBuildActions to be not called, got %d", noProviderSingleton.GenerateBuildActionsCalled)
 	}
 }
