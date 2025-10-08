@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/blueprint/bpmodify"
 	"github.com/google/blueprint/proptools"
 )
 
@@ -675,7 +676,13 @@ func sequentialSingletonFactory() Singleton {
 type parallelSingleton struct{}
 
 func (s *parallelSingleton) GenerateBuildActions(ctx SingletonContext) {
-	ctx.SetSingletonProvider(singletonTestInfoProvider, IncrementalTestInfo{Value: parallelSingletonName})
+	var values []string
+	ctx.VisitAllModuleProxies(func(module ModuleProxy) {
+		if info, ok := ctx.ModuleProvider(module, IncrementalTestProviderKey); ok {
+			values = append(values, info.(IncrementalTestInfo).Value)
+		}
+	})
+	ctx.SetSingletonProvider(singletonTestInfoProvider, IncrementalTestInfo{Value: strings.Join(values, ",")})
 }
 
 func parallelSingletonFactory() Singleton {
@@ -686,17 +693,21 @@ func (s *parallelSingleton) IncrementalSupported() bool {
 	return true
 }
 
-var parallelSingletonName = "parallel_singleton"
-
+const parallelSingletonName = "parallel_singleton"
 const sequentialSingletonName = "sequential_singleton"
 
-func singletonCacheSetup(t *testing.T) *Context {
+func singletonCacheSetup(t *testing.T, modifiers ...func(bp string) string) *Context {
 	bp := `
 			foo_module {
 					name: "MyFooModule",
 					outputs: ["MyFooModule_phony_output"],
 			}
 		`
+
+	for _, m := range modifiers {
+		bp = m(bp)
+	}
+
 	ctx := bpSetup(t, bp)
 	ctx.RegisterSingletonType(parallelSingletonName, parallelSingletonFactory, true)
 	ctx.RegisterSingletonType(sequentialSingletonName, sequentialSingletonFactory, false)
@@ -839,6 +850,24 @@ func TestSingletonRestore(t *testing.T) {
 	}
 }
 
+func changeModuleName(from, to string) func(string) string {
+	return func(bp string) string {
+		m, err := bpmodify.NewBlueprint("Android.bp", []byte(bp))
+		if err != nil {
+			panic(err)
+		}
+		name, err := m.ModulesByName(from).GetProperty("name")
+		if err != nil {
+			panic(err)
+		}
+		err = name.SetString(to)
+		if err != nil {
+			panic(err)
+		}
+		return m.String()
+	}
+}
+
 func TestSingletonNotRestoreForSingletonChange(t *testing.T) {
 	ctx := singletonCacheSetup(t)
 	_, errs := ctx.PrepareBuildActions(nil)
@@ -869,8 +898,7 @@ func TestSingletonNotRestoreForSingletonChange(t *testing.T) {
 	}
 
 	// Now simulate an incremental build
-	parallelSingletonName = parallelSingletonName + "_New"
-	ctx = singletonCacheSetup(t)
+	ctx = singletonCacheSetup(t, changeModuleName("MyFooModule", "changed"))
 	ctx.buildActionsCache.writeSingletonBuildAction(ctx.EncContext, cacheKey, data)
 	ctx.buildActionsCache.writeNinjaStatements(cacheKey, ninja)
 	ctx.buildActionsCache.writeProvider(ctx.EncContext, seqSingletonProviderHash, provider)
