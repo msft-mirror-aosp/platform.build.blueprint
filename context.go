@@ -3641,43 +3641,50 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 
 func (c *Context) restoreSingleton(info *singletonInfo) {
 	info.incrementalSupported = c.GetIncrementalEnabled() && info.singleton.IncrementalSupported()
-	if info.incrementalSupported {
-		info.buildActionCacheKey = &BuildActionCacheKey{
-			Id: info.name,
+	if !info.incrementalSupported {
+		return
+	}
+
+	info.buildActionCacheKey = &BuildActionCacheKey{
+		Id: info.name,
+	}
+
+	// We can pursue a incremental analysis because there is no soong coding change, no
+	// product config and env variable changes.
+	if !c.GetIncrementalAnalysis() {
+		return
+	}
+
+	data, err := c.buildActionsCache.readSingletonBuildAction(c.EncContext, info.buildActionCacheKey)
+	if err != nil {
+		panic(err)
+	}
+	if data == nil {
+		return
+	}
+
+	// This logic here assumes a singleton's behavior is a pure function of its providers.
+	// Conditional access to certain providers must also be based on other provider
+	// values, ensuring that any behavioral change is captured by the input providers hashes.
+	// When a incremental doesn't have any cached provider, it means the input of the singleton
+	// was not captured or it doesn't depend on any input, so we always run it.
+	info.incrementalRestored = len(data.DependencyProviderHashes) != 0
+	for k, v := range data.DependencyProviderHashes {
+		var hash proptools.Hash
+		if providerRegistry[k].mutator == singletonTag {
+			hash = info.providerValueHashes[k]
+		} else {
+			hash = c.providerValueHashes[k]
 		}
-		// We can pursue a incremental analysis because there is no soong coding change, no
-		// product config and env variable changes.
-		if c.GetIncrementalAnalysis() {
-			data, err := c.buildActionsCache.readSingletonBuildAction(c.EncContext, info.buildActionCacheKey)
-			if err != nil {
-				panic(err)
-			}
-			if data != nil {
-				// This logic here assumes a singleton's behavior is a pure function of its providers.
-				// Conditional access to certain providers must also be based on other provider
-				// values, ensuring that any behavioral change is captured by the input providers hashes.
-				// When a incremental doesn't have any cached provider, it means the input of the singleton
-				// was not captured or it doesn't depend on any input, so we always run it.
-				info.incrementalRestored = len(data.DependencyProviderHashes) != 0
-				for k, v := range data.DependencyProviderHashes {
-					var hash proptools.Hash
-					if providerRegistry[k].mutator == singletonTag {
-						hash = info.providerValueHashes[k]
-					} else {
-						hash = c.providerValueHashes[k]
-					}
-					if hash != v {
-						info.incrementalRestored = false
-						break
-					}
-				}
-				if info.incrementalRestored {
-					info.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
-					for _, provider := range data.ProviderHashes {
-						info.providerInitialValueHashes[provider.Id.id] = provider.Hash
-					}
-				}
-			}
+		if hash != v {
+			info.incrementalRestored = false
+			break
+		}
+	}
+	if info.incrementalRestored {
+		info.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+		for _, provider := range data.ProviderHashes {
+			info.providerInitialValueHashes[provider.Id.id] = provider.Hash
 		}
 	}
 }
