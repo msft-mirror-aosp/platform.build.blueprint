@@ -719,7 +719,7 @@ func TestSingletonCache(t *testing.T) {
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	seqSingleton := ctx.singletonInfo[1].singleton.(*sequentialSingleton)
+	seqSingleton := ctx.singletonByName(sequentialSingletonName).singleton.(*sequentialSingleton)
 
 	// 1. Verify GenerateBuildActions was called
 	if seqSingleton.GenerateBuildActionsCalled != 1 {
@@ -739,7 +739,7 @@ func TestSingletonCache(t *testing.T) {
 	}
 
 	// 3. Verify providers were cached
-	seqSingletonProviderHash := ctx.singletonInfo[1].providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
+	seqSingletonProviderHash := ctx.singletonByName(sequentialSingletonName).providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
 
 	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, seqSingletonProviderHash, &singletonTestInfoProvider.providerKey)
 	if err != nil {
@@ -796,7 +796,7 @@ func TestSingletonRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read ninja statements: %v", err)
 	}
-	seqSingletonProviderHash := ctx.singletonInfo[1].providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
+	seqSingletonProviderHash := ctx.singletonByName(sequentialSingletonName).providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
 	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, seqSingletonProviderHash, &singletonTestInfoProvider.providerKey)
 	if err != nil {
 		t.Fatalf("failed to read provider: %v", err)
@@ -814,7 +814,7 @@ func TestSingletonRestore(t *testing.T) {
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	seqSingletonInfo := ctx.singletonInfo[1]
+	seqSingletonInfo := ctx.singletonByName(sequentialSingletonName)
 	seqSingleton := seqSingletonInfo.singleton.(*sequentialSingleton)
 
 	// 1. Verify GenerateBuildActions was not called
@@ -862,7 +862,7 @@ func TestSingletonNotRestoreForSingletonChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read ninja statements: %v", err)
 	}
-	seqSingletonProviderHash := ctx.singletonInfo[1].providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
+	seqSingletonProviderHash := ctx.singletonByName(sequentialSingletonName).providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
 	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, seqSingletonProviderHash, &singletonTestInfoProvider.providerKey)
 	if err != nil {
 		t.Fatalf("failed to read provider: %v", err)
@@ -881,7 +881,7 @@ func TestSingletonNotRestoreForSingletonChange(t *testing.T) {
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	seqSingletonInfo := ctx.singletonInfo[1]
+	seqSingletonInfo := ctx.singletonByName(sequentialSingletonName)
 	seqSingleton := seqSingletonInfo.singleton.(*sequentialSingleton)
 
 	// 1. Verify GenerateBuildActions was called

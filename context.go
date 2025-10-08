@@ -4600,6 +4600,15 @@ func (c *Context) SingletonName(singleton Singleton) string {
 	return ""
 }
 
+func (c *Context) singletonByName(name string) *singletonInfo {
+	for _, s := range c.singletonInfo {
+		if s.name == name {
+			return s
+		}
+	}
+	return nil
+}
+
 // Checks that the hashes of all the providers match the hashes from when they were first set.
 // Does nothing on success, returns a list of errors otherwise. It's recommended to run this
 // in a goroutine.
