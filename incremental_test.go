@@ -798,28 +798,10 @@ func TestSingletonRestore(t *testing.T) {
 
 	ctx.buildActionsCache.flush()
 
-	cacheKey := &BuildActionCacheKey{Id: sequentialSingletonName}
-	data, err := ctx.buildActionsCache.readSingletonBuildAction(ctx.EncContext, cacheKey)
-	if err != nil {
-		t.Fatalf("failed to read cache: %v", err)
-	}
-	ninja, err := ctx.buildActionsCache.readNinjaStatements(cacheKey)
-	if err != nil {
-		t.Fatalf("failed to read ninja statements: %v", err)
-	}
-	seqSingletonProviderHash := ctx.singletonByName(sequentialSingletonName).providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
-	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, seqSingletonProviderHash, &singletonTestInfoProvider.providerKey)
-	if err != nil {
-		t.Fatalf("failed to read provider: %v", err)
-	}
-
 	// Now simulate an incremental build
+	oldCache := ctx.buildActionsCache
 	ctx = singletonCacheSetup(t)
-	ctx.buildActionsCache.writeSingletonBuildAction(ctx.EncContext, cacheKey, data)
-	ctx.buildActionsCache.writeNinjaStatements(cacheKey, ninja)
-	ctx.buildActionsCache.writeProvider(ctx.EncContext, seqSingletonProviderHash, provider)
-
-	ctx.buildActionsCache.flush()
+	ctx.buildActionsCache = oldCache
 
 	_, errs = ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
@@ -882,28 +864,10 @@ func TestSingletonNotRestoreForSingletonChange(t *testing.T) {
 
 	ctx.buildActionsCache.flush()
 
-	cacheKey := &BuildActionCacheKey{Id: sequentialSingletonName}
-	data, err := ctx.buildActionsCache.readSingletonBuildAction(ctx.EncContext, cacheKey)
-	if err != nil {
-		t.Fatalf("failed to read cache: %v", err)
-	}
-	ninja, err := ctx.buildActionsCache.readNinjaStatements(cacheKey)
-	if err != nil {
-		t.Fatalf("failed to read ninja statements: %v", err)
-	}
-	seqSingletonProviderHash := ctx.singletonByName(sequentialSingletonName).providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
-	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, seqSingletonProviderHash, &singletonTestInfoProvider.providerKey)
-	if err != nil {
-		t.Fatalf("failed to read provider: %v", err)
-	}
-
 	// Now simulate an incremental build
+	oldCache := ctx.buildActionsCache
 	ctx = singletonCacheSetup(t, changeModuleName("MyFooModule", "changed"))
-	ctx.buildActionsCache.writeSingletonBuildAction(ctx.EncContext, cacheKey, data)
-	ctx.buildActionsCache.writeNinjaStatements(cacheKey, ninja)
-	ctx.buildActionsCache.writeProvider(ctx.EncContext, seqSingletonProviderHash, provider)
-
-	ctx.buildActionsCache.flush()
+	ctx.buildActionsCache = oldCache
 
 	_, errs = ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
