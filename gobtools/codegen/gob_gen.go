@@ -593,15 +593,14 @@ func main() {
 
 	g := newGobGen()
 	curDir, _ := os.Getwd()
-	parts := strings.Split(curDir, blueprintPkgPath)
-	if len(parts) < 2 {
-		parts = strings.Split(curDir, soongPkgPath)
-	}
-	if len(parts) < 2 {
+	if *verify {
 		// verify mode, the current directory is the base of the source tree.
 		g.sourceDir = curDir
 	} else {
-		g.sourceDir = parts[0]
+		var err error
+		if g.sourceDir, err = getTop(curDir); err != nil {
+			panic(err)
+		}
 	}
 
 	for _, s := range sources {
@@ -637,6 +636,37 @@ func main() {
 			}
 		}
 	}
+}
+
+// getTop finds the root of the source tree.
+// It mimics the behavior of the build/make/envsetup.sh.
+func getTop(curDir string) (string, error) {
+	const topFile = "build/make/core/envsetup.mk"
+
+	// Start searching from the current directory.
+	dir := curDir
+	for {
+		// Check for the existence of the marker file in the current directory.
+		pathToCheck := filepath.Join(dir, topFile)
+		if info, err := os.Stat(pathToCheck); err == nil && !info.IsDir() {
+			// Found it. Resolve symlinks and return the path.
+			return filepath.EvalSymlinks(dir)
+		}
+
+		// Get the parent directory.
+		parentDir := filepath.Dir(dir)
+
+		// If the parent is the same as the current directory, we've hit the root.
+		if parentDir == dir {
+			break
+		}
+
+		// Move up to the parent directory for the next iteration.
+		dir = parentDir
+	}
+
+	// If the loop completes without finding the file, report error.
+	panic(fmt.Errorf("failed to find the root of the source tree: %s", curDir))
 }
 
 func (g *gobGen) findPackagePath(pkgName string) string {
