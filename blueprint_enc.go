@@ -8,6 +8,119 @@ import (
 	"github.com/google/blueprint/proptools"
 )
 
+// begin of context.go
+func init() {
+	globResultCacheGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(globResultCache) })
+	VariationGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Variation) })
+}
+
+func (r globResultCache) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.Pattern); err != nil {
+		return err
+	}
+
+	if r.Excludes == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r.Excludes)); err != nil {
+			return err
+		}
+		for val1 := 0; val1 < len(r.Excludes); val1++ {
+			if err = gobtools.EncodeString(buf, r.Excludes[val1]); err != nil {
+				return err
+			}
+		}
+	}
+
+	for val2 := 0; val2 < len(r.Result); val2++ {
+		if err = gobtools.EncodeUint64(buf, r.Result[val2]); err != nil {
+			return err
+		}
+	}
+	return err
+}
+
+func (r *globResultCache) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.Pattern)
+	if err != nil {
+		return err
+	}
+
+	var val3 int
+	err = gobtools.DecodeInt(buf, &val3)
+	if err != nil {
+		return err
+	}
+	if val3 != -1 {
+		r.Excludes = make([]string, val3)
+		for val4 := 0; val4 < int(val3); val4++ {
+			err = gobtools.DecodeString(buf, &r.Excludes[val4])
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	for val8 := 0; val8 < len(r.Result); val8++ {
+		err = gobtools.DecodeUint64(buf, &r.Result[val8])
+		if err != nil {
+			return err
+		}
+	}
+
+	return err
+}
+
+var globResultCacheGobRegId int16
+
+func (r globResultCache) GetTypeId() int16 {
+	return globResultCacheGobRegId
+}
+
+func (r Variation) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.Mutator); err != nil {
+		return err
+	}
+
+	if err = gobtools.EncodeString(buf, r.Variation); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r *Variation) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.Mutator)
+	if err != nil {
+		return err
+	}
+
+	err = gobtools.DecodeString(buf, &r.Variation)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var VariationGobRegId int16
+
+func (r Variation) GetTypeId() int16 {
+	return VariationGobRegId
+}
+
+// end of context.go
+
+// begin of incremental.go
 func init() {
 	BuildActionCacheKeyGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(BuildActionCacheKey) })
 	CachedProviderGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(CachedProvider) })
@@ -431,3 +544,56 @@ var OrderOnlyStringsCacheGobRegId int16
 func (r OrderOnlyStringsCache) GetTypeId() int16 {
 	return OrderOnlyStringsCacheGobRegId
 }
+
+// end of incremental.go
+
+// begin of provider.go
+func init() {
+	providerKeyGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(providerKey) })
+}
+
+func (r providerKey) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeInt(buf, r.id); err != nil {
+		return err
+	}
+
+	if err = gobtools.EncodeString(buf, r.typ); err != nil {
+		return err
+	}
+
+	if err = gobtools.EncodeString(buf, r.mutator); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r *providerKey) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeInt(buf, &r.id)
+	if err != nil {
+		return err
+	}
+
+	err = gobtools.DecodeString(buf, &r.typ)
+	if err != nil {
+		return err
+	}
+
+	err = gobtools.DecodeString(buf, &r.mutator)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var providerKeyGobRegId int16
+
+func (r providerKey) GetTypeId() int16 {
+	return providerKeyGobRegId
+}
+
+// end of provider.go

@@ -214,11 +214,15 @@ func TestGenerate(t *testing.T) {
 	g.sourceDir = parts[0]
 
 	sourceFile := "gob_test_data.go"
-	expectedOutputFile := "gob_test_data_gob_enc.go"
+	expectedOutputFile := "main_enc.go"
 
-	generatedBytes, err := g.generate(sourceFile)
+	generatedBytes, outputFile, err := g.generate(sourceFile, nil, false)
 	if err != nil {
 		t.Fatalf("g.generate() failed for %s: %v", sourceFile, err)
+	}
+
+	if outputFile != expectedOutputFile {
+		t.Fatalf("output file is different from the expected: %s %s", outputFile, expectedOutputFile)
 	}
 
 	expectedBytes, err := os.ReadFile(expectedOutputFile)

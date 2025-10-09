@@ -9,6 +9,7 @@ import (
 	"github.com/google/blueprint/uniquelist"
 )
 
+// begin of gob_test_data.go
 func init() {
 	TestStructGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(TestStruct) })
 	TestEchoGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(TestEcho) })
@@ -1195,3 +1196,5 @@ var TestPtrsGobRegId int16
 func (r TestPtrs) GetTypeId() int16 {
 	return TestPtrsGobRegId
 }
+
+// end of gob_test_data.go
