@@ -3464,7 +3464,7 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				return true
 			}
 
-			if module.missingDeps != nil && !mctx.handledMissingDeps {
+			if module.missingDeps != nil && !mctx.handledMissingDeps && !module.incrementalRestored {
 				var errs []error
 				for _, depName := range module.missingDeps {
 					errs = append(errs, c.missingDependencyError(module, depName))
