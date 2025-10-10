@@ -521,6 +521,60 @@ func TestIsAddingDependency(t *testing.T) {
 	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "B", "b1"), "C(c2)")
 }
 
+// Create an on demand variant of a leaf node (no dependencies of its own)
+// The transition mutator will split `C` into `C(a1)`
+// In a subsequent mutator, `B` and `B_other` will request `C(b1)`.
+func TestOnDemandDependendcyVariantLeafNode(t *testing.T) {
+	t.Parallel()
+	ctx, errs := testTransition(`
+		transition_module {
+			name: "A",
+			split: ["a1"],
+			post_transition_deps: ["C"],
+		}
+
+		transition_module {
+			name: "B",
+			split: ["b1"],
+			post_transition_deps: ["C"],
+		}
+		transition_module {
+			name: "B_other",
+			split: ["b1"],
+			post_transition_deps: ["C"],
+		}
+
+		transition_module {
+			name: "C",
+			split: ["a1"],
+			split_on_demand: ["b1", "d1"], // b1 has a rdep, d1 does not.
+		}
+	`)
+	assertNoErrors(t, errs)
+
+	checkTransitionVariants(t, ctx, "A", []string{"a1"})
+	checkTransitionVariants(t, ctx, "B", []string{"b1"})
+	checkTransitionVariants(t, ctx, "B_other", []string{"b1"})
+	checkTransitionVariants(t, ctx, "C", []string{"a1", "b1"}) // d1 is not created
+
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "A", "a1"), "C(a1)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "B", "b1"), "C(b1)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "B_other", "b1"), "C(b1)")
+}
+
+// TODO(b/448182009): Test that the previously completed mutators run on the on demand variant.
+func TestOnDemandDependencyVariantLeafNodeApplyMutations(t *testing.T) {
+}
+
+// TODO(b/448182009): Test on demand variant creation for non leaf nodes.
+// The transitive dependencies might also require on demand variants.
+func TestOnDemandDependencyVariantTransitiveDeps(t *testing.T) {
+}
+
+// TODO (b/448182009):
+func TestOnDemandDependencyVariantFromCoalesedMutatorGroup(t *testing.T) {
+}
+
 type transitionTestMutator struct{}
 
 func (transitionTestMutator) TransitionInfoFromVariation(s string) TransitionInfo {
@@ -535,6 +589,17 @@ func (t testTransitionInfo) Variation() string {
 
 func (transitionTestMutator) Split(ctx BaseModuleContext) []TransitionInfo {
 	if split := ctx.Module().(*transitionModule).properties.Split; len(split) > 0 {
+		var transitionInfos []TransitionInfo
+		for _, s := range split {
+			transitionInfos = append(transitionInfos, testTransitionInfo(s))
+		}
+		return transitionInfos
+	}
+	return []TransitionInfo{testTransitionInfo("")}
+}
+
+func (transitionTestMutator) SplitOnDemand(ctx BaseModuleContext) []TransitionInfo {
+	if split := ctx.Module().(*transitionModule).properties.Split_on_demand; len(split) > 0 {
 		var transitionInfos []TransitionInfo
 		for _, s := range split {
 			transitionInfos = append(transitionInfos, testTransitionInfo(s))
@@ -585,6 +650,7 @@ type transitionModule struct {
 		Post_transition_reverse_deps           []string
 		Post_transition_reverse_variation_deps []string
 		Split                                  []string
+		Split_on_demand                        []string
 		Outgoing                               *string
 		Incoming                               *string
 		Post_transition_incoming               *string
