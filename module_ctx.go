@@ -737,9 +737,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 	// code changes.
 	incrementalAnalysis := false
 	var cacheKey *BuildActionCacheKey = nil
-	if im, ok := m.module.logicModule.(Incremental); ok {
-		m.module.incrementalSupported = im.IncrementalSupported()
-	}
+	m.module.incrementalSupported = incrementalSupported(m.module)
 
 	// Whether the incremental flag is set and the module type supports
 	// incremental, this will decide weather to cache the data for the module.
@@ -840,6 +838,14 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 	}
 
 	return m.module.incrementalRestored
+}
+
+func incrementalSupported(m *moduleInfo) bool {
+	if im, ok := m.logicModule.(Incremental); ok {
+		return im.IncrementalSupported()
+	}
+
+	return true
 }
 
 type depProviders struct {
