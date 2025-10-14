@@ -4,6 +4,7 @@ bootstrap_go_package {
         "blueprint",
         "blueprint-depset",
         "blueprint-deptools",
+        "blueprint-gobtools",
         "blueprint-pathtools",
         "blueprint-proptools",
         "blueprint-bootstrap-bpdoc",
@@ -11,6 +12,7 @@ bootstrap_go_package {
     pkgPath: "github.com/google/blueprint/bootstrap",
     srcs: [
         "bootstrap.go",
+        "bootstrap_enc.go",
         "command.go",
         "config.go",
         "writedocs.go",

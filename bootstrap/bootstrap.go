@@ -27,6 +27,8 @@ import (
 	"github.com/google/blueprint/proptools"
 )
 
+//go:generate go run ../../blueprint/gobtools/codegen/gob_gen.go
+
 var (
 	pctx = blueprint.NewPackageContext("github.com/google/blueprint/bootstrap")
 
@@ -249,6 +251,7 @@ func BootstrapDeps(ctx blueprint.BottomUpMutatorContext) {
 	}
 }
 
+// @auto-generate: gob
 type PackageInfo struct {
 	PkgPath       string
 	PkgRoot       string
@@ -261,6 +264,7 @@ type PackageInfo struct {
 
 var PackageProvider = blueprint.NewProvider[*PackageInfo]()
 
+// @auto-generate: gob
 type BinaryInfo struct {
 	IntermediatePath string
 	InstallPath      string
