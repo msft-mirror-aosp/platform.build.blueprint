@@ -419,8 +419,19 @@ func (t *transitionMutatorImpl) transition(mctx BaseModuleContext) Transition {
 	}
 }
 
+type onDemandVariationTransitionInfo string
+
+func (v onDemandVariationTransitionInfo) Variation() string {
+	return string(v)
+}
+
 func (t *transitionMutatorImpl) bottomUpMutator(mctx BottomUpMutatorContext) {
 	mc := mctx.(*mutatorContext)
+	// on demand variant.
+	if mc.module.createdOnDemand {
+		mc.context.setModuleTransitionInfo(mc.module, t, onDemandVariationTransitionInfo(mc.module.variant.variations.variations[t.name]))
+		return
+	}
 	// Fetch and clean up transition mutator state. No locking needed since the
 	// only time interaction between multiple modules is required is during the
 	// computation of the variations required by a given module.

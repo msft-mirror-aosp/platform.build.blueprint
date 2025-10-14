@@ -526,7 +526,7 @@ func TestIsAddingDependency(t *testing.T) {
 // In a subsequent mutator, `B` and `B_other` will request `C(b1)`.
 func TestOnDemandDependendcyVariantLeafNode(t *testing.T) {
 	t.Parallel()
-	ctx, errs := testTransition(`
+	ctx, errs := testTransitionCommon(`
 		transition_module {
 			name: "A",
 			split: ["a1"],
@@ -549,7 +549,16 @@ func TestOnDemandDependendcyVariantLeafNode(t *testing.T) {
 			split: ["a1"],
 			split_on_demand: ["b1", "d1"], // b1 has a rdep, d1 does not.
 		}
-	`)
+	`,
+		false,
+		func(ctx *Context) {
+			// Add a mutator that runs after transition mutator, and mutates the properties of transition_module.
+			ctx.RegisterBottomUpMutator("post_transition_bottom_up", func(mctx BottomUpMutatorContext) {
+				if m, ok := mctx.Module().(*transitionModule); ok {
+					m.properties.Mutated += "_post_transition_bottom_up"
+				}
+			})
+		})
 	assertNoErrors(t, errs)
 
 	checkTransitionVariants(t, ctx, "A", []string{"a1"})
@@ -560,10 +569,10 @@ func TestOnDemandDependendcyVariantLeafNode(t *testing.T) {
 	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "A", "a1"), "C(a1)")
 	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "B", "b1"), "C(b1)")
 	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "B_other", "b1"), "C(b1)")
-}
 
-// TODO(b/448182009): Test that the previously completed mutators run on the on demand variant.
-func TestOnDemandDependencyVariantLeafNodeApplyMutations(t *testing.T) {
+	// check that the on demand variant has been mutated.
+	checkTransitionMutate(t, getTransitionModule(ctx, "C", "a1"), "a1_post_transition_bottom_up")
+	checkTransitionMutate(t, getTransitionModule(ctx, "C", "b1"), "b1_post_transition_bottom_up")
 }
 
 // TODO(b/448182009): Test on demand variant creation for non leaf nodes.

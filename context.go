@@ -430,8 +430,7 @@ func (group *moduleGroup) supportsOnDemandVariant(onDemandVariants variationMap,
 // createVariantOnDemand uses group.coreModuleInfo to create a new on demand variant.
 // locking is not necessary since it does not mutate the global state by modifying moduleGroup.
 // `runMutator` will be responsible for creating the dependency edges to this on demand variant.
-// TODO (b/448182009): Run the previously completed mutators on this "core" variant.
-func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants variationMap) *moduleInfo {
+func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants variationMap, currentMutatorIndex int) *moduleInfo {
 	if len(onDemandVariants.variations) > 1 {
 		panic("TODO(b/448182009): Support Variants on demand for 2 or more transition mutators.")
 	}
@@ -453,7 +452,42 @@ func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants var
 
 	newmodule.variant = newVariant(&group.coreModuleInfo, mutatorName, variantName)
 
+	c.rerunMutatorsOnVariantOnDemand(&newmodule, currentMutatorIndex)
+
 	return &newmodule
+}
+
+// Re-run the completed mutators on this newly created module.
+func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, currentMutatorIndex int) {
+	pause := func(dep *moduleInfo) {
+		if dep != nil {
+			panic("TODO (b/448182009): Add support for on demand variants of non leaf nodes.")
+		}
+	}
+	for index, mi := range c.mutatorInfo {
+		mctx := &mutatorContext{
+			baseModuleContext: baseModuleContext{
+				context: c,
+				module:  newmodule,
+			},
+			mutator:   mi,
+			pauseFunc: pause,
+		}
+		if mi.transitionPropagateMutator != nil {
+			mi.transitionPropagateMutator(mctx)
+		} else {
+			mctx.mutator = mi
+			mi.bottomUpMutator(mctx)
+		}
+		if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 {
+			panic("TODO (b/448182009): Add support for AddReverseDependency, ReplaceDependency, Rename")
+		}
+		// The module has been mutated till the current mutator.
+		// Do not mutate further.
+		if index == currentMutatorIndex {
+			break
+		}
+	}
 }
 
 type moduleInfo struct {
@@ -2316,7 +2350,7 @@ func (c *Context) findVariant(config any, module *moduleInfo, depTag DependencyT
 	}
 
 	if foundDep == nil && possibleDeps.supportsOnDemandVariant(newVariant, far) {
-		foundDep = c.createVariantOnDemand(possibleDeps, newVariant)
+		foundDep = c.createVariantOnDemand(possibleDeps, newVariant, module.startedMutator)
 	}
 
 	return foundDep, newVariant, nil
