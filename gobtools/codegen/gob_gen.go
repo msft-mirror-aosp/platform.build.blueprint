@@ -302,6 +302,22 @@ func (g *gobGen) generateEncodeForType(encodeBody *strings.Builder, pkgName stri
 			} else {
 				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.Encode(ctx, buf); err != nil { return err }\n", fieldName))
 			}
+		} else if typ, ok := t.X.(*ast.SelectorExpr); ok {
+			if pkg, ok := typ.X.(*ast.Ident); ok && pkg.Name == "unique" && typ.Sel.Name == "Handle" {
+				isZeroValue := g.nextVar()
+				typeRef := g.findTypeReference(t.Index, pkgName)
+				encodeBody.WriteString(fmt.Sprintf("\t %s := %s == unique.Handle[%s]{}\n", isZeroValue, fieldName, typeRef.fullName()))
+				g.maybeAddImport(typeRef)
+				encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeBool(buf, %s); err != nil { return err }\n", isZeroValue))
+				encodeBody.WriteString(fmt.Sprintf("\tif !%s {\n", isZeroValue))
+				encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeReference(ctx, %s, buf, func(v unique.Handle[%s], buf *bytes.Buffer) error {\n", fieldName, typeRef.fullName()))
+				encodeBody.WriteString(fmt.Sprintf("\treturn v.Value().Encode(ctx, buf)\n"))
+				encodeBody.WriteString(fmt.Sprintf("\t}); err != nil { return err }\n"))
+				encodeBody.WriteString(fmt.Sprintf("\t}\n"))
+				g.imports[`"unique"`] = true
+			} else {
+				encodeBody.WriteString(fmt.Sprintf("\tif err = %s.Encode(ctx, buf); err != nil { return err }\n", fieldName))
+			}
 		} else {
 			encodeBody.WriteString(fmt.Sprintf("\tif err = %s.Encode(ctx, buf); err != nil { return err }\n", fieldName))
 		}
@@ -468,6 +484,28 @@ func (g *gobGen) generateDecodeForType(decodeBody *strings.Builder, pkgName stri
 				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.DecodeString(ctx, buf); err != nil { return err }\n", fieldName))
 			} else if g.findType(typeRef) == Interface {
 				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.DecodeInterface(ctx, buf); err != nil { return err }\n", fieldName))
+			} else {
+				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.Decode(ctx, buf); err != nil { return err }\n", fieldName))
+			}
+		} else if typ, ok := t.X.(*ast.SelectorExpr); ok {
+			if pkg, ok := typ.X.(*ast.Ident); ok && pkg.Name == "unique" && typ.Sel.Name == "Handle" {
+				isZeroValue := g.nextVar()
+				decodeBody.WriteString(fmt.Sprintf("\tvar %s bool\n", isZeroValue))
+				decodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.DecodeBool(buf, &%s); err != nil { return err }\n", isZeroValue))
+				decodeBody.WriteString(fmt.Sprintf("\tif !%s {\n", isZeroValue))
+				typeRef := g.findTypeReference(t.Index, pkgName)
+				varName := g.nextVar()
+				decodeBody.WriteString(fmt.Sprintf("\ttmp, err := gobtools.DecodeReference(ctx, &%s, buf, func(value *unique.Handle[%s], buf *bytes.Reader) error {\n", fieldName, typeRef.fullName()))
+				decodeBody.WriteString(fmt.Sprintf("\tvar %s %s\n", varName, typeRef.fullName()))
+				g.maybeAddImport(typeRef)
+				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.Decode(ctx, buf); err != nil { return err }\n", varName))
+				decodeBody.WriteString(fmt.Sprintf("\t*value = unique.Make(%s)\n", varName))
+				decodeBody.WriteString(fmt.Sprintf("\treturn nil\n"))
+				decodeBody.WriteString(fmt.Sprintf("\t})\n"))
+				decodeBody.WriteString(fmt.Sprintf("\tif err != nil { return err }\n"))
+				decodeBody.WriteString(fmt.Sprintf("\t%s = *tmp\n", fieldName))
+				decodeBody.WriteString(fmt.Sprintf("\t}\n"))
+				g.imports[`"unique"`] = true
 			} else {
 				decodeBody.WriteString(fmt.Sprintf("\tif err = %s.Decode(ctx, buf); err != nil { return err }\n", fieldName))
 			}

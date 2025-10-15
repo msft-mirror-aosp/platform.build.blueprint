@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"unique"
 
 	"github.com/google/blueprint/depset"
 	"github.com/google/blueprint/gobtools"
@@ -71,8 +72,11 @@ type TestStruct struct {
 	f38 test.TypeBasic
 	f39 [2]uint64
 	f40 map[[1]string]map[int][]*bool
+	f41 unique.Handle[TestEcho]
+	f42 testEchoHandle
 }
 
+type testEchoHandle = unique.Handle[TestEcho]
 type testStrings []string
 
 // @auto-generate: gob

@@ -7,6 +7,7 @@ import (
 	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/gobtools/test"
 	"github.com/google/blueprint/uniquelist"
+	"unique"
 )
 
 // begin of gob_test_data.go
@@ -418,6 +419,30 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 					}
 				}
 			}
+		}
+	}
+
+	val31 := r.f41 == unique.Handle[TestEcho]{}
+	if err = gobtools.EncodeBool(buf, val31); err != nil {
+		return err
+	}
+	if !val31 {
+		if err = gobtools.EncodeReference(ctx, r.f41, buf, func(v unique.Handle[TestEcho], buf *bytes.Buffer) error {
+			return v.Value().Encode(ctx, buf)
+		}); err != nil {
+			return err
+		}
+	}
+
+	val32 := r.f42 == unique.Handle[TestEcho]{}
+	if err = gobtools.EncodeBool(buf, val32); err != nil {
+		return err
+	}
+	if !val32 {
+		if err = gobtools.EncodeReference(ctx, r.f42, buf, func(v unique.Handle[TestEcho], buf *bytes.Buffer) error {
+			return v.Value().Encode(ctx, buf)
+		}); err != nil {
+			return err
 		}
 	}
 	return err
@@ -876,6 +901,44 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 			}
 			r.f40[val112] = val113
 		}
+	}
+
+	var val129 bool
+	if err = gobtools.DecodeBool(buf, &val129); err != nil {
+		return err
+	}
+	if !val129 {
+		tmp, err := gobtools.DecodeReference(ctx, &r.f41, buf, func(value *unique.Handle[TestEcho], buf *bytes.Reader) error {
+			var val130 TestEcho
+			if err = val130.Decode(ctx, buf); err != nil {
+				return err
+			}
+			*value = unique.Make(val130)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		r.f41 = *tmp
+	}
+
+	var val133 bool
+	if err = gobtools.DecodeBool(buf, &val133); err != nil {
+		return err
+	}
+	if !val133 {
+		tmp, err := gobtools.DecodeReference(ctx, &r.f42, buf, func(value *unique.Handle[TestEcho], buf *bytes.Reader) error {
+			var val134 TestEcho
+			if err = val134.Decode(ctx, buf); err != nil {
+				return err
+			}
+			*value = unique.Make(val134)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		r.f42 = *tmp
 	}
 
 	return err

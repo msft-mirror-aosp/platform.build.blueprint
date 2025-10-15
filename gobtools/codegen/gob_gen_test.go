@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unique"
 
 	"github.com/google/blueprint/depset"
 	"github.com/google/blueprint/gobtools"
@@ -134,6 +135,8 @@ func TestEncDec(t *testing.T) {
 						1: {boolPtr(true)},
 					},
 				},
+				f41: unique.Make(TestEcho{"aaaaaa"}),
+				f42: unique.Make(TestEcho{"aaaaaa"}),
 			},
 			decoded: &TestStruct{},
 		},
