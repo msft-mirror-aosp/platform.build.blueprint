@@ -3481,9 +3481,10 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				// Cache Module.Name() and Module.String() for future use in ModuleProxy.Name() and ModuleProxy.String()
 				mctx.module.cachedName = mctx.module.logicModule.Name()
 				mctx.module.cachedString = mctx.module.logicModule.String()
-				mctx.module.logicModule = nil
 				// When soong debug data is requested, don't remove these info, they will show up in soong-debug-info.json.
 				if c.moduleDebugDataChannel == nil {
+					// TODO: logicModule is needed to evaluate configurable properties, we should figure out an alternative.
+					mctx.module.logicModule = nil
 					mctx.module.properties = nil
 					mctx.module.propertyPos = nil
 				}
