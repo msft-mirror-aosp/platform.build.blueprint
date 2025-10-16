@@ -1,0 +1,44 @@
+// Copyright 2025 Google Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package main
+
+import (
+	"fmt"
+	"go/ast"
+	"strings"
+)
+
+func (g *gobGen) encodeSlice(encodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
+	g.generateEncodeForNillable(encodeBody, fieldName)
+	encodeBody.WriteString(fmt.Sprintf("\tif err = gobtools.EncodeInt(buf, len(%s)); err != nil { return err }\n", fieldName))
+	index := g.nextVar()
+	encodeBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < len(%s); %s++ {\n", index, index, fieldName, index))
+	g.generateEncodeForType(encodeBody, pkgName, t, fmt.Sprintf("%s[%s]", fieldName, index))
+	encodeBody.WriteString("\t}\n")
+	encodeBody.WriteString("\t}\n")
+}
+
+func (g *gobGen) decodeSlice(decodeBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
+	valId := g.nextVar()
+	typeRef := g.findTypeReference(t, pkgName)
+	g.generateDecodeForNillable(decodeBody, valId)
+	decodeBody.WriteString(fmt.Sprintf("\t%s = make([]%s, %s)\n", fieldName, typeRef.fullName(), valId))
+	g.maybeAddImport(typeRef)
+	index := g.nextVar()
+	decodeBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < int(%s); %s++ {\n", index, index, valId, index))
+	g.generateDecodeForType(decodeBody, pkgName, t, fmt.Sprintf("%s[%s]", fieldName, index))
+	decodeBody.WriteString("\t}\n")
+	decodeBody.WriteString("\t}\n")
+}

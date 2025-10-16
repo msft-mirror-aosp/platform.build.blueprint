@@ -1,9 +1,21 @@
 blueprint_go_binary {
     name: "gob_gen",
     srcs: [
+        "array.go",
+        "decode.go",
+        "depset.go",
+        "encode.go",
         "gob_gen.go",
         "gob_test_data.go",
         "main_enc.go",
+        "map.go",
+        "pointer.go",
+        "slice.go",
+        "struct.go",
+        "types.go",
+        "unique.go",
+        "uniquelist.go",
+        "util.go",
     ],
     testSrcs: [
         "gob_gen_test.go",
