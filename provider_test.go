@@ -15,10 +15,13 @@
 package blueprint
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/google/blueprint/gobtools"
 )
 
 type providerTestModule struct {
@@ -83,6 +86,14 @@ type providerTestMutatorInfo struct {
 
 type providerTestGenerateBuildActionsInfo struct {
 	Value string
+}
+
+func (providerTestGenerateBuildActionsInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	return nil
+}
+
+func (providerTestGenerateBuildActionsInfo) GetTypeId() int16 {
+	return -1
 }
 
 type providerTestUnsetInfo string
@@ -212,6 +223,14 @@ func TestProviders(t *testing.T) {
 
 type invalidProviderUsageMutatorInfo string
 type invalidProviderUsageGenerateBuildActionsInfo string
+
+func (invalidProviderUsageGenerateBuildActionsInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	return nil
+}
+
+func (invalidProviderUsageGenerateBuildActionsInfo) GetTypeId() int16 {
+	return -1
+}
 
 var invalidProviderUsageMutatorInfoProvider = NewMutatorProvider[invalidProviderUsageMutatorInfo]("mutator_under_test")
 var invalidProviderUsageGenerateBuildActionsInfoProvider = NewProvider[invalidProviderUsageGenerateBuildActionsInfo]()
