@@ -297,6 +297,10 @@ func (s *addNinjaDepsTestSingleton) GenerateBuildActions(ctx SingletonContext) {
 	ctx.AddNinjaFileDeps("Singleton")
 }
 
+func (s *addNinjaDepsTestSingleton) IncrementalSupported() bool {
+	return false
+}
+
 func TestAddNinjaFileDeps(t *testing.T) {
 	ctx := NewContext()
 	ctx.MockFileSystem(map[string][]byte{
@@ -309,7 +313,7 @@ func TestAddNinjaFileDeps(t *testing.T) {
 
 	ctx.RegisterModuleType("test", addNinjaDepsTestModuleFactory)
 	ctx.RegisterBottomUpMutator("testBottomUpMutator", addNinjaDepsTestBottomUpMutator)
-	ctx.RegisterSingletonType("testSingleton", addNinjaDepsTestSingletonFactory, false)
+	ctx.RegisterSingletonType("sequentialSingleton", addNinjaDepsTestSingletonFactory, false)
 	parseDeps, errs := ctx.ParseBlueprintsFiles("Android.bp", nil)
 	if len(errs) > 0 {
 		t.Errorf("unexpected parse errors:")

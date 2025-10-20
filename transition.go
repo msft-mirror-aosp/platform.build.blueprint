@@ -150,6 +150,13 @@ type IncomingTransitionContext interface {
 
 	// PropertyErrorf reports an error at the line number of a property in the module definition.
 	PropertyErrorf(property, fmt string, args ...interface{})
+
+	// OtherModulePropertyErrorf reports an error at the line number of a property in the given module definition.
+	OtherModulePropertyErrorf(module ModuleOrProxy, property, fmt string, args ...interface{})
+
+	// HasMutatorFinished returns true if the given mutator has finished running.
+	// It will panic if given an invalid mutator name.
+	HasMutatorFinished(mutatorName string) bool
 }
 
 type OutgoingTransitionContext interface {
@@ -234,7 +241,7 @@ func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation st
 	} else {
 		if m.incomingTransitionInfos == nil {
 			m.incomingTransitionInfos = make(map[string]TransitionInfo)
-			m.incomingTransitionInfoHashes = make(map[string]uint64)
+			m.incomingTransitionInfoHashes = make(map[string]proptools.Hash)
 		}
 		m.incomingTransitionInfos[variation] = transitionInfo
 		m.incomingTransitionInfoHashes[variation] = hash
@@ -329,6 +336,14 @@ func (c *transitionContextImpl) ModuleErrorf(fmt string, args ...interface{}) {
 
 func (c *transitionContextImpl) PropertyErrorf(property, fmt string, args ...interface{}) {
 	c.error(c.context.PropertyErrorf(c.dep.logicModule, property, fmt, args...))
+}
+
+func (c *transitionContextImpl) OtherModulePropertyErrorf(module ModuleOrProxy, property, fmt string, args ...interface{}) {
+	c.error(c.context.PropertyErrorf(module, property, fmt, args...))
+}
+
+func (c *transitionContextImpl) HasMutatorFinished(mutatorName string) bool {
+	return c.context.HasMutatorFinished(mutatorName)
 }
 
 type outgoingTransitionContextImpl struct {

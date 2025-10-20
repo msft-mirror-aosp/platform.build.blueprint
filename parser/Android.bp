@@ -1,0 +1,24 @@
+bootstrap_go_package {
+    name: "blueprint-parser",
+    pkgPath: "github.com/google/blueprint/parser",
+    srcs: [
+        "ast.go",
+        "modify.go",
+        "parser.go",
+        "printer.go",
+        "sort.go",
+    ],
+    testSrcs: [
+        "modify_test.go",
+        "parser_test.go",
+        "printer_test.go",
+        "sort_test.go",
+    ],
+    visibility: [
+        "//build/blueprint:__subpackages__",
+        "//build/soong:__subpackages__",
+        "//development/vndk/tools/elfcheck",
+        "//tools/security/fuzzing/fuzzer_parser",
+        "//vendor:__subpackages__",
+    ],
+}

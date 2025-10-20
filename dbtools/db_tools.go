@@ -1,6 +1,10 @@
 package dbtools
 
-import "github.com/google/blueprint/syncmap"
+import (
+	"slices"
+
+	"github.com/google/blueprint/syncmap"
+)
 
 type KeyValueStore interface {
 	Put(key []byte, value []byte) error
@@ -17,7 +21,7 @@ func (s *InMemKeyValueStore) Close() error {
 }
 
 func (s *InMemKeyValueStore) Put(key []byte, value []byte) error {
-	s.data.LoadOrStore(string(key), value)
+	s.data.LoadOrStore(string(key), slices.Clone(value))
 	return nil
 }
 

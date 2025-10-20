@@ -16,12 +16,16 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
+	"unique"
 
 	"github.com/google/blueprint/depset"
 	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/gobtools/test"
+	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/uniquelist"
 )
 
@@ -52,6 +56,14 @@ func TestEncDec(t *testing.T) {
 				f24: test.TypeStruct{Name: "fffffffff"},
 			},
 			decoded: &TestStruct{},
+		},
+		{
+			name: "duplicate pointer",
+			origin: &TestPtrs{
+				f1: &defaultEcho,
+				f2: &defaultEcho,
+			},
+			decoded: &TestPtrs{},
 		},
 		{
 			name: "TestStruct",
@@ -108,8 +120,23 @@ func TestEncDec(t *testing.T) {
 					{"aaaaaaaaa", "bbbbbbbbb"},
 					{"ccccccccc", "ddddddddd"},
 				},
-				f30: depsetString,
-				f31: &defaultEcho,
+				f30:          depsetString,
+				f31:          &defaultEcho,
+				f32:          []*test.TypeStruct{{Name: "hhhhhhhh"}},
+				f33:          "iiiiiiii",
+				f34:          "jjjjjjjj",
+				f35:          struct{ s string }{s: "kkkkkkkkk"},
+				f36:          TestGeneric[int32]{t: 12345},
+				TestEmbedPtr: &TestEmbedPtr{f37: "mmmmmmmm"},
+				f38:          test.TypeBasic(1),
+				f39:          [2]uint64{1, 2},
+				f40: map[[1]string]map[int][]*bool{
+					{"llllllll"}: {
+						1: {boolPtr(true)},
+					},
+				},
+				f41: unique.Make(TestEcho{"aaaaaa"}),
+				f42: unique.Make(TestEcho{"aaaaaa"}),
 			},
 			decoded: &TestStruct{},
 		},
@@ -144,19 +171,74 @@ func TestEncDec(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		ctx := gobtools.NewReferencesEncoderForTest()
-		if err := tc.origin.Encode(ctx, buf); err != nil {
-			t.Errorf("failed to encode %s: %v", tc.name, err)
-		}
-		if err := ctx.EncodeReferences(); err != nil {
-			t.Errorf("failed to encode references: %v", err)
-		}
-		if err := tc.decoded.Decode(ctx, bytes.NewReader(buf.Bytes())); err != nil {
-			t.Errorf("failed to decode %s: %v", tc.name, err)
-		}
-		if !reflect.DeepEqual(tc.origin, tc.decoded) {
-			t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.origin, tc.decoded)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			buf := new(bytes.Buffer)
+			ctx := gobtools.NewReferencesEncoderForTest()
+			if err := tc.origin.Encode(ctx, buf); err != nil {
+				t.Errorf("failed to encode %s: %v", tc.name, err)
+			}
+			if err := ctx.EncodeReferences(); err != nil {
+				t.Errorf("failed to encode references: %v", err)
+			}
+			if err := tc.decoded.Decode(ctx, bytes.NewReader(buf.Bytes())); err != nil {
+				t.Errorf("failed to decode %s: %v", tc.name, err)
+			}
+			if !reflect.DeepEqual(tc.origin, tc.decoded) {
+				t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.origin, tc.decoded)
+			}
+
+			originalHash, err := proptools.CalculateHash(tc.origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decodedHash, err := proptools.CalculateHash(tc.decoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if originalHash != decodedHash {
+				t.Errorf("the decoded data has a different hash from the origin: expected: %v got %v", originalHash, decodedHash)
+			}
+		})
 	}
+}
+
+func TestGenerate(t *testing.T) {
+	g := newGobGen()
+	curDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current directory: %v", err)
+	}
+
+	parts := strings.Split(curDir, blueprintPkgPath)
+	if len(parts) < 2 {
+		t.Fatalf("could not determine source root from path %q, which does not contain %q",
+			curDir, blueprintPkgPath)
+	}
+	g.sourceDir = parts[0]
+
+	sourceFile := "gob_test_data.go"
+	expectedOutputFile := "main_enc.go"
+
+	generatedBytes, outputFile, err := g.generate(sourceFile, nil, false)
+	if err != nil {
+		t.Fatalf("g.generate() failed for %s: %v", sourceFile, err)
+	}
+
+	if outputFile != expectedOutputFile {
+		t.Fatalf("output file is different from the expected: %s %s", outputFile, expectedOutputFile)
+	}
+
+	expectedBytes, err := os.ReadFile(expectedOutputFile)
+	if err != nil {
+		t.Fatalf("failed to read expected output file %s: %v", expectedOutputFile, err)
+	}
+
+	if !bytes.Equal(generatedBytes, expectedBytes) {
+		t.Errorf("Generated code from %s does not match expected output in %s.\nexpected:\n%s\ngot:\n%s",
+			sourceFile, expectedOutputFile, expectedBytes, generatedBytes)
+	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }

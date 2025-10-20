@@ -180,14 +180,19 @@ type Context struct {
 	// latter will depend on the flag above.
 	incrementalEnabled bool
 
+	incrementalProviderTest bool
+
 	buildActionsCache       *BuildActionCache
 	buildActionsToCacheLock sync.Mutex
 	orderOnlyStringsCache   OrderOnlyStringsCache
 	orderOnlyStrings        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
 	incrementalDebugFile    string
 	EncContext              gobtools.EncContext
+	providerValueHashes     []proptools.Hash
 
 	moduleDebugDataChannel chan []byte
+
+	captureBuildParams bool
 }
 
 type orderOnlyStringsInfo struct {
@@ -379,7 +384,7 @@ type moduleInfo struct {
 	// incomingTransitionInfosLock.  It is invalid after the TransitionMutator top down mutator has run on
 	// this module.
 	incomingTransitionInfos      map[string]TransitionInfo
-	incomingTransitionInfoHashes map[string]uint64
+	incomingTransitionInfoHashes map[string]proptools.Hash
 	incomingTransitionInfosLock  sync.Mutex
 	// splitTransitionInfos and splitTransitionVariations stores the list of TransitionInfo objects, and their
 	// corresponding variations, returned by Split or requested by reverse dependencies.  They are valid after the
@@ -396,10 +401,8 @@ type moduleInfo struct {
 	outgoingTransitionCache [][]string
 
 	// set during PrepareBuildActions
-	actionDefs localBuildActions
-
-	providers                  []interface{}
-	providerInitialValueHashes []uint64
+	actionDefs  localBuildActions
+	buildParams *[]BuildParams
 
 	startedMutator  int
 	finishedMutator int
@@ -415,28 +418,44 @@ type moduleInfo struct {
 	cachedName string
 	// cachedString stores the result of Module.String() after the end of GenerateBuildActions for use in ModuleProxy.String().
 	cachedString string
+	// cachedUniqueName stores the result of UniqueName after the end of GenerateBuildActions for use when sorting
+	// modules.
+	cachedUniqueName string
 
-	incrementalInfo
+	moduleIncrementalInfo
+}
+
+type providerInfo struct {
+	providers                  []interface{}
+	providerInitialValueHashes []proptools.Hash
 }
 
 // @auto-generate: gob
 type globResultCache struct {
 	Pattern  string
 	Excludes []string
-	Result   uint64
+	Result   proptools.Hash
 }
 
-type incrementalInfo struct {
+type moduleIncrementalInfo struct {
+	commonIncrementalInfo
+	buildActionInputHash proptools.Hash
+	orderOnlyStrings     []string
+	incrementalDebugInfo []byte
+	globCache            []globResultCache
+}
+
+type commonIncrementalInfo struct {
 	incrementalRestored bool
-	providersRestored   bool
+	// hasUnrestoredProvider is true when the module has been restored from the cache and the provider
+	// (indexed in the same order as providerRegistry) exists in the cache but has not yet been
+	// restored.
+	hasUnrestoredProvider []bool
 	// Whether this module support incremental build.
 	incrementalSupported bool
 	providerRestoreLock  sync.Mutex
 	buildActionCacheKey  *BuildActionCacheKey
-	buildActionInputHash uint64
-	orderOnlyStrings     []string
-	incrementalDebugInfo []byte
-	globCache            []globResultCache
+	providerInfo
 }
 
 type variant struct {
@@ -492,7 +511,7 @@ func calculateFileNameHash(name string) string {
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate hash for file name: %s", name))
 	}
-	return strconv.FormatUint(hash, 16)
+	return hash.FormatUint(16)
 }
 
 func (c *Context) setModuleTransitionInfo(module *moduleInfo, t *transitionMutatorImpl, info TransitionInfo) {
@@ -597,7 +616,16 @@ type singletonInfo struct {
 	parallel  bool
 
 	// set during PrepareBuildActions
-	actionDefs localBuildActions
+	actionDefs                   localBuildActions
+	startedGenerateBuildActions  bool
+	finishedGenerateBuildActions bool
+	commonIncrementalInfo
+	// The provider hashes of all the singletons that this singleton might depend on.
+	// These values are calculated before calling the GenerateBuildAction of the current
+	// singleton, and combined with the hashes of all the module providers that this
+	// singleton might depend on, we can decide if the input of the GenerateBuildAction
+	// has any change, and skip the execution of it if there is no change.
+	providerValueHashes []proptools.Hash
 }
 
 type mutatorInfo struct {
@@ -765,6 +793,10 @@ func (c *Context) GetIncrementalAnalysis() bool {
 
 func (c *Context) SetIncrementalEnabled(incremental bool) {
 	c.incrementalEnabled = incremental
+}
+
+func (c *Context) SetIncrementalProviderTest(test bool) {
+	c.incrementalProviderTest = test
 }
 
 func (c *Context) GetIncrementalEnabled() bool {
@@ -3420,7 +3452,7 @@ func (c *Context) generateModuleBuildActions(config interface{},
 						}
 					}
 				}()
-				if !mctx.restoreModuleBuildActions() {
+				if !mctx.restoreModuleBuildActions() || c.incrementalProviderTest {
 					mctx.module.logicModule.GenerateBuildActions(mctx)
 				}
 			}()
@@ -3432,7 +3464,7 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				return true
 			}
 
-			if module.missingDeps != nil && !mctx.handledMissingDeps {
+			if module.missingDeps != nil && !mctx.handledMissingDeps && !module.incrementalRestored {
 				var errs []error
 				for _, depName := range module.missingDeps {
 					errs = append(errs, c.missingDependencyError(module, depName))
@@ -3450,9 +3482,14 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				mctx.module.cachedName = mctx.module.logicModule.Name()
 				mctx.module.cachedString = mctx.module.logicModule.String()
 				mctx.module.logicModule = nil
-				mctx.module.properties = nil
-				mctx.module.propertyPos = nil
+				// When soong debug data is requested, don't remove these info, they will show up in soong-debug-info.json.
+				if c.moduleDebugDataChannel == nil {
+					mctx.module.properties = nil
+					mctx.module.propertyPos = nil
+				}
 			}
+
+			module.cachedUniqueName = uniqueName
 
 			newErrs := c.processLocalBuildActions(&module.actionDefs,
 				&mctx.actionDefs, liveGlobals)
@@ -3510,12 +3547,15 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 	scope := newLocalScope(nil, singletonNamespacePrefix(info.name))
 
 	sctx := &singletonContext{
-		name:    info.name,
-		context: c,
-		config:  config,
-		scope:   scope,
-		globals: liveGlobals,
+		singleton:    info,
+		context:      c,
+		config:       config,
+		scope:        scope,
+		globals:      liveGlobals,
+		depProviders: make(map[int]bool),
 	}
+
+	info.startedGenerateBuildActions = true
 
 	func() {
 		defer func() {
@@ -3529,8 +3569,62 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 				}
 			}
 		}()
-		info.singleton.GenerateBuildActions(sctx)
+
+		c.restoreSingleton(info)
+		if !info.incrementalRestored || c.incrementalProviderTest {
+			info.singleton.GenerateBuildActions(sctx)
+		}
+		// A caching entry for singletons is only written if the singleton
+		// depends on at least one provider. If zero providers are consumed,
+		// the cache restore process would fail to locate
+		// a cache entry, forcing the singleton to re-execute on every build.
+		//
+		// An edge case where a coding change removes a provider dependency is safely handled
+		// because any detected code change automatically invalidates the entire global cache,
+		// ensuring system consistency.
+		if info.buildActionCacheKey != nil && !info.incrementalRestored {
+			cache := make(map[int]proptools.Hash)
+			for k, _ := range sctx.depProviders {
+				// A singleton might depend on both module providers and singleton providers, and
+				// the hashes of all the former are stored in context globally, and the hashes of
+				// the latter are stored inside the current singletonInfo.
+				if providerRegistry[k].mutator == singletonTag {
+					cache[k] = info.providerValueHashes[k]
+				} else {
+					cache[k] = c.providerValueHashes[k]
+				}
+			}
+
+			var providerHashes []ProviderHash
+			for i, p := range info.providers {
+				if p == nil {
+					continue
+				}
+				err := c.buildActionsCache.writeProvider(c.EncContext, info.providerInitialValueHashes[i], CachedProvider{
+					Id:    providerRegistry[i],
+					Value: p,
+				})
+				if err != nil {
+					panic(err)
+				}
+				providerHashes = append(providerHashes,
+					ProviderHash{
+						Id:   providerRegistry[i],
+						Hash: info.providerInitialValueHashes[i],
+					})
+			}
+
+			if err := c.buildActionsCache.writeSingletonBuildAction(c.EncContext, info.buildActionCacheKey,
+				&SingletonActionCachedData{
+					ProviderHashes:           providerHashes,
+					DependencyProviderHashes: cache,
+				}); err != nil {
+				panic(err)
+			}
+		}
 	}()
+
+	info.finishedGenerateBuildActions = true
 
 	if len(sctx.errs) > 0 {
 		errs = append(errs, sctx.errs...)
@@ -3543,6 +3637,57 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 		&sctx.actionDefs, liveGlobals)
 	errs = append(errs, newErrs...)
 	return deps, errs
+}
+
+func (c *Context) restoreSingleton(info *singletonInfo) {
+	info.incrementalSupported = c.GetIncrementalEnabled() && info.singleton.IncrementalSupported()
+	if !info.incrementalSupported {
+		return
+	}
+
+	info.buildActionCacheKey = &BuildActionCacheKey{
+		Id: info.name,
+	}
+
+	// We can pursue a incremental analysis because there is no soong coding change, no
+	// product config and env variable changes.
+	if !c.GetIncrementalAnalysis() {
+		return
+	}
+
+	data, err := c.buildActionsCache.readSingletonBuildAction(c.EncContext, info.buildActionCacheKey)
+	if err != nil {
+		panic(err)
+	}
+	if data == nil {
+		return
+	}
+
+	// This logic here assumes a singleton's behavior is a pure function of its providers.
+	// Conditional access to certain providers must also be based on other provider
+	// values, ensuring that any behavioral change is captured by the input providers hashes.
+	incrementalRestored := true
+	for k, v := range data.DependencyProviderHashes {
+		var hash proptools.Hash
+		if providerRegistry[k].mutator == singletonTag {
+			hash = info.providerValueHashes[k]
+		} else {
+			hash = c.providerValueHashes[k]
+		}
+		if hash != v {
+			incrementalRestored = false
+			break
+		}
+	}
+	if incrementalRestored {
+		info.incrementalRestored = true
+		info.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+		info.hasUnrestoredProvider = make([]bool, len(providerRegistry))
+		for _, provider := range data.ProviderHashes {
+			info.hasUnrestoredProvider[provider.Id.id] = true
+			info.providerInitialValueHashes[provider.Id.id] = provider.Hash
+		}
+	}
 }
 
 func (c *Context) generateParallelSingletonBuildActions(config interface{},
@@ -3596,6 +3741,33 @@ func (c *Context) generateParallelSingletonBuildActions(config interface{},
 	return deps, errs
 }
 
+func (c *Context) calculateProvidersHashes() {
+	c.providerValueHashes = make([]proptools.Hash, len(providerRegistry))
+	var wg sync.WaitGroup
+	for i := range len(providerRegistry) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			var providerHashes []proptools.Hash
+			// For singleton providers we collect provider hashes from singletons.
+			if providerRegistry[i].mutator != singletonTag {
+				c.visitAllModuleInfos(func(m *moduleInfo) {
+					if m.providerInitialValueHashes != nil {
+						providerHashes = append(providerHashes, m.providerInitialValueHashes[i])
+					}
+				})
+			}
+			var err error
+			c.providerValueHashes[i], err = proptools.CalculateHash(providerHashes)
+			if err != nil {
+				panic(err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 func (c *Context) generateSingletonBuildActions(config interface{},
 	singletons []*singletonInfo, liveGlobals *liveTracker) ([]string, []error) {
 
@@ -3618,11 +3790,38 @@ func (c *Context) generateSingletonBuildActions(config interface{},
 	// don't cause a data race when they trigger a resort in VisitAllModules.
 	c.sortedModuleGroups()
 
+	if c.GetIncrementalEnabled() {
+		c.calculateProvidersHashes()
+	}
+
 	// First, take care of any singletons that want to run in parallel.
 	deps, errs = c.generateParallelSingletonBuildActions(config, singletons, liveGlobals)
 
 	for _, info := range singletons {
 		if !info.parallel {
+			if c.GetIncrementalEnabled() {
+				// A singleton might depend on modules and other singletons that run before it.
+				// We already captured the provider hashes of all the modules in calculateProvidersHashes,
+				// now we calculate the hashes of all singletons that the current one might depend on.
+				info.providerValueHashes = make([]proptools.Hash, len(providerRegistry))
+				for i := range len(providerRegistry) {
+					var providerHashes []proptools.Hash
+					if providerRegistry[i].mutator == singletonTag {
+						c.VisitAllSingletons(func(s SingletonProxy) {
+							hash := proptools.ZeroHash
+							if s.singleton.providerInitialValueHashes != nil {
+								hash = s.singleton.providerInitialValueHashes[i]
+							}
+							providerHashes = append(providerHashes, hash)
+						})
+					}
+					var err error
+					info.providerValueHashes[i], err = proptools.CalculateHash(providerHashes)
+					if err != nil {
+						panic(err)
+					}
+				}
+			}
 			runSingleton(info)
 			if len(errs) > maxErrors {
 				break
@@ -4203,6 +4402,24 @@ func (c *Context) VisitDirectDepsProxies(module ModuleOrProxy, visit func(Module
 	}
 }
 
+func (c *Context) VisitDirectDepsProxiesWithTags(module ModuleOrProxy, visit func(ModuleProxy, DependencyTag)) {
+	topModule := module.info()
+
+	var visiting *moduleInfo
+
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitDirectDepsProxies(%s, %s) for dependency %s",
+				topModule, funcName(visit), visiting))
+		}
+	}()
+
+	for _, dep := range topModule.directDeps {
+		visiting = dep.module
+		visit(ModuleProxy{dep.module}, dep.tag)
+	}
+}
+
 func (c *Context) VisitDirectDepsWithTags(module Module, visit func(Module, DependencyTag)) {
 	topModule := module.info()
 
@@ -4341,8 +4558,37 @@ func (c *Context) VisitAllModuleVariantProxies(module ModuleProxy, visit func(Mo
 	})
 }
 
+func (c *Context) VisitAllSingletons(visit func(singleton SingletonProxy)) {
+	var singleton *singletonInfo
+
+	defer func() {
+		if r := recover(); r != nil {
+			panic(newPanicErrorf(r, "VisitAllSingletons(%s) for %s",
+				funcName(visit), singleton.name))
+		}
+	}()
+
+	for _, singleton = range c.singletonInfo {
+		// Only return the finished ones
+		if singleton.finishedGenerateBuildActions {
+			visit(SingletonProxy{singleton: singleton})
+		}
+	}
+}
+
 func (c *Context) ModuleToProxy(module ModuleOrProxy) ModuleProxy {
 	return ModuleProxy{module.info()}
+}
+
+func (c *Context) CaptureBuildParams() {
+	c.captureBuildParams = true
+}
+
+func (c *Context) BuildParamsForModule(module ModuleOrProxy) []BuildParams {
+	if p := module.info().buildParams; p != nil {
+		return *p
+	}
+	return nil
 }
 
 // Singletons returns a list of all registered Singletons.
@@ -4364,6 +4610,15 @@ func (c *Context) SingletonName(singleton Singleton) string {
 	return ""
 }
 
+func (c *Context) singletonByName(name string) *singletonInfo {
+	for _, s := range c.singletonInfo {
+		if s.name == name {
+			return s
+		}
+	}
+	return nil
+}
+
 // Checks that the hashes of all the providers match the hashes from when they were first set.
 // Does nothing on success, returns a list of errors otherwise. It's recommended to run this
 // in a goroutine.
@@ -4371,51 +4626,27 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 	if !c.buildActionsReady {
 		return []error{ErrBuildActionsNotReady}
 	}
-	toProcess := make(chan *moduleInfo)
-	errorCh := make(chan []error)
-	var wg sync.WaitGroup
-	go func() {
-		for m := range c.iterateAllVariants() {
-			toProcess <- m
-		}
-		close(toProcess)
-	}()
-	for i := 0; i < 1000; i++ {
-		wg.Add(1)
-		go func() {
-			var errors []error
-			for m := range toProcess {
-				for i, provider := range m.providers {
-					if provider != nil {
-						hash, err := proptools.CalculateHash(provider)
-						if err != nil {
-							errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set, and no longer hashable afterwards: %s", providerRegistry[i].typ, m.Name(), err.Error()))
-							continue
-						}
-						if m.providerInitialValueHashes[i] != hash {
-							errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set", providerRegistry[i].typ, m.Name()))
-						}
-					} else if m.providerInitialValueHashes[i] != 0 {
-						// This should be unreachable, because in setProvider we check if the provider has already been set.
-						errors = append(errors, fmt.Errorf("provider %q on module %q was unset somehow, this is an internal error", providerRegistry[i].typ, m.Name()))
-					}
-				}
-			}
-			if errors != nil {
-				errorCh <- errors
-			}
-			wg.Done()
-		}()
-	}
-	go func() {
-		wg.Wait()
-		close(errorCh)
-	}()
 
-	var errors []error
-	for newErrors := range errorCh {
-		errors = append(errors, newErrors...)
-	}
+	errors := parallelVisitSimple(c.iterateAllVariants(), 1000, func(m *moduleInfo, _ int) []error {
+		var errors []error
+		for i, provider := range m.providers {
+			if provider != nil {
+				hash, err := proptools.CalculateHash(provider)
+				if err != nil {
+					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set, and no longer hashable afterwards: %s", providerRegistry[i].typ, m.Name(), err.Error()))
+					continue
+				}
+				if m.providerInitialValueHashes[i] != hash {
+					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set", providerRegistry[i].typ, m.Name()))
+				}
+			} else if m.providerInitialValueHashes[i] != proptools.ZeroHash && !m.hasUnrestoredProvider[i] {
+				// This should be unreachable, because in setProvider we check if the provider has already been set.
+				errors = append(errors, fmt.Errorf("provider %q on module %q was unset somehow, this is an internal error", providerRegistry[i].typ, m.Name()))
+			}
+		}
+		return errors
+	})
+
 	return errors
 }
 
@@ -4696,19 +4927,6 @@ func (s depSorter) Swap(i, j int) {
 	s.deps[i], s.deps[j] = s.deps[j], s.deps[i]
 }
 
-type moduleSorter struct {
-	modules       []*moduleInfo
-	nameInterface NameInterface
-}
-
-func (s moduleSorter) Len() int {
-	return len(s.modules)
-}
-
-func (s moduleSorter) Less(i, j int) bool {
-	return moduleLess(s.modules[i], s.modules[j], s.nameInterface)
-}
-
 func moduleLess(iMod, jMod *moduleInfo, nameInterface NameInterface) bool {
 	iName := nameInterface.UniqueName(newNamespaceContext(iMod), iMod.group.name)
 	jName := nameInterface.UniqueName(newNamespaceContext(jMod), jMod.group.name)
@@ -4724,10 +4942,6 @@ func moduleLess(iMod, jMod *moduleInfo, nameInterface NameInterface) bool {
 	} else {
 		return iName < jName
 	}
-}
-
-func (s moduleSorter) Swap(i, j int) {
-	s.modules[i], s.modules[j] = s.modules[j], s.modules[i]
 }
 
 func GetNinjaShardFiles(ninjaFile string) []string {
@@ -4750,19 +4964,29 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	defer c.EndEvent("modules")
 
 	var modules []*moduleInfo
-	var incModules []*moduleInfo
 
 	for module := range c.iterateAllVariants() {
-		if module.incrementalSupported {
-			incModules = append(incModules, module)
-			continue
-		}
 		modules = append(modules, module)
 	}
-	sort.Sort(moduleSorter{modules, c.nameInterface})
-	sort.Sort(moduleSorter{incModules, c.nameInterface})
 
-	phonys := c.deduplicateOrderOnlyDeps(append(modules, incModules...))
+	// cachedNameModuleLess is similar to moduleLess, but uses the namespaced name cached in
+	// moduleInfo.uniqueName instead of recomputing it each time.
+	cachedNameModuleLess := func(a, b *moduleInfo) int {
+		if a.cachedUniqueName == b.cachedUniqueName {
+			if a.variant.name == b.variant.name {
+				panic(fmt.Sprintf("duplicate module name: %s %s: %#v and %#v\n",
+					a.cachedUniqueName, a.variant.name, a.variant.variations, a.variant.variations))
+			} else {
+				return cmp.Compare(a.variant.name, b.variant.name)
+			}
+		} else {
+			return cmp.Compare(a.cachedUniqueName, b.cachedUniqueName)
+		}
+	}
+
+	slices.SortFunc(modules, cachedNameModuleLess)
+
+	phonys := c.deduplicateOrderOnlyDeps(modules)
 
 	c.EventHandler.Do("sort_phony_builddefs", func() {
 		// sorting for determinism, the phony output names are stable
@@ -4810,7 +5034,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 					}
 				}()
 				writer := newNinjaWriter(buf)
-				err = c.writeModuleAction(batchModules, writer, headerTemplate)
+				err = c.writeIncrementalModules(batchModules, writer, headerTemplate)
 				if err != nil {
 					errorCh <- err
 				}
@@ -4818,29 +5042,16 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			nw.Subninja(file)
 		}
 
-		suffix := ".ninja"
-		base := strings.TrimSuffix(ninjaFileName, suffix)
-		file := fmt.Sprintf("%s.incremental%s", base, suffix)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			err := writeIncrementalModules(c, file, incModules, headerTemplate)
-			if err != nil {
-				errorCh <- err
-			}
-		}()
-		nw.Subninja(file)
-
 		if c.GetIncrementalEnabled() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				parallelVisit(slices.Values(incModules), unorderedVisitorImpl{}, parallelVisitLimit,
-					func(m *moduleInfo, pause pauseFunc) bool {
-						if !m.incrementalRestored {
+				parallelVisitSimple(slices.Values(modules), parallelVisitLimit,
+					func(m *moduleInfo, _ int) []error {
+						if m.incrementalSupported && !m.incrementalRestored {
 							c.cacheModuleBuildActions(m)
 						}
-						return false
+						return nil
 					})
 			}()
 		}
@@ -4851,7 +5062,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 		}()
 
 		if c.incrementalDebugFile != "" {
-			c.WriteIncrementalDebugInfo(c.incrementalDebugFile, incModules)
+			c.WriteIncrementalDebugInfo(c.incrementalDebugFile, modules)
 		}
 
 		var errors []error
@@ -4867,40 +5078,113 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 	}
 }
 
-func writeIncrementalModules(c *Context, baseFile string, modules []*moduleInfo, headerTemplate *template.Template) error {
-	c.BeginEvent("write_incremental_modules")
-	defer c.EndEvent("write_incremental_modules")
-	bf, err := c.fs.OpenFile(JoinPath(c.SrcDir(), baseFile), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
-	if err != nil {
-		return err
+// A simplified version of parallelVisit where multiple calls to it can be run at the same time.
+func parallelVisitSimple(moduleIter iter.Seq[*moduleInfo], limit int, visit func(module *moduleInfo, idx int) []error) []error {
+	type moduleToProcess struct {
+		module *moduleInfo
+		index  int
 	}
-	defer bf.Close()
-	baseBuf := bufio.NewWriterSize(bf, 16*1024*1024)
-	defer baseBuf.Flush()
-	baseWriter := newNinjaWriter(baseBuf)
-
-	if c.GetIncrementalEnabled() {
-		inMemoryWriter := bytes.NewBuffer(nil)
-		var moduleBytes []byte
-		buf := bytes.NewBuffer(nil)
-		for _, module := range modules {
-			if !module.incrementalRestored {
-				inMemoryWriter.Reset()
-				mWriter := newNinjaWriter(inMemoryWriter)
-				if err := c.writeOneModuleAction(module, mWriter, headerTemplate, buf); err != nil {
-					return err
-				}
-				moduleBytes = inMemoryWriter.Bytes()
-				c.buildActionsCache.writeNinjaStatements(c.EncContext, module.buildActionCacheKey, moduleBytes)
-			} else if moduleBytes, err = c.buildActionsCache.readNinjaStatements(c.EncContext, module.buildActionCacheKey); err != nil {
-				return err
+	toProcess := make(chan moduleToProcess)
+	errorCh := make(chan []error)
+	var wg sync.WaitGroup
+	go func() {
+		idx := 0
+		for m := range moduleIter {
+			toProcess <- moduleToProcess{m, idx}
+			idx++
+		}
+		close(toProcess)
+	}()
+	for i := 0; i < limit; i++ {
+		wg.Add(1)
+		go func() {
+			var errors []error
+			for m := range toProcess {
+				errors = append(errors, visit(m.module, m.index)...)
 			}
+			if len(errors) > 0 {
+				errorCh <- errors
+			}
+			wg.Done()
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(errorCh)
+	}()
+
+	var errors []error
+	for newErrors := range errorCh {
+		errors = append(errors, newErrors...)
+	}
+	return errors
+}
+func (c *Context) writeIncrementalModules(modules []*moduleInfo, baseWriter *ninjaWriter, headerTemplate *template.Template) error {
+	// Use a sync.Pool to reuse buffers and reduce memory allocations.
+	bufferPool := sync.Pool{
+		New: func() any {
+			// Pre-allocate a reasonably sized buffer for each new writer.
+			return bytes.NewBuffer(make([]byte, 0, 128*1024))
+		},
+	}
+	headerBufPool := sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+	writeSignals := make([]chan struct{}, len(modules))
+	for i := range writeSignals {
+		writeSignals[i] = make(chan struct{})
+	}
+
+	errs := parallelVisitSimple(slices.Values(modules), parallelVisitLimit, func(m *moduleInfo, idx int) []error {
+		var moduleBytes []byte
+		var err error
+
+		if m.incrementalRestored && !c.incrementalProviderTest {
+			// Read from the cache if the module is restored.
+			moduleBytes, err = c.buildActionsCache.readNinjaStatements(m.buildActionCacheKey)
+		} else {
+			// Generate statements for dirty modules.
+			inMemoryWriter := bufferPool.Get().(*bytes.Buffer)
+			inMemoryWriter.Reset()
+			defer bufferPool.Put(inMemoryWriter)
+
+			headerBuf := headerBufPool.Get().(*bytes.Buffer)
+			headerBuf.Reset()
+			defer headerBufPool.Put(headerBuf)
+
+			mWriter := newNinjaWriter(inMemoryWriter)
+			err = c.writeOneModuleAction(m, mWriter, headerTemplate, headerBuf)
+			if err == nil {
+				// Make a copy of the bytes, as the buffer will be reused.
+				moduleBytes = slices.Clone(inMemoryWriter.Bytes())
+				// Write the newly generated statements back to the cache for incremental module.
+				if m.buildActionCacheKey != nil {
+					err = c.buildActionsCache.writeNinjaStatements(m.buildActionCacheKey, moduleBytes)
+				}
+			}
+		}
+
+		// Wait for the signal from the previous thread before writing even when an
+		// error happens to ensure no concurrently writing of the ninja file.
+		if idx > 0 {
+			<-writeSignals[idx-1]
+		}
+
+		if err == nil {
 			baseWriter.writer.Write(moduleBytes)
 		}
+
+		// Signal the next thread that it's clear to write.
+		close(writeSignals[idx])
+		if err != nil {
+			return []error{err}
+		}
 		return nil
-	} else {
-		return c.writeModuleAction(modules, baseWriter, headerTemplate)
+	})
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
+	return nil
 }
 
 func (c *Context) writeModuleAction(modules []*moduleInfo, nw *ninjaWriter, headerTemplate *template.Template) error {
@@ -4970,46 +5254,64 @@ func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 	}
 
 	buf := bytes.NewBuffer(nil)
+	var ninjaBytes []byte
+	inMemoryWriter := bytes.NewBuffer(nil)
 
 	for _, info := range c.singletonInfo {
-		if len(info.actionDefs.variables)+len(info.actionDefs.rules)+len(info.actionDefs.buildDefs) == 0 {
-			continue
-		}
+		if info.incrementalRestored && !c.incrementalProviderTest {
+			// Read from the cache if the singleton is restored.
+			ninjaBytes, err = c.buildActionsCache.readNinjaStatements(info.buildActionCacheKey)
+			if err != nil {
+				return err
+			}
+		} else {
+			if len(info.actionDefs.variables)+len(info.actionDefs.rules)+len(info.actionDefs.buildDefs) == 0 {
+				continue
+			}
 
-		// Get the name of the factory function for the module.
-		factory := info.factory
-		factoryFunc := runtime.FuncForPC(reflect.ValueOf(factory).Pointer())
-		factoryName := factoryFunc.Name()
+			inMemoryWriter.Reset()
+			sWriter := newNinjaWriter(inMemoryWriter)
+			// Get the name of the factory function for the module.
+			factory := info.factory
+			factoryFunc := runtime.FuncForPC(reflect.ValueOf(factory).Pointer())
+			factoryName := factoryFunc.Name()
 
-		buf.Reset()
-		infoMap := map[string]interface{}{
-			"name":      info.name,
-			"goFactory": factoryName,
-		}
-		err = headerTemplate.Execute(buf, infoMap)
-		if err != nil {
-			return err
-		}
+			buf.Reset()
+			infoMap := map[string]interface{}{
+				"name":      info.name,
+				"goFactory": factoryName,
+			}
+			err = headerTemplate.Execute(buf, infoMap)
+			if err != nil {
+				return err
+			}
 
-		err = nw.Comment(buf.String())
-		if err != nil {
-			return err
-		}
+			err = sWriter.Comment(buf.String())
+			if err != nil {
+				return err
+			}
 
-		err = nw.BlankLine()
-		if err != nil {
-			return err
-		}
+			err = sWriter.BlankLine()
+			if err != nil {
+				return err
+			}
 
-		err = c.writeLocalBuildActions(nw, &info.actionDefs)
-		if err != nil {
-			return err
-		}
+			err = c.writeLocalBuildActions(sWriter, &info.actionDefs)
+			if err != nil {
+				return err
+			}
 
-		err = nw.BlankLine()
-		if err != nil {
-			return err
+			err = sWriter.BlankLine()
+			if err != nil {
+				return err
+			}
+			ninjaBytes = inMemoryWriter.Bytes()
+
+			if info.incrementalSupported {
+				c.buildActionsCache.writeNinjaStatements(info.buildActionCacheKey, ninjaBytes)
+			}
 		}
+		nw.writer.Write(ninjaBytes)
 	}
 
 	return nil
@@ -5092,16 +5394,18 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 }
 
 func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
-	var providers []CachedProvider
 	var providerHashes []ProviderHash
 
 	for i, p := range module.providers {
 		if p != nil && providerRegistry[i].mutator == "" {
-			providers = append(providers,
+			err := c.buildActionsCache.writeProvider(c.EncContext, module.providerInitialValueHashes[i],
 				CachedProvider{
 					Id:    providerRegistry[i],
-					Value: &p,
+					Value: p,
 				})
+			if err != nil {
+				panic(err)
+			}
 			providerHashes = append(providerHashes,
 				ProviderHash{
 					Id:   providerRegistry[i],
@@ -5110,19 +5414,14 @@ func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
 		}
 	}
 
-	buildActionData := BuildActionCachedData{
+	buildActionData := ModuleActionCachedData{
 		InputHash:        module.buildActionInputHash,
 		ProviderHashes:   providerHashes,
 		OrderOnlyStrings: module.orderOnlyStrings,
 		GlobCache:        module.globCache,
 	}
 
-	providersData := ProviderCachedData{
-		Providers: providers,
-	}
-
-	err := errors.Join(c.buildActionsCache.writeBuildAction(c.EncContext, module.buildActionCacheKey, &buildActionData),
-		c.buildActionsCache.writeProviders(c.EncContext, module.buildActionCacheKey, &providersData))
+	err := c.buildActionsCache.writeModuleBuildAction(c.EncContext, module.buildActionCacheKey, &buildActionData)
 	if err != nil {
 		panic(err)
 	}

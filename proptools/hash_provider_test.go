@@ -1,11 +1,15 @@
 package proptools
 
 import (
+	"slices"
 	"strings"
 	"testing"
+	"text/scanner"
+
+	"github.com/google/blueprint/parser"
 )
 
-func mustHash(t *testing.T, data interface{}) uint64 {
+func mustHash(t *testing.T, data interface{}) Hash {
 	t.Helper()
 	result, err := CalculateHash(data)
 	if err != nil {
@@ -68,6 +72,10 @@ var hashTestCases = []struct {
 	{
 		name: "string",
 		data: "foo",
+	},
+	{
+		name: "empty string",
+		data: "",
 	},
 	{
 		name: "*string",
@@ -137,6 +145,16 @@ var hashTestCases = []struct {
 				},
 			},
 		},
+	}, {
+		name: "recursive pointer",
+		data: func() any {
+			type t struct {
+				p *t
+			}
+			v := &t{}
+			v.p = v
+			return v
+		}(),
 	},
 }
 
@@ -207,6 +225,103 @@ func TestContainsConfigurable(t *testing.T) {
 	}
 }
 
+func TestHashingDuplicatePointers(t *testing.T) {
+	str1 := "this is a hash test for pointers"
+	str2 := "this is a hash test for pointers"
+	data1 := struct {
+		f1 *string
+		f2 *string
+	}{
+		f1: &str1,
+		f2: &str1,
+	}
+	data2 := struct {
+		f1 *string
+		f2 *string
+	}{
+		f1: &str1,
+		f2: &str2,
+	}
+	hash1, err := CalculateHash(data1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash2, err := CalculateHash(data2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash1 != hash2 {
+		t.Errorf("hashing pointers to same string vs pointers to identical strings should be equal")
+	}
+
+}
+
+func TestHashBytes(t *testing.T) {
+	hash := Hash{0x1234567890ABCDEF}
+	bytes := hash.Bytes()
+	if len(bytes) != HashSize {
+		t.Fatalf("Expected %d bytes, got %d", HashSize, len(bytes))
+	}
+
+	expected := []byte{0xef, 0xcd, 0xab, 0x90, 0x78, 0x56, 0x34, 0x12}
+	if !slices.Equal(bytes, expected) {
+		t.Fatalf("Expected %#v, got %#v", expected, bytes)
+	}
+}
+
+func TestHashOfDifferentTypesIsDifferent(t *testing.T) {
+	type t1 struct {
+		s string
+	}
+	type t2 struct {
+		s string
+	}
+
+	s1 := t1{"foo"}
+	s2 := t2{"foo"}
+
+	h1, err := CalculateHash(s1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := CalculateHash(s2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if h1 == h2 {
+		t.Errorf("expected hashes of %#v and %#v to be different, got %v and %v", s1, s2, h1, h2)
+	}
+}
+
+func TestHashOfDifferentTypesInInterfaceIsDifferent(t *testing.T) {
+	type i struct {
+		v any
+	}
+	type t1 struct {
+		s string
+	}
+	type t2 struct {
+		s string
+	}
+
+	s1 := i{t1{"foo"}}
+	s2 := i{t2{"foo"}}
+
+	h1, err := CalculateHash(s1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2, err := CalculateHash(s2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if h1 == h2 {
+		t.Errorf("expected hashes of %#v and %#v to be different, got %v and %v", s1, s2, h1, h2)
+	}
+}
+
 func BenchmarkCalculateHash(b *testing.B) {
 	for _, testCase := range hashTestCases {
 		b.Run(testCase.name, func(b *testing.B) {
@@ -218,5 +333,26 @@ func BenchmarkCalculateHash(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func TestHashCalculationExcludePosition(t *testing.T) {
+	instance1 := &parser.String{
+		LiteralPos: scanner.Position{
+			Line: 10,
+		},
+		Value: "-Wall",
+	}
+	instance2 := &parser.String{
+		LiteralPos: scanner.Position{
+			Line: 20,
+		},
+		Value: "-Wall",
+	}
+
+	hash1, _ := CalculateHash(instance1)
+	hash2, _ := CalculateHash(instance2)
+	if hash1 != hash2 {
+		t.Fatalf("Expect hash values to be equal: %d %d", hash1, hash2)
 	}
 }

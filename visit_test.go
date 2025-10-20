@@ -15,7 +15,6 @@
 package blueprint
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -23,11 +22,8 @@ type visitModule struct {
 	ModuleBase
 	SimpleName
 	properties struct {
-		Visit                 []string
-		VisitDepsDepthFirst   string `blueprint:"mutated"`
-		VisitDepsDepthFirstIf string `blueprint:"mutated"`
-		VisitDirectDeps       string `blueprint:"mutated"`
-		VisitDirectDepsIf     string `blueprint:"mutated"`
+		Visit           []string
+		VisitDirectDeps string `blueprint:"mutated"`
 	}
 }
 
@@ -53,24 +49,8 @@ func visitDepsMutator(ctx BottomUpMutatorContext) {
 
 func visitMutator(ctx BottomUpMutatorContext) {
 	if m, ok := ctx.Module().(*visitModule); ok {
-		ctx.VisitDepsDepthFirst(func(dep Module) {
-			if ctx.OtherModuleDependencyTag(dep) != visitTagDep {
-				panic(fmt.Errorf("unexpected dependency tag on %q", ctx.OtherModuleName(dep)))
-			}
-			m.properties.VisitDepsDepthFirst = m.properties.VisitDepsDepthFirst + ctx.OtherModuleName(dep)
-		})
-		ctx.VisitDepsDepthFirstIf(func(dep Module) bool {
-			return ctx.OtherModuleName(dep) != "B"
-		}, func(dep Module) {
-			m.properties.VisitDepsDepthFirstIf = m.properties.VisitDepsDepthFirstIf + ctx.OtherModuleName(dep)
-		})
 		ctx.VisitDirectDeps(func(dep Module) {
 			m.properties.VisitDirectDeps = m.properties.VisitDirectDeps + ctx.OtherModuleName(dep)
-		})
-		ctx.VisitDirectDepsIf(func(dep Module) bool {
-			return ctx.OtherModuleName(dep) != "B"
-		}, func(dep Module) {
-			m.properties.VisitDirectDepsIf = m.properties.VisitDirectDepsIf + ctx.OtherModuleName(dep)
 		})
 	}
 }
@@ -151,16 +131,10 @@ func TestVisit(t *testing.T) {
 	ctx := setupVisitTest(t)
 
 	topModule := ctx.moduleGroupFromName("A", nil).modules.firstModule().logicModule.(*visitModule)
-	assertString(t, topModule.properties.VisitDepsDepthFirst, "FEDCB")
-	assertString(t, topModule.properties.VisitDepsDepthFirstIf, "FEDC")
 	assertString(t, topModule.properties.VisitDirectDeps, "B")
-	assertString(t, topModule.properties.VisitDirectDepsIf, "")
 
 	eModule := ctx.moduleGroupFromName("E", nil).modules.firstModule().logicModule.(*visitModule)
-	assertString(t, eModule.properties.VisitDepsDepthFirst, "F")
-	assertString(t, eModule.properties.VisitDepsDepthFirstIf, "F")
 	assertString(t, eModule.properties.VisitDirectDeps, "FF")
-	assertString(t, eModule.properties.VisitDirectDepsIf, "FF")
 }
 
 func assertString(t *testing.T, got, expected string) {

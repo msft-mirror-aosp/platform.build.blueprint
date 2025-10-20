@@ -1,0 +1,18 @@
+bootstrap_go_package {
+    name: "blueprint-bootstrap-bpdoc",
+    deps: [
+        "blueprint",
+        "blueprint-proptools",
+    ],
+    pkgPath: "github.com/google/blueprint/bootstrap/bpdoc",
+    srcs: [
+        "bpdoc.go",
+        "properties.go",
+        "reader.go",
+    ],
+    testSrcs: [
+        "bpdoc_test.go",
+        "properties_test.go",
+        "reader_test.go",
+    ],
+}

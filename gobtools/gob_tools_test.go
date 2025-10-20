@@ -16,6 +16,8 @@ package gobtools
 
 import (
 	"bytes"
+	"fmt"
+	"math"
 	"reflect"
 	"testing"
 )
@@ -160,4 +162,123 @@ func TestEncDecReferencesString(t *testing.T) {
 			t.Errorf("should decode to the same reference: \n  %#v\n %#v", tc.decoded1, tc.decoded2)
 		}
 	}
+}
+
+func testEncDecInteger[T comparable](t *testing.T, want T) {
+	t.Helper()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("unexpected error: %s", err)
+		}
+	}
+	const trailingValue = "foo"
+
+	buf := &bytes.Buffer{}
+	must(dispatchEncode(buf, want))
+	must(EncodeString(buf, trailingValue))
+	r := bytes.NewReader(buf.Bytes())
+	var got T
+	must(dispatchDecode(r, &got))
+	var s string
+	must(DecodeString(r, &s))
+	if got != want {
+		t.Errorf("failed to encode/decode %T: expected %v, got %v", want, want, got)
+	}
+	if s != trailingValue {
+		t.Errorf("failed to decode trailing value, expected %s, got %s", trailingValue, s)
+	}
+}
+
+func dispatchEncode(buf *bytes.Buffer, value any) error {
+	switch i := value.(type) {
+	case int:
+		return EncodeInt(buf, i)
+	case int16:
+		return EncodeInt16(buf, i)
+	case int32:
+		return EncodeInt32(buf, i)
+	case int64:
+		return EncodeInt64(buf, i)
+	case uint16:
+		return EncodeUint16(buf, i)
+	case uint32:
+		return EncodeUint32(buf, i)
+	case uint64:
+		return EncodeUint64(buf, i)
+	default:
+		panic(fmt.Errorf("unhandled type %T", value))
+	}
+}
+
+func dispatchDecode(buf *bytes.Reader, value any) error {
+	switch i := value.(type) {
+	case *int:
+		return DecodeInt(buf, i)
+	case *int16:
+		return DecodeInt16(buf, i)
+	case *int32:
+		return DecodeInt32(buf, i)
+	case *int64:
+		return DecodeInt64(buf, i)
+	case *uint16:
+		return DecodeUint16(buf, i)
+	case *uint32:
+		return DecodeUint32(buf, i)
+	case *uint64:
+		return DecodeUint64(buf, i)
+	default:
+		panic(fmt.Errorf("unhandled type %T", value))
+	}
+}
+
+func TestEncDecIntegers(t *testing.T) {
+	testEncDecInteger[int16](t, math.MaxInt16)
+	testEncDecInteger[int16](t, math.MinInt16)
+	testEncDecInteger[int16](t, 0)
+	testEncDecInteger[int16](t, 1)
+	testEncDecInteger[int16](t, -1)
+
+	testEncDecInteger[int32](t, math.MaxInt16)
+	testEncDecInteger[int32](t, math.MinInt16)
+	testEncDecInteger[int32](t, math.MaxInt32)
+	testEncDecInteger[int32](t, math.MinInt32)
+	testEncDecInteger[int32](t, 0)
+	testEncDecInteger[int32](t, 1)
+	testEncDecInteger[int32](t, -1)
+
+	testEncDecInteger[int64](t, math.MaxInt16)
+	testEncDecInteger[int64](t, math.MinInt16)
+	testEncDecInteger[int64](t, math.MaxInt32)
+	testEncDecInteger[int64](t, math.MinInt32)
+	testEncDecInteger[int64](t, math.MaxInt64)
+	testEncDecInteger[int64](t, math.MinInt64)
+	testEncDecInteger[int64](t, 0)
+	testEncDecInteger[int64](t, 1)
+	testEncDecInteger[int64](t, -1)
+
+	testEncDecInteger[uint16](t, math.MaxUint16)
+	testEncDecInteger[uint16](t, 0)
+	testEncDecInteger[uint16](t, 1)
+
+	testEncDecInteger[uint32](t, math.MaxUint16)
+	testEncDecInteger[uint32](t, math.MaxUint32)
+	testEncDecInteger[uint32](t, 0)
+	testEncDecInteger[uint32](t, 1)
+
+	testEncDecInteger[uint64](t, math.MaxUint16)
+	testEncDecInteger[uint64](t, math.MaxUint32)
+	testEncDecInteger[uint64](t, math.MaxUint64)
+	testEncDecInteger[uint64](t, 0)
+	testEncDecInteger[uint64](t, 1)
+
+	testEncDecInteger[int](t, math.MaxInt16)
+	testEncDecInteger[int](t, math.MinInt16)
+	testEncDecInteger[int](t, math.MaxInt32)
+	testEncDecInteger[int](t, math.MinInt32)
+	testEncDecInteger[int](t, math.MaxInt)
+	testEncDecInteger[int](t, math.MinInt)
+	testEncDecInteger[int](t, 0)
+	testEncDecInteger[int](t, 1)
+	testEncDecInteger[int](t, -1)
 }

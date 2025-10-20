@@ -7,6 +7,7 @@ import (
 	"github.com/google/blueprint/gobtools"
 )
 
+// begin of test_package.go
 func init() {
 	TypeStructGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(TypeStruct) })
 }
@@ -36,3 +37,5 @@ var TypeStructGobRegId int16
 func (r TypeStruct) GetTypeId() int16 {
 	return TypeStructGobRegId
 }
+
+// end of test_package.go

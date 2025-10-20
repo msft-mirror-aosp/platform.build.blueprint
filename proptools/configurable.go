@@ -519,7 +519,7 @@ type Configurable[T ConfigurableElements] struct {
 }
 
 type postProcessor[T ConfigurableElements] struct {
-	f func(T) T
+	p ConfigurablePostProcessor[T]
 	// start and end represent the range of configurableInners
 	// that this postprocessor is applied to. When appending two configurables
 	// together, the start and end values will stay the same for the left
@@ -598,13 +598,17 @@ func (c *Configurable[T]) AppendSimpleValue(value T) {
 	c.inner.appendSimpleValue(value)
 }
 
+type ConfigurablePostProcessor[T ConfigurableElements] interface {
+	PostProcess(T) T
+}
+
 // AddPostProcessor adds a function that will modify the result of
 // Get() when Get() is called. It operates on all the current contents
 // of the Configurable property, but if other values are appended to
 // the Configurable property afterwards, the postProcessor will not run
 // on them. This can be useful to essentially modify a configurable
 // property without evaluating it.
-func (c *Configurable[T]) AddPostProcessor(p func(T) T) {
+func (c *Configurable[T]) AddPostProcessor(p ConfigurablePostProcessor[T]) {
 	// Add the new postProcessor on top of the tallest stack of postProcessors.
 	// See Configurable.evaluate for more details on the postProcessors algorithm
 	// and data structure.
@@ -615,7 +619,7 @@ func (c *Configurable[T]) AddPostProcessor(p func(T) T) {
 	}
 	if len(*c.postProcessors) == 0 {
 		*c.postProcessors = [][]postProcessor[T]{{{
-			f:     p,
+			p:     p,
 			start: 0,
 			end:   num_links,
 		}}}
@@ -629,7 +633,7 @@ func (c *Configurable[T]) AddPostProcessor(p func(T) T) {
 			}
 		}
 		(*c.postProcessors)[deepestI] = append((*c.postProcessors)[deepestI], postProcessor[T]{
-			f:     p,
+			p:     p,
 			start: 0,
 			end:   num_links,
 		})
@@ -743,7 +747,7 @@ func (c *Configurable[T]) evaluate(propertyName string, evaluator ConfigurableEv
 				newValues = append(newValues, currentValues[i:startI]...)
 				merged := mergeValues(currentValues[startI:endI])
 				if merged.value != nil {
-					processed := postProcessor.f(*merged.value)
+					processed := postProcessor.p.PostProcess(*merged.value)
 					merged.value = &processed
 				}
 				newValues = append(newValues, merged)

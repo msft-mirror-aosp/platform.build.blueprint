@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"unsafe"
 
 	"github.com/google/blueprint/dbtools"
 	"github.com/google/blueprint/proptools"
@@ -42,7 +43,7 @@ func NewEncContext(db dbtools.KeyValueStore) EncContext {
 
 type ReferencesEncoder struct {
 	encodedReferences syncmap.SyncMap[any, *encodedReference]
-	decodedReferences syncmap.SyncMap[uint64, any]
+	decodedReferences syncmap.SyncMap[proptools.Hash, any]
 	db                dbtools.KeyValueStore
 }
 
@@ -63,8 +64,8 @@ func NewReferencesEncoderForTest() *ReferencesEncoder {
 
 // encodedReference stores information about an encoded value reference.
 type encodedReference struct {
-	valueRefId          uint64        // The unique hash ID for the value.
-	valueEncodingBuffer *bytes.Buffer // The buffer containing the encoded actual value (including its own ref ID and length).
+	valueRefId          proptools.Hash // The unique hash ID for the value.
+	valueEncodingBuffer *bytes.Buffer  // The buffer containing the encoded actual value (including its own ref ID and length).
 }
 
 func (b *ReferencesEncoder) openForTests() error {
@@ -79,7 +80,7 @@ func (b *ReferencesEncoder) openForTests() error {
 func (c *ReferencesEncoder) EncodeReferences() error {
 	var err error
 	c.encodedReferences.Range(func(_ any, value *encodedReference) bool {
-		if err = c.db.Put(uint64ToBytes(value.valueRefId), value.valueEncodingBuffer.Bytes()); err != nil {
+		if err = c.db.Put(hashToBytes(value.valueRefId), value.valueEncodingBuffer.Bytes()); err != nil {
 			return false
 		}
 		return true
@@ -129,16 +130,16 @@ func (c *ReferencesEncoder) EncodeReference(value any, buf *bytes.Buffer, typ st
 }
 
 func (c *ReferencesEncoder) DecodeReference(buf *bytes.Reader, decode func(buf *bytes.Reader) (any, error)) (any, error) {
-	var ref uint64 // Variable to store the decoded reference ID.
+	var ref proptools.Hash // Variable to store the decoded reference ID.
 
 	// Decode the reference ID of the value from the input stream.
-	if err := DecodeSimple[uint64](buf, &ref); err != nil {
+	if err := DecodeSimple[proptools.Hash](buf, &ref); err != nil {
 		return nil, err // Return error if decoding the reference fails.
 	}
 
 	// Try to load the value using its reference ID from the decoded values cache.
 	if v, ok := c.decodedReferences.Load(ref); !ok {
-		data, err := c.db.Get(uint64ToBytes(ref))
+		data, err := c.db.Get(hashToBytes(ref))
 		if err != nil {
 			panic(fmt.Errorf("failed to Get from db: %v", err))
 			return nil, err
@@ -163,9 +164,9 @@ type valueHashConfig struct {
 	value any
 }
 
-func uint64ToBytes(value uint64) []byte {
-	ret := make([]byte, 8)
-	binary.BigEndian.PutUint64(ret, value)
+func hashToBytes(value proptools.Hash) []byte {
+	ret := make([]byte, proptools.HashSize)
+	value.PutBigEndian(ret)
 	return ret
 }
 
@@ -253,7 +254,7 @@ func DecodeString(buf *bytes.Reader, s *string) error {
 	b := make([]byte, length)
 	_, err = io.ReadFull(buf, b)
 	if err == nil {
-		*s = string(b)
+		*s = unsafe.String(unsafe.SliceData(b), len(b))
 	}
 
 	return err
@@ -270,6 +271,81 @@ func EncodeSimple[T any](buf *bytes.Buffer, b T) error {
 // Decode a primitive value.
 func DecodeSimple[T any](buf *bytes.Reader, data *T) error {
 	return binary.Read(buf, binary.BigEndian, data)
+}
+
+func EncodeBool(buf *bytes.Buffer, b bool) error {
+	var c byte = 0
+	if b {
+		c = 1
+	}
+	_, err := buf.Write([]byte{c})
+	return err
+}
+
+func DecodeBool(buf *bytes.Reader, b *bool) error {
+	c, err := buf.ReadByte()
+	if err != nil {
+		return err
+	}
+	*b = c != 0
+	return nil
+}
+
+func EncodeVarint[T int | int16 | int32 | int64](buf *bytes.Buffer, i T) error {
+	var b [binary.MaxVarintLen64]byte
+	n := binary.PutVarint(b[:], int64(i))
+	_, err := buf.Write(b[:n])
+	return err
+}
+
+func EncodeUvarint[T uint | uint16 | uint32 | uint64](buf *bytes.Buffer, i T) error {
+	var b [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(b[:], uint64(i))
+	_, err := buf.Write(b[:n])
+	return err
+}
+
+func DecodeVarint[T int | int16 | int32 | int64](buf *bytes.Reader, i *T) error {
+	n, err := binary.ReadVarint(buf)
+	if err != nil {
+		return err
+	}
+	*i = T(n)
+	return nil
+}
+
+func DecodeUvarint[T uint | uint16 | uint32 | uint64](buf *bytes.Reader, i *T) error {
+	n, err := binary.ReadUvarint(buf)
+	if err != nil {
+		return err
+	}
+	*i = T(n)
+	return nil
+}
+
+func EncodeInt16(buf *bytes.Buffer, i int16) error   { return EncodeVarint(buf, i) }
+func EncodeInt32(buf *bytes.Buffer, i int32) error   { return EncodeVarint(buf, i) }
+func EncodeInt64(buf *bytes.Buffer, i int64) error   { return EncodeVarint(buf, i) }
+func EncodeUint16(buf *bytes.Buffer, i uint16) error { return EncodeUvarint(buf, i) }
+func EncodeUint32(buf *bytes.Buffer, i uint32) error { return EncodeUvarint(buf, i) }
+func EncodeUint64(buf *bytes.Buffer, i uint64) error { return EncodeUvarint(buf, i) }
+
+func DecodeInt16(buf *bytes.Reader, i *int16) error   { return DecodeVarint(buf, i) }
+func DecodeInt32(buf *bytes.Reader, i *int32) error   { return DecodeVarint(buf, i) }
+func DecodeInt64(buf *bytes.Reader, i *int64) error   { return DecodeVarint(buf, i) }
+func DecodeUint16(buf *bytes.Reader, i *uint16) error { return DecodeUvarint(buf, i) }
+func DecodeUint32(buf *bytes.Reader, i *uint32) error { return DecodeUvarint(buf, i) }
+func DecodeUint64(buf *bytes.Reader, i *uint64) error { return DecodeUvarint(buf, i) }
+
+func EncodeInt(buf *bytes.Buffer, i int) error { return EncodeVarint(buf, int64(i)) }
+func DecodeInt(buf *bytes.Reader, i *int) error {
+	var i64 int64
+	err := DecodeVarint(buf, &i64)
+	if err != nil {
+		return err
+	}
+	*i = int(i64)
+	return nil
 }
 
 // Encode a struct. It uses type assert to leverage Gob to encode the value when

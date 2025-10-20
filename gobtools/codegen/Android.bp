@@ -1,10 +1,24 @@
 blueprint_go_binary {
     name: "gob_gen",
-    srcs: ["gob_gen.go"],
+    srcs: [
+        "array.go",
+        "decode.go",
+        "depset.go",
+        "encode.go",
+        "gob_gen.go",
+        "gob_test_data.go",
+        "main_enc.go",
+        "map.go",
+        "pointer.go",
+        "slice.go",
+        "struct.go",
+        "types.go",
+        "unique.go",
+        "uniquelist.go",
+        "util.go",
+    ],
     testSrcs: [
         "gob_gen_test.go",
-        "gob_test_data.go",
-        "gob_test_data_gob_enc.go",
     ],
     visibility: [
         // used by plugins
@@ -14,6 +28,7 @@ blueprint_go_binary {
         "blueprint-depset",
         "blueprint-gobtools",
         "blueprint-gobtools-test",
+        "blueprint-proptools",
         "blueprint-uniquelist",
     ],
 }

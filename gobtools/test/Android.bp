@@ -3,7 +3,7 @@ bootstrap_go_package {
     pkgPath: "github.com/google/blueprint/gobtools/test",
     srcs: [
         "test_package.go",
-        "test_package_gob_enc.go",
+        "test_enc.go",
     ],
     visibility: [
         "//visibility:public",

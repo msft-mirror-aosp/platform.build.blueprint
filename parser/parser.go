@@ -824,7 +824,7 @@ func (s *Scope) HandleAssignment(assignment *Assignment) error {
 		}
 		if old, ok := s.vars[assignment.Name]; !ok {
 			return fmt.Errorf("modified non-existent variable %q with +=", assignment.Name)
-		} else if old.Referenced {
+		} else if old.Referenced.Load() {
 			return fmt.Errorf("modified variable %q with += after referencing", assignment.Name)
 		} else {
 			newValue, err := evaluateOperator(s, '+', old.Value, assignment.Value)

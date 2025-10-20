@@ -1,0 +1,9 @@
+blueprint_go_binary {
+    name: "bpfmt",
+    deps: ["blueprint-parser"],
+    srcs: ["bpfmt.go"],
+    visibility: [
+        "//development/tools/cargo_embargo",
+        "//tools/external_updater",
+    ],
+}

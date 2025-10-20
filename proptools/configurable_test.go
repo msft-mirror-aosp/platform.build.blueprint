@@ -11,7 +11,7 @@ func TestPostProcessor(t *testing.T) {
 	prop := NewConfigurable[[]string](nil, nil)
 	prop.AppendSimpleValue([]string{"a"})
 	prop.AppendSimpleValue([]string{"b"})
-	prop.AddPostProcessor(addToElements("1"))
+	prop.AddPostProcessor(addToElementsProcessor{"1"})
 
 	prop2 := NewConfigurable[[]string](nil, nil)
 	prop2.AppendSimpleValue([]string{"c"})
@@ -19,20 +19,20 @@ func TestPostProcessor(t *testing.T) {
 	prop3 := NewConfigurable[[]string](nil, nil)
 	prop3.AppendSimpleValue([]string{"d"})
 	prop3.AppendSimpleValue([]string{"e"})
-	prop3.AddPostProcessor(addToElements("2"))
+	prop3.AddPostProcessor(addToElementsProcessor{"2"})
 
 	prop4 := NewConfigurable[[]string](nil, nil)
 	prop4.AppendSimpleValue([]string{"f"})
 
 	prop5 := NewConfigurable[[]string](nil, nil)
 	prop5.AppendSimpleValue([]string{"g"})
-	prop5.AddPostProcessor(addToElements("3"))
+	prop5.AddPostProcessor(addToElementsProcessor{"3"})
 
 	prop2.Append(prop3)
-	prop2.AddPostProcessor(addToElements("z"))
+	prop2.AddPostProcessor(addToElementsProcessor{"z"})
 
 	prop.Append(prop2)
-	prop.AddPostProcessor(addToElements("y"))
+	prop.AddPostProcessor(addToElementsProcessor{"y"})
 	prop.Append(prop4)
 	prop.Append(prop5)
 
@@ -40,6 +40,11 @@ func TestPostProcessor(t *testing.T) {
 	x := prop.Get(&configurableEvalutorForTesting{})
 	if !reflect.DeepEqual(x.Get(), expected) {
 		t.Fatalf("Expected %v, got %v", expected, x.Get())
+	}
+
+	_, err := CalculateHash(prop)
+	if err != nil {
+		t.Errorf("Error calculating hash of configurable after AddPostProcessor: %s", err.Error())
 	}
 }
 
@@ -49,7 +54,7 @@ func TestPostProcessorWhenPassedToHelperFunction(t *testing.T) {
 	prop.AppendSimpleValue([]string{"b"})
 
 	helper := func(p Configurable[[]string]) {
-		p.AddPostProcessor(addToElements("1"))
+		p.AddPostProcessor(addToElementsProcessor{"1"})
 	}
 
 	helper(prop)
@@ -61,13 +66,15 @@ func TestPostProcessorWhenPassedToHelperFunction(t *testing.T) {
 	}
 }
 
-func addToElements(s string) func([]string) []string {
-	return func(arr []string) []string {
-		for i := range arr {
-			arr[i] = arr[i] + s
-		}
-		return arr
+type addToElementsProcessor struct {
+	s string
+}
+
+func (p addToElementsProcessor) PostProcess(arr []string) []string {
+	for i := range arr {
+		arr[i] = arr[i] + p.s
 	}
+	return arr
 }
 
 type configurableEvalutorForTesting struct {

@@ -44,6 +44,7 @@ type Args struct {
 	// Debug data json file
 	ModuleDebugFile         string
 	IncrementalBuildActions bool
+	IncrementalProviderTest bool
 	IncrementalDebugFile    string
 }
 

@@ -168,8 +168,20 @@ func (m ModuleProxy) IsNil() bool {
 	return m.moduleInfo == nil
 }
 
-func (m ModuleProxy) IncrementalInfo() (bool, bool) {
-	return m.moduleInfo.incrementalSupported, m.moduleInfo.incrementalRestored
+type IncrementalMetricsInfo struct {
+	IncrementalRestored        bool
+	HasUnrestoredProvider      []bool
+	ProviderInitialValueHashes []proptools.Hash
+	IncrementalSupported       bool
+}
+
+func (m ModuleProxy) IncrementalInfo() *IncrementalMetricsInfo {
+	return &IncrementalMetricsInfo{
+		IncrementalRestored:        m.moduleInfo.incrementalRestored,
+		HasUnrestoredProvider:      m.moduleInfo.hasUnrestoredProvider,
+		ProviderInitialValueHashes: m.moduleInfo.providerInitialValueHashes,
+		IncrementalSupported:       m.moduleInfo.incrementalSupported,
+	}
 }
 
 func (m ModuleProxy) Name() string {
@@ -290,10 +302,6 @@ type EarlyModuleContext interface {
 type BaseModuleContext interface {
 	EarlyModuleContext
 
-	// GetDirectDepWithTag returns the Module the direct dependency with the specified name, or nil if
-	// none exists.  It panics if the dependency does not have the specified tag.
-	GetDirectDepWithTag(name string, tag DependencyTag) Module
-
 	GetDirectDepProxyWithTag(name string, tag DependencyTag) ModuleProxy
 
 	// VisitDirectDeps calls visit for each direct dependency.  If there are multiple direct dependencies on the same
@@ -306,33 +314,6 @@ type BaseModuleContext interface {
 
 	VisitDirectDepsProxy(visit func(proxy ModuleProxy))
 
-	// VisitDirectDepsIf calls pred for each direct dependency, and if pred returns true calls visit.  If there are
-	// multiple direct dependencies on the same module pred and visit will be called multiple times on that module and
-	// OtherModuleDependencyTag will return a different tag for each.
-	//
-	// The Module passed to the visit function should not be retained outside of the visit function, it may be
-	// invalidated by future mutators.
-	VisitDirectDepsIf(pred func(Module) bool, visit func(Module))
-
-	// VisitDepsDepthFirst calls visit for each transitive dependency, traversing the dependency tree in depth first
-	// order. visit will only be called once for any given module, even if there are multiple paths through the
-	// dependency tree to the module or multiple direct dependencies with different tags.  OtherModuleDependencyTag will
-	// return the tag for the first path found to the module.
-	//
-	// The Module passed to the visit function should not be retained outside of the visit function, it may be
-	// invalidated by future mutators.
-	VisitDepsDepthFirst(visit func(Module))
-
-	// VisitDepsDepthFirstIf calls pred for each transitive dependency, and if pred returns true calls visit, traversing
-	// the dependency tree in depth first order.  visit will only be called once for any given module, even if there are
-	// multiple paths through the dependency tree to the module or multiple direct dependencies with different tags.
-	// OtherModuleDependencyTag will return the tag for the first path found to the module.  The return value of pred
-	// does not affect which branches of the tree are traversed.
-	//
-	// The Module passed to the visit function should not be retained outside of the visit function, it may be
-	// invalidated by future mutators.
-	VisitDepsDepthFirstIf(pred func(Module) bool, visit func(Module))
-
 	// WalkDeps calls visit for each transitive dependency, traversing the dependency tree in top down order.  visit may
 	// be called multiple times for the same (child, parent) pair if there are multiple direct dependencies between the
 	// child and parent with different tags.  OtherModuleDependencyTag will return the tag for the currently visited
@@ -344,29 +325,13 @@ type BaseModuleContext interface {
 
 	WalkDepsProxy(visit func(ModuleProxy, ModuleProxy) bool)
 
-	// PrimaryModule returns the first variant of the current module.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
-	// Module returned by PrimaryModule without data races.  This can be used to perform singleton actions that are
-	// only done once for all variants of a module.
-	PrimaryModule() Module
+	// IsPrimaryModule returns if the current module is the first variant.  This can be used to perform singleton
+	// actions that are only done once for all variants of a module.
+	IsPrimaryModule() bool
 
-	// IsPrimaryModule returns if the current module is the first variant.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
-	// Module returned by PrimaryModule without data races.  This can be used to perform singleton actions that are
-	// only done once for all variants of a module.
-	IsPrimaryModule(module ModuleOrProxy) bool
-
-	// FinalModule returns the last variant of the current module.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
-	// variants using VisitAllModuleVariants if the current module == FinalModule().  This can be used to perform
-	// singleton actions that are only done once for all variants of a module.
-	FinalModule() Module
-
-	// IsFinalModule returns if the current module is the last variant.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
-	// variants using VisitAllModuleVariants if the current module is the last one.  This can be used to perform
-	// singleton actions that are only done once for all variants of a module.
-	IsFinalModule(module ModuleOrProxy) bool
+	// IsFinalModule returns if the current module is the last variant.  This can be used to perform singleton
+	// actions that are only done once for all variants of a module.
+	IsFinalModule() bool
 
 	// OtherModuleName returns the name of another Module.  See BaseModuleContext.ModuleName for more information.
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
@@ -772,9 +737,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 	// code changes.
 	incrementalAnalysis := false
 	var cacheKey *BuildActionCacheKey = nil
-	if im, ok := m.module.logicModule.(Incremental); ok {
-		m.module.incrementalSupported = im.IncrementalSupported()
-	}
+	m.module.incrementalSupported = incrementalSupported(m.module)
 
 	// Whether the incremental flag is set and the module type supports
 	// incremental, this will decide weather to cache the data for the module.
@@ -784,7 +747,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate properties hash"))
 		}
-		cacheInput := new(BuildActionCacheInput)
+		cacheInput := new(ModuleBuildActionCacheInput)
 		cacheInput.PropertiesHash = hash
 		var deps []ModuleProxy
 		m.VisitDirectDepsProxy(func(module ModuleProxy) {
@@ -810,7 +773,7 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 
 	if incrementalAnalysis {
 		// Try to restore from cache if there is a cache hit
-		data, err := m.context.buildActionsCache.readBuildAction(m.context.EncContext, cacheKey)
+		data, err := m.context.buildActionsCache.readModuleBuildAction(m.context.EncContext, cacheKey)
 		if err != nil {
 			panic(err)
 		}
@@ -832,16 +795,15 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 		}
 
 		if m.module.providerInitialValueHashes == nil {
-			m.module.providerInitialValueHashes = make([]uint64, len(providerRegistry))
+			m.module.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
 		}
 
+		m.module.hasUnrestoredProvider = make([]bool, len(providerRegistry))
 		m.module.incrementalRestored = true
 
 		for _, provider := range data.ProviderHashes {
 			m.module.providerInitialValueHashes[provider.Id.id] = provider.Hash
-			// We need to restore all the providers before we cache singletons, so do
-			// it here so the work can be run more in parallel.
-			maybeRestoreProviders(m.context, m.module, provider.Id)
+			m.module.hasUnrestoredProvider[provider.Id.id] = true
 		}
 
 		m.module.orderOnlyStrings = data.OrderOnlyStrings
@@ -878,6 +840,14 @@ func (m *moduleContext) restoreModuleBuildActions() bool {
 	return m.module.incrementalRestored
 }
 
+func incrementalSupported(m *moduleInfo) bool {
+	if im, ok := m.logicModule.(Incremental); ok {
+		return im.IncrementalSupported()
+	}
+
+	return true
+}
+
 type depProviders struct {
 	Name      string   `json:"dep_name"`
 	Type      string   `json:"dep_type"`
@@ -885,13 +855,13 @@ type depProviders struct {
 	Providers []string `json:"dep_provider_hash"`
 }
 
-func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *BuildActionCacheInput) []byte {
+func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *ModuleBuildActionCacheInput) []byte {
 	info := struct {
 		Name      string         `json:"name"`
 		CacheKey  string         `json:"cache_key"`
 		Type      string         `json:"type"`
 		Variant   string         `json:"variant"`
-		PropHash  uint64         `json:"properties_hash"`
+		PropHash  proptools.Hash `json:"properties_hash"`
 		Providers []depProviders `json:"providers"`
 	}{
 		Name:     m.module.logicModule.Name(),
@@ -909,7 +879,7 @@ func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *Build
 					Variant: dep.variant.name,
 				}
 				for _, p := range providerRegistry {
-					if dep.providerInitialValueHashes[p.id] == 0 {
+					if dep.providerInitialValueHashes[p.id] == proptools.ZeroHash {
 						continue
 					}
 					dp.Providers = append(dp.Providers,
@@ -924,12 +894,12 @@ func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *Build
 	return buf
 }
 
-func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) Module {
+func (m *baseModuleContext) GetDirectDepProxyWithTag(name string, tag DependencyTag) ModuleProxy {
 	var deps []depInfo
 	for _, dep := range m.module.directDeps {
 		if dep.module.Name() == name {
 			if dep.tag == tag {
-				return dep.module.logicModule
+				return ModuleProxy{dep.module}
 			}
 			deps = append(deps, dep)
 		}
@@ -937,15 +907,6 @@ func (m *baseModuleContext) GetDirectDepWithTag(name string, tag DependencyTag) 
 
 	if len(deps) != 0 {
 		panic(fmt.Errorf("Unable to find dependency %q with requested tag %#v. Found: %#v", deps[0].module, tag, deps))
-	}
-
-	return nil
-}
-
-func (m *baseModuleContext) GetDirectDepProxyWithTag(name string, tag DependencyTag) ModuleProxy {
-	module := m.GetDirectDepWithTag(name, tag)
-	if module != nil {
-		return ModuleProxy{module.info()}
 	}
 
 	return ModuleProxy{}
@@ -992,76 +953,6 @@ func (m *baseModuleContext) VisitDirectDepsProxy(visit func(proxy ModuleProxy)) 
 	m.visitingDep = depInfo{}
 }
 
-func (m *baseModuleContext) VisitDirectDepsIf(pred func(Module) bool, visit func(Module)) {
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitDirectDepsIf(%s, %s, %s) for dependency %s",
-				m.module, funcName(pred), funcName(visit), m.visitingDep.module))
-		}
-	}()
-
-	m.visitingParent = m.module
-
-	for _, dep := range m.module.directDeps {
-		m.visitingDep = dep
-		if dep.module.logicModule == nil {
-			panic(fmt.Errorf("VisitDirectDepsIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
-		}
-		if pred(dep.module.logicModule) {
-			visit(dep.module.logicModule)
-		}
-	}
-
-	m.visitingParent = nil
-	m.visitingDep = depInfo{}
-}
-
-func (m *baseModuleContext) VisitDepsDepthFirst(visit func(Module)) {
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitDepsDepthFirst(%s, %s) for dependency %s",
-				m.module, funcName(visit), m.visitingDep.module))
-		}
-	}()
-
-	m.context.walkDeps(m.module, false, nil, func(dep depInfo, parent *moduleInfo) {
-		m.visitingParent = parent
-		m.visitingDep = dep
-		if dep.module.logicModule == nil {
-			panic(fmt.Errorf("VisitDepsDepthFirst visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
-		}
-		visit(dep.module.logicModule)
-	})
-
-	m.visitingParent = nil
-	m.visitingDep = depInfo{}
-}
-
-func (m *baseModuleContext) VisitDepsDepthFirstIf(pred func(Module) bool,
-	visit func(Module)) {
-
-	defer func() {
-		if r := recover(); r != nil {
-			panic(newPanicErrorf(r, "VisitDepsDepthFirstIf(%s, %s, %s) for dependency %s",
-				m.module, funcName(pred), funcName(visit), m.visitingDep.module))
-		}
-	}()
-
-	m.context.walkDeps(m.module, false, nil, func(dep depInfo, parent *moduleInfo) {
-		if pred(dep.module.logicModule) {
-			m.visitingParent = parent
-			m.visitingDep = dep
-			if dep.module.logicModule == nil {
-				panic(fmt.Errorf("VisitDepsDepthFirstIf visited module %s that called FreeAfterGenerateBuildActions()", dep.module))
-			}
-			visit(dep.module.logicModule)
-		}
-	})
-
-	m.visitingParent = nil
-	m.visitingDep = depInfo{}
-}
-
 func (m *baseModuleContext) WalkDeps(visit func(child, parent Module) bool) {
 	m.context.walkDeps(m.module, true, func(dep depInfo, parent *moduleInfo) bool {
 		m.visitingParent = parent
@@ -1087,20 +978,12 @@ func (m *baseModuleContext) WalkDepsProxy(visit func(child, parent ModuleProxy) 
 	m.visitingDep = depInfo{}
 }
 
-func (m *baseModuleContext) PrimaryModule() Module {
-	return m.module.group.modules.firstModule().logicModule
+func (m *baseModuleContext) IsPrimaryModule() bool {
+	return m.module.group.modules.firstModule() == m.module
 }
 
-func (m *baseModuleContext) IsPrimaryModule(module ModuleOrProxy) bool {
-	return m.module.group.modules.firstModule() == module.info()
-}
-
-func (m *baseModuleContext) FinalModule() Module {
-	return m.module.group.modules.lastModule().logicModule
-}
-
-func (m *baseModuleContext) IsFinalModule(module ModuleOrProxy) bool {
-	return m.module.group.modules.lastModule() == module.info()
+func (m *baseModuleContext) IsFinalModule() bool {
+	return m.module.group.modules.lastModule() == m.module
 }
 
 func (m *baseModuleContext) AddNinjaFileDeps(deps ...string) {
@@ -1163,6 +1046,13 @@ func (m *moduleContext) Rule(pctx PackageContext, name string,
 
 func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 	m.scope.ReparentTo(pctx)
+
+	if m.context.captureBuildParams {
+		if m.module.buildParams == nil {
+			m.module.buildParams = &[]BuildParams{}
+		}
+		*m.module.buildParams = append(*m.module.buildParams, params)
+	}
 
 	def, err := parseBuildParams(m.scope, &params, m.ModuleTags())
 	if err != nil {

@@ -17,12 +17,15 @@ package proptools
 import (
 	"cmp"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"hash"
 	"hash/fnv"
 	"math"
 	"reflect"
 	"slices"
+	"strconv"
+	"text/scanner"
 	"unsafe"
 
 	"github.com/google/blueprint/pool"
@@ -35,16 +38,62 @@ var recordSeparator []byte = []byte{36}
 
 var hasherPool = pool.New[hasher]()
 
-func CalculateHash(value interface{}) (uint64, error) {
+const HashSize = 8
+
+type Hash [1]uint64
+
+func (h *Hash) UnmarshalJSON(bytes []byte) error {
+	var s []uint64
+	err := json.Unmarshal(bytes, &s)
+	if err != nil {
+		return err
+	}
+	if len(s) != len(h) {
+		return fmt.Errorf("expected %d elements, got %d", len(h), len(s))
+	}
+	copy(h[:], s)
+	return nil
+}
+
+func (h *Hash) MarshalJSON() ([]byte, error) {
+	return json.Marshal(h[:])
+}
+
+var ZeroHash Hash
+
+func (h *Hash) FormatUint(base int) string {
+	return strconv.FormatUint(h[0], base)
+}
+
+func (h *Hash) PutBigEndian(buf []byte) {
+	binary.BigEndian.PutUint64(buf, h[0])
+}
+
+func (h *Hash) Bytes() []byte {
+	ptr := unsafe.Pointer(unsafe.SliceData(h[:]))
+	return unsafe.Slice((*byte)(ptr), len(h)*int(unsafe.Sizeof(h[0])))
+}
+
+func CalculateHash(value interface{}) (Hash, error) {
 	hasher := hasherPool.Get()
 	defer hasherPool.Put(hasher)
 	hasher.reset()
+
 	v := reflect.ValueOf(value)
 	var err error
 	if v.IsValid() {
+		var h Hash
+		// Include the hash of the type so that hashes of types with the same contents, for example
+		// empty slices of different types, produce different hashes.  The hash of each type is cached,
+		// so this should be very fast.
+		h, err = typeHash(v.Type())
+		if err != nil {
+			return Hash{}, err
+		}
+		hasher.writeHash(h)
 		err = hasher.calculateHash(v)
 	}
-	return hasher.Sum64(), err
+	return Hash{hasher.Sum64()}, err
 }
 
 type hasher struct {
@@ -91,6 +140,27 @@ func (hasher *hasher) writeByte(i byte) {
 	hasher.Write(hasher.int64Buf[:1])
 }
 
+func (hasher *hasher) writeString(s string) {
+	strLen := len(s)
+	if strLen == 0 {
+		// unsafe.StringData is unspecified in this case
+		hasher.writeByte(0)
+		return
+	}
+
+	hasher.Write(unsafe.Slice(unsafe.StringData(s), strLen))
+}
+
+func (hasher *hasher) writeHash(h Hash) {
+	for _, e := range h {
+		hasher.writeUint64(e)
+	}
+}
+
+func (hasher *hasher) writeRecordSeparator() {
+	hasher.Write(recordSeparator)
+}
+
 func (hasher *hasher) getMapState(size int) *mapState {
 	s := hasher.mapStateCache
 	// Clear hasher.mapStateCache so that any recursive uses don't collide with this frame.
@@ -119,10 +189,18 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 	v.IsValid()
 	switch v.Kind() {
 	case reflect.Struct:
+		// The scanner.Position is intentionally excluded from the hash calculation.
+		// This field should only be used for printing user-facing error messages,
+		// as it is sensitive to formatting changes like comments and whitespace.
+		// Including it would cause the hash to change and trigger an unnecessary
+		// re-analysis when no actual property has been modified.
+		if v.Type() == reflect.TypeOf(scanner.Position{}) {
+			return nil
+		}
 		l := v.NumField()
 		hasher.writeInt(l)
 		for i := 0; i < l; i++ {
-			hasher.Write(recordSeparator)
+			hasher.writeRecordSeparator()
 			err := hasher.calculateHash(v.Field(i))
 			if err != nil {
 				return fmt.Errorf("in field %s: %s", v.Type().Field(i).Name, err.Error())
@@ -142,12 +220,12 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 			return compare_values(s.keys[i], s.keys[j])
 		})
 		for i := 0; i < l; i++ {
-			hasher.Write(recordSeparator)
+			hasher.writeRecordSeparator()
 			err := hasher.calculateHash(s.keys[s.indexes[i]])
 			if err != nil {
 				return fmt.Errorf("in map: %s", err.Error())
 			}
-			hasher.Write(recordSeparator)
+			hasher.writeRecordSeparator()
 			err = hasher.calculateHash(s.values[s.indexes[i]])
 			if err != nil {
 				return fmt.Errorf("in map: %s", err.Error())
@@ -158,7 +236,7 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 		l := v.Len()
 		hasher.writeInt(l)
 		for i := 0; i < l; i++ {
-			hasher.Write(recordSeparator)
+			hasher.writeRecordSeparator()
 			err := hasher.calculateHash(v.Index(i))
 			if err != nil {
 				return fmt.Errorf("in %s at index %d: %s", v.Kind().String(), i, err.Error())
@@ -180,48 +258,52 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 			// Circular dependency detected (we have this in Scope at least), just return nil for now.
 			return nil
 		}
-		if hash, ok := hasher.ptrs[addr]; ok {
-			hasher.writeUint64(hash)
-			return nil
-		}
 		// The special logic below is to avoid hashing the same pointer more than once.
 		// We store the current hash value, then reset the hasher to a clean state in
 		// order to calculate the hash of the pointer which will be cached for future
 		// encounters. Once we have the hash value of the pointer, we hash both the
-		// stored hash value and the hash value of the pointer. This will still give
-		// us a unique hash value even though it is different from the case where we
-		// don't apply this special logic.
+		// stored hash value and the hash value of the pointer.
 		prevHash := hasher.Sum64()
 		hasher.Reset()
-		hasher.visiting[addr] = true
-		err := hasher.calculateHash(v.Elem())
-		if err != nil {
-			return fmt.Errorf("in pointer: %s", err.Error())
+
+		ptrHash, ok := hasher.ptrs[addr]
+		if !ok {
+			hasher.visiting[addr] = true
+			err := hasher.calculateHash(v.Elem())
+			if err != nil {
+				return fmt.Errorf("in pointer: %s", err.Error())
+			}
+			ptrHash = hasher.Sum64()
+			hasher.ptrs[addr] = ptrHash
+			delete(hasher.visiting, addr)
 		}
-		ptrHash := hasher.Sum64()
-		hasher.ptrs[addr] = ptrHash
+
+		hasher.Reset()
 		hasher.writeUint64(prevHash)
 		hasher.writeUint64(ptrHash)
-		delete(hasher.visiting, addr)
+
 	case reflect.Interface:
 		if v.IsNil() {
 			hasher.writeByte(0)
 		} else {
+			// Include the hash of the type so that hashes of types with the same contents, for example
+			// empty slices of different types, produce different hashes.  The hash of each type is cached,
+			// so this should be very fast.
+			h, err := typeHash(v.Elem().Type())
+			if err != nil {
+				return err
+			}
+			hasher.writeHash(h)
+			hasher.writeRecordSeparator()
 			// The only way get the pointer out of an interface to hash it or check for cycles
 			// would be InterfaceData(), but that's deprecated and seems like it has undefined behavior.
-			err := hasher.calculateHash(v.Elem())
+			err = hasher.calculateHash(v.Elem())
 			if err != nil {
 				return fmt.Errorf("in interface: %s", err.Error())
 			}
 		}
 	case reflect.String:
-		strLen := len(v.String())
-		if strLen == 0 {
-			// unsafe.StringData is unspecified in this case
-			hasher.writeByte(0)
-			return nil
-		}
-		hasher.Write(unsafe.Slice(unsafe.StringData(v.String()), strLen))
+		hasher.writeString(v.String())
 	case reflect.Bool:
 		if v.Bool() {
 			hasher.writeByte(1)
