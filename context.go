@@ -53,7 +53,7 @@ import (
 	"github.com/google/blueprint/uniquelist"
 )
 
-//go:generate go run gobtools/codegen/gob_gen.go
+//go:generate go run ./gobtools/codegen
 
 var ErrBuildActionsNotReady = errors.New("build actions are not ready")
 

@@ -31,7 +31,7 @@ import (
 	"github.com/google/blueprint/syncmap"
 )
 
-//go:generate go run gobtools/codegen/gob_gen.go
+//go:generate go run ./gobtools/codegen
 
 const moduleActionsDbName = "module_actions.db"
 const singletonActionsDbName = "singleton_actions.db"
