@@ -1,6 +1,6 @@
 package test
 
-//go:generate go run ../codegen/gob_gen.go
+//go:generate go run ../codegen
 
 type TypeAlias = []TypeStruct
 

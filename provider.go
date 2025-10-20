@@ -20,7 +20,7 @@ import (
 	"github.com/google/blueprint/proptools"
 )
 
-//go:generate go run gobtools/codegen/gob_gen.go
+//go:generate go run ./gobtools/codegen
 
 // This file implements Providers, modelled after Bazel
 // (https://docs.bazel.build/versions/master/skylark/rules.html#providers).
