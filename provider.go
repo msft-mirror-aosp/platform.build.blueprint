@@ -17,6 +17,7 @@ package blueprint
 import (
 	"fmt"
 
+	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/proptools"
 )
 
@@ -77,7 +78,7 @@ var providerRegistry []*providerKey
 // The returned ProviderKey can be used to set a value of the ProviderKey's type for a module
 // inside GenerateBuildActions for the module, and to get the value from GenerateBuildActions from
 // any module later in the build graph.
-func NewProvider[K any]() ProviderKey[K] {
+func NewProvider[K gobtools.CustomEnc]() ProviderKey[K] {
 	return NewMutatorProvider[K]("")
 }
 
