@@ -58,15 +58,16 @@ type PoolParams struct {
 // definition.
 type RuleParams struct {
 	// These fields correspond to a Ninja variable of the same name.
-	Command        string // The command that Ninja will run for the rule.
-	Depfile        string // The dependency file name.
-	Deps           Deps   // The format of the dependency file.
-	Description    string // The description that Ninja will print for the rule.
-	Generator      bool   // Whether the rule generates the Ninja manifest file.
-	Pool           Pool   // The Ninja pool to which the rule belongs.
-	Restat         bool   // Whether Ninja should re-stat the rule's outputs.
-	Rspfile        string // The response file.
-	RspfileContent string // The response file content.
+	Command         string // The command that Ninja will run for the rule.
+	Depfile         string // The dependency file name.
+	Deps            Deps   // The format of the dependency file.
+	Description     string // The description that Ninja will print for the rule.
+	Generator       bool   // Whether the rule generates the Ninja manifest file.
+	Pool            Pool   // The Ninja pool to which the rule belongs.
+	Restat          bool   // Whether Ninja should re-stat the rule's outputs.
+	Rspfile         string // The response file.
+	RspfileContent  string // The response file content.
+	SandboxDisabled bool   // Whether to disable sandboxing for this rule
 
 	// These fields are used internally in Blueprint
 	CommandDeps      []string // Command-specific implicit dependencies to prepend to builds
@@ -206,6 +207,10 @@ func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
 				err)
 		}
 		r.Variables["rspfile_content"] = value
+	}
+
+	if params.SandboxDisabled {
+		r.Variables["sandbox_disabled"] = simpleNinjaString("true")
 	}
 
 	r.CommandDeps, err = parseNinjaStrings(scope, params.CommandDeps)
