@@ -1135,7 +1135,6 @@ type mutatorContext struct {
 	replace          []replace
 	newVariations    moduleList    // new variants of existing modules
 	newModules       []*moduleInfo // brand new modules
-	onDemandDeps     []onDemandDep // dependencies created on demand.
 	defaultVariation *string
 	pauseFunc        pauseFunc
 }
@@ -1266,18 +1265,18 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 	depInfos := make([]ModuleProxy, 0, len(deps))
 	for _, dep := range deps {
 		modInfo := module.info()
-		depInfo, errs := mctx.context.addVariationDependency(modInfo, mctx.mutator, mctx.config, nil, tag, dep, false)
+		di, errs := mctx.context.addVariationDependency(modInfo, mctx.mutator, mctx.config, nil, tag, dep, false)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
-		if !mctx.pause(depInfo) {
+		if !mctx.pause(di) {
 			// Pausing not supported by this mutator, new dependencies can't be returned.
-			depInfo = nil
+			di = nil
 		}
-		if depInfo != nil && depInfo.createdOnDemand {
-			mctx.onDemandDeps = append(mctx.onDemandDeps, onDemandDep{modInfo, depInfo, tag})
+		if di != nil && di.createdOnDemand {
+			modInfo.directDeps = append(modInfo.directDeps, depInfo{di.createdOnDemandReplaceWith, tag})
 		}
-		depInfos = append(depInfos, ModuleProxy{depInfo})
+		depInfos = append(depInfos, ModuleProxy{di})
 	}
 	return depInfos
 }
@@ -1349,18 +1348,18 @@ func (mctx *mutatorContext) AddVariationDependencies(variations []Variation, tag
 
 	depInfos := make([]ModuleProxy, 0, len(deps))
 	for _, dep := range deps {
-		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.mutator, mctx.config, variations, tag, dep, false)
+		di, errs := mctx.context.addVariationDependency(mctx.module, mctx.mutator, mctx.config, variations, tag, dep, false)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
-		if !mctx.pause(depInfo) {
+		if !mctx.pause(di) {
 			// Pausing not supported by this mutator, new dependencies can't be returned.
-			depInfo = nil
+			di = nil
 		}
-		if depInfo != nil && depInfo.createdOnDemand {
-			mctx.onDemandDeps = append(mctx.onDemandDeps, onDemandDep{mctx.module, depInfo, tag})
+		if di != nil && di.createdOnDemand {
+			mctx.module.directDeps = append(mctx.module.directDeps, depInfo{di.createdOnDemandReplaceWith, tag})
 		}
-		depInfos = append(depInfos, ModuleProxy{depInfo})
+		depInfos = append(depInfos, ModuleProxy{di})
 	}
 	return depInfos
 }
@@ -1370,18 +1369,18 @@ func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, 
 
 	depInfos := make([]ModuleProxy, 0, len(deps))
 	for _, dep := range deps {
-		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.mutator, mctx.config, variations, tag, dep, true)
+		di, errs := mctx.context.addVariationDependency(mctx.module, mctx.mutator, mctx.config, variations, tag, dep, true)
 		if len(errs) > 0 {
 			mctx.errs = append(mctx.errs, errs...)
 		}
-		if !mctx.pause(depInfo) {
+		if !mctx.pause(di) {
 			// Pausing not supported by this mutator, new dependencies can't be returned.
-			depInfo = nil
+			di = nil
 		}
-		if depInfo != nil && depInfo.createdOnDemand {
-			mctx.onDemandDeps = append(mctx.onDemandDeps, onDemandDep{mctx.module, depInfo, tag})
+		if di != nil && di.createdOnDemand {
+			mctx.module.directDeps = append(mctx.module.directDeps, depInfo{di.createdOnDemandReplaceWith, tag})
 		}
-		depInfos = append(depInfos, ModuleProxy{depInfo})
+		depInfos = append(depInfos, ModuleProxy{di})
 	}
 	return depInfos
 }
