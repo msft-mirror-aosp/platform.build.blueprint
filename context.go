@@ -398,7 +398,7 @@ func (group *moduleGroup) registerSupportedVariants(mutatorName string, infos Tr
 	group.supportedVariantsOnDemand[mutatorName] = append(group.supportedVariantsOnDemand[mutatorName], infos...)
 }
 
-func (group *moduleGroup) supportsOnDemandVariant(onDemandVariants variationMap, far bool) bool {
+func (group *moduleGroup) supportsOnDemandVariant(onDemandVariants variationMap, far bool, atMutatorIndex int, transitionMutators []*transitionMutatorImpl) bool {
 	for mutator, variant := range onDemandVariants.variations {
 		if supportedOnDemandVariants, exists := group.supportedVariantsOnDemand[mutator]; exists {
 			found := false
@@ -414,10 +414,17 @@ func (group *moduleGroup) supportsOnDemandVariant(onDemandVariants variationMap,
 			return false
 		}
 	}
+	transitionMutatorNameToIndex := map[string]int{}
+	for _, t := range transitionMutators {
+		transitionMutatorNameToIndex[t.name] = t.mutatorIndex
+	}
 	if !far {
 		// non-far uses strict equality.
 		// check that the mutator keys of requested variant and supported variants of the group match.
 		for mutator := range group.supportedVariantsOnDemand {
+			if index, _ := transitionMutatorNameToIndex[mutator]; atMutatorIndex < index {
+				continue // Non-far, but the transition has not occurred yet.
+			}
 			if _, exists := onDemandVariants.variations[mutator]; !exists {
 				return false
 			}
@@ -433,35 +440,32 @@ func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants var
 	if len(onDemandVariants.variations) > 1 {
 		panic("TODO(b/448182009): Support Variants on demand for 2 or more transition mutators.")
 	}
-	var mutatorName, variantName string
-	for k, v := range onDemandVariants.variations {
-		mutatorName = k
-		variantName = v
-	}
 
 	newlogicmodule, newproperties := group.coreModuleInfo.factory()
 	newmodule := moduleInfo{
-		logicModule:     newlogicmodule,
-		properties:      newproperties,
-		directDeps:      slices.Clone(group.coreModuleInfo.directDeps),
-		factory:         group.coreModuleInfo.factory,
-		group:           group,
-		createdOnDemand: true,
+		logicModule:              newlogicmodule,
+		properties:               newproperties,
+		factory:                  group.coreModuleInfo.factory,
+		group:                    group,
+		createdOnDemand:          true,
+		requestedOnDemandVariant: onDemandVariants,
 	}
 	newlogicmodule.setInfo(&newmodule)
-
-	newmodule.variant = newVariant(&group.coreModuleInfo, mutatorName, variantName)
 
 	return &newmodule
 }
 
 // Initialize the properties of the on demand variant and
 // re-run the completed mutators on this newly created module.
-func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, tillMutatorIndex int) {
+func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, tillMutatorIndex int, p pauseFunc) {
 	pause := func(dep *moduleInfo) {
-		if dep != nil {
-			panic("TODO (b/448182009): Add support for on demand variants of non leaf nodes.")
+		if dep.createdOnDemand {
+			// Transitive variant on demand.
+			// Set `requestedOnDemandVariant` on this transitive dep.
+			// This will be used in the main coordinator goroutine to create the correct transition for this variant.
+			dep.requestedOnDemandVariant = newmodule.requestedOnDemandVariant
 		}
+		p(dep)
 	}
 	// initialize the properties from coreModuleInfo.
 	newlogicmodule, newproperties := c.cloneLogicModule(&newmodule.group.coreModuleInfo)
@@ -487,6 +491,7 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, tillMuta
 		if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 {
 			panic("TODO (b/448182009): Add support for AddReverseDependency, ReplaceDependency, Rename")
 		}
+
 		// The module has been mutated till the current mutator.
 		// Do not mutate further.
 		if index == tillMutatorIndex {
@@ -521,7 +526,6 @@ type moduleInfo struct {
 
 	// used by parallelVisit
 	waitingCount atomic.Int32
-	addedToVisit atomic.Bool
 
 	// set during each runMutator
 	splitModules           moduleList
@@ -576,6 +580,7 @@ type moduleInfo struct {
 
 	createdOnDemand            bool
 	createdOnDemandReplaceWith *moduleInfo
+	requestedOnDemandVariant   variationMap
 }
 
 type providerInfo struct {
@@ -2298,7 +2303,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, depTag Depend
 }
 
 func (c *Context) findVariant(config any, module *moduleInfo, depTag DependencyTag,
-	possibleDeps *moduleGroup, requestedVariations []Variation, far bool, reverse bool) (*moduleInfo, variationMap, []error) {
+	possibleDeps *moduleGroup, requestedVariations []Variation, far bool, reverse bool, mutatorIndex int) (*moduleInfo, variationMap, []error) {
 
 	// We can't just append variant.Variant to module.dependencyVariant.variantName and
 	// compare the strings because the result won't be in mutator registration order.
@@ -2355,8 +2360,8 @@ func (c *Context) findVariant(config any, module *moduleInfo, depTag DependencyT
 		}
 	}
 
-	if foundDep == nil && possibleDeps.supportsOnDemandVariant(newVariant, far) {
-		foundDep = c.createVariantOnDemand(possibleDeps, newVariant, module.startedMutator)
+	if foundDep == nil && possibleDeps.supportsOnDemandVariant(newVariant, far, mutatorIndex, c.transitionMutators) {
+		foundDep = c.createVariantOnDemand(possibleDeps, newVariant)
 	}
 
 	return foundDep, newVariant, nil
@@ -2373,7 +2378,7 @@ func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInf
 		return nil, c.discoveredMissingDependencies(module, depName, variationMap{})
 	}
 
-	foundDep, newVariant, errs := c.findVariant(config, module, tag, possibleDeps, variations, far, false)
+	foundDep, newVariant, errs := c.findVariant(config, module, tag, possibleDeps, variations, far, false, mutator.index)
 	if errs != nil {
 		return nil, errs
 	}
@@ -2408,7 +2413,6 @@ func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInf
 		}}
 	}
 	if foundDep.createdOnDemand {
-		// return the on demand variant.
 		// `runMutator` will create the dependency edges, deduping on demand variants if necessary.
 		return foundDep, nil
 	}
@@ -2865,22 +2869,12 @@ func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit i
 			}
 
 			// If a dependency is created on demand, add it to the queue for processing.
-			// Since multiple rdeps can request this on demand variant, use an atomic.Bool
-			// to add it once.
+			// The main coordinator goroutine will be responsible for deduping on demand variant
+			// requested from multiple rdeps.
 			if response.pause.until.createdOnDemand {
-				added := response.pause.until.addedToVisit.Load()
-				if !added {
-					toVisit++
-					module := response.pause.until
-					waitingCount := order.waitCount(module)
-					module.waitingCount.Store(int32(waitingCount))
-					if waitingCount == 0 {
-						queue = append(queue, module)
-						queuedModules++
-					}
-
-					response.pause.until.addedToVisit.CompareAndSwap(false, true)
-				}
+				queue = append(queue, response.pause.until)
+				toVisit++
+				queuedModules++
 			}
 
 		}
@@ -3385,7 +3379,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			}
 			moduleReplaceWith := <-moduleReplaceWithCh
 			if module == moduleReplaceWith {
-				c.rerunMutatorsOnVariantOnDemand(module, mutatorGroup[0].index) // Mutate till the current mutator.
+				c.rerunMutatorsOnVariantOnDemand(module, mutatorGroup[len(mutatorGroup)-1].index, pause) // Mutate till the current mutator.
 				globalStateCh <- globalStateChange{
 					onDemandModules: []*moduleInfo{module},
 				}
@@ -3471,9 +3465,15 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				onDemandModules = append(onDemandModules, globalStateChange.onDemandModules...)
 				deps = append(deps, globalStateChange.deps...)
 			case createdOnDemandStateChange := <-createdOnDemandStateCh:
+				var variantSb strings.Builder
+				mod := createdOnDemandStateChange.module
+				for _, mutator := range slices.Sorted(maps.Keys(mod.requestedOnDemandVariant.variations)) {
+					variantSb.WriteString("-")
+					variantSb.WriteString(mod.requestedOnDemandVariant.variations[mutator])
+				}
 				uniqueDepKey := onDemandModuleUniqueKey{
-					createdOnDemandStateChange.module.group,
-					createdOnDemandStateChange.module.variant.name,
+					mod.group,
+					variantSb.String(),
 				}
 				if existing, exists := variantToOnDemandModule[uniqueDepKey]; exists {
 					createdOnDemandStateChange.moduleReplaceWithCh <- existing

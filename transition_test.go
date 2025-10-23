@@ -575,9 +575,113 @@ func TestOnDemandDependendcyVariantLeafNode(t *testing.T) {
 	checkTransitionMutate(t, getTransitionModule(ctx, "C", "b1"), "b1_post_transition_bottom_up")
 }
 
-// TODO(b/448182009): Test on demand variant creation for non leaf nodes.
-// The transitive dependencies might also require on demand variants.
+// Test on demand variant creation for non leaf nodes.
+// For B(2), the following deps will be created on demand
+// - C(2), direct dep
+// - C_dep_pre_transition(2), transitive dep
+// - C_dep_post_transition(2), transitive dep
+
+// C_dep_pre_transition_to_1(2) will *not* be created since its incoming_transition is set to 1
 func TestOnDemandDependencyVariantTransitiveDeps(t *testing.T) {
+	t.Parallel()
+	ctx, errs := testTransition(`
+		transition_module {
+			name: "A",
+			split: ["1"],
+			post_transition_deps: ["C"],
+		}
+		transition_module {
+			name: "B",
+			split: ["2"],
+			post_transition_deps: ["C"],
+		}
+		transition_module {
+			name: "B_other",
+			split: ["2"],
+			post_transition_deps: ["C"],
+		}
+		transition_module {
+			name: "C",
+			split: ["1"],
+			split_on_demand: ["2"],
+			deps: [
+			    // For transition variation '2', On-demand variant to On-demand variant.
+			    "C_dep_pre_transition",
+			    // For transition variation '2', On-demand variant to existing split variant.
+			    "C_dep_pre_transition_to_1",
+			],
+			post_transition_deps: [
+			    "C_dep_post_transition",
+			],
+		}
+		transition_module {
+			name: "C_dep_pre_transition",
+			split: ["1"],
+			split_on_demand: ["2"],
+		}
+		transition_module {
+			name: "C_dep_pre_transition_to_1",
+			split: ["1"], // A, B, B_other will all got this variant in its transitive closure.
+			incoming: "1",
+		}
+		transition_module {
+			name: "C_dep_post_transition",
+			split: ["1"],
+			split_on_demand: ["2"],
+		}
+	`)
+	assertNoErrors(t, errs)
+
+	checkTransitionVariants(t, ctx, "A", []string{"1"})
+	checkTransitionVariants(t, ctx, "B", []string{"2"})
+	checkTransitionVariants(t, ctx, "B_other", []string{"2"})
+	checkTransitionVariants(t, ctx, "C", []string{"1", "2"})
+	checkTransitionVariants(t, ctx, "C_dep_pre_transition", []string{"1", "2"})
+	checkTransitionVariants(t, ctx, "C_dep_pre_transition_to_1", []string{"1"})
+	checkTransitionVariants(t, ctx, "C_dep_post_transition", []string{"1", "2"})
+
+	// check deps of on demand variants.
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "1"), "C_dep_pre_transition(1)", "C_dep_pre_transition_to_1(1)", "C_dep_post_transition(1)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "2"), "C_dep_pre_transition(2)", "C_dep_pre_transition_to_1(1)", "C_dep_post_transition(2)")
+
+	// check that the transitive on demand variant has been mutated.
+	checkTransitionMutate(t, getTransitionModule(ctx, "C_dep_pre_transition", "1"), "1")
+	checkTransitionMutate(t, getTransitionModule(ctx, "C_dep_pre_transition", "2"), "2")
+	checkTransitionMutate(t, getTransitionModule(ctx, "C_dep_pre_transition_to_1", "1"), "1")
+	checkTransitionMutate(t, getTransitionModule(ctx, "C_dep_post_transition", "1"), "1")
+	checkTransitionMutate(t, getTransitionModule(ctx, "C_dep_post_transition", "2"), "2")
+}
+
+func TestOnDemandDependencyVariantTransitiveDepsOutgoingTransition(t *testing.T) {
+	t.Parallel()
+	ctx, errs := testTransition(`
+		transition_module {
+			name: "B",
+			split: ["2"],
+			post_transition_deps: ["C"],
+		}
+		transition_module {
+			name: "C",
+			split: ["1"],
+			split_on_demand: ["2"],
+			deps: [
+			    "C_dep_pre_transition",
+			],
+			outgoing: "1",
+		}
+		transition_module {
+			name: "C_dep_pre_transition",
+		}
+	`)
+	assertNoErrors(t, errs)
+
+	checkTransitionVariants(t, ctx, "B", []string{"2"})
+	checkTransitionVariants(t, ctx, "C", []string{"1", "2"})
+	checkTransitionVariants(t, ctx, "C_dep_pre_transition", []string{"", "1"})
+
+	// check deps of on demand variants.
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "1"), "C_dep_pre_transition(1)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "2"), "C_dep_pre_transition(1)")
 }
 
 // TODO (b/448182009):
