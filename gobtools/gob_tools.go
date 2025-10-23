@@ -106,7 +106,7 @@ func (c *ReferencesEncoder) EncodeReference(value any, buf *bytes.Buffer, typ st
 		}
 
 		// Encode the calculated reference ID into the main buffer (where the value's full encoded data will reside).
-		if err := EncodeSimple(buf, ref); err != nil {
+		if err := EncodeUint64(buf, ref[0]); err != nil {
 			return err
 		}
 
@@ -126,16 +126,18 @@ func (c *ReferencesEncoder) EncodeReference(value any, buf *bytes.Buffer, typ st
 	}
 	// If the value has been encoded before, just encode its existing reference ID
 	// into the output buffer. This optimizes for repeated values.
-	return EncodeSimple(buf, encStruct.valueRefId)
+	return EncodeUint64(buf, encStruct.valueRefId[0])
 }
 
 func (c *ReferencesEncoder) DecodeReference(buf *bytes.Reader, decode func(buf *bytes.Reader) (any, error)) (any, error) {
-	var ref proptools.Hash // Variable to store the decoded reference ID.
+	var refVal uint64 // Variable to store the decoded reference ID.
 
 	// Decode the reference ID of the value from the input stream.
-	if err := DecodeSimple[proptools.Hash](buf, &ref); err != nil {
+	if err := DecodeUint64(buf, &refVal); err != nil {
 		return nil, err // Return error if decoding the reference fails.
 	}
+
+	ref := proptools.Hash{refVal}
 
 	// Try to load the value using its reference ID from the decoded values cache.
 	if v, ok := c.decodedReferences.Load(ref); !ok {
@@ -260,9 +262,6 @@ func DecodeString(buf *bytes.Reader, s *string) error {
 	return err
 }
 
-// These two methods can be further optimized using primitive specific encoding
-// and decoding methods if it becomes necessary.
-
 // Encode a primitive value.
 func EncodeSimple[T any](buf *bytes.Buffer, b T) error {
 	return binary.Write(buf, binary.BigEndian, b)
@@ -368,7 +367,7 @@ func EncodeStruct(c EncContext, buf *bytes.Buffer, val any) error {
 // Encode an interface value.
 func EncodeInterface(c EncContext, buf *bytes.Buffer, data any) error {
 	if data == nil {
-		return EncodeSimple(buf, nilInterface)
+		return EncodeInt16(buf, int16(nilInterface))
 	}
 	intfType := valueInterface
 	if v := reflect.ValueOf(data); v.Kind() == reflect.Ptr {
@@ -378,11 +377,11 @@ func EncodeInterface(c EncContext, buf *bytes.Buffer, data any) error {
 			intfType = pointerInterface
 		}
 	}
-	if err := EncodeSimple(buf, intfType); err != nil {
+	if err := EncodeInt16(buf, int16(intfType)); err != nil {
 		return err
 	}
 	val := data.(CustomEnc)
-	if err := EncodeSimple(buf, val.GetTypeId()); err != nil {
+	if err := EncodeInt16(buf, val.GetTypeId()); err != nil {
 		return err
 	}
 	return val.Encode(c, buf)
@@ -401,12 +400,12 @@ func DecodeStruct(c EncContext, buf *bytes.Reader, data any) error {
 
 // Decode an interface value.
 func DecodeInterface(c EncContext, buf *bytes.Reader) (any, error) {
-	var intfType interfaceType
-	if err := DecodeSimple(buf, &intfType); err != nil || intfType == nilInterface {
+	var intfType int16
+	if err := DecodeInt16(buf, &intfType); err != nil || intfType == int16(nilInterface) {
 		return nil, err
 	}
 	var typeId int16
-	if err := DecodeSimple(buf, &typeId); err != nil {
+	if err := DecodeInt16(buf, &typeId); err != nil {
 		return nil, err
 	}
 	if f, ok := typeRegistry[typeId]; !ok {
@@ -415,7 +414,7 @@ func DecodeInterface(c EncContext, buf *bytes.Reader) (any, error) {
 		val := f()
 		if err := val.Decode(c, buf); err != nil {
 			return nil, err
-		} else if intfType == valueInterface {
+		} else if intfType == int16(valueInterface) {
 			return reflect.ValueOf(val).Elem().Interface(), nil
 		} else {
 			return val, nil
