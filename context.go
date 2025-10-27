@@ -436,10 +436,7 @@ func (group *moduleGroup) supportsOnDemandVariant(onDemandVariants variationMap,
 // createVariantOnDemand uses group.coreModuleInfo.factory() to create an "empty" variant on demand.
 // `runMutator` will be responsible for populating this variant using cloneLogicModule
 // and creating the dependency edges to this on demand variant.
-func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants variationMap, currentMutatorIndex int) *moduleInfo {
-	if len(onDemandVariants.variations) > 1 {
-		panic("TODO(b/448182009): Support Variants on demand for 2 or more transition mutators.")
-	}
+func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants variationMap) *moduleInfo {
 
 	newlogicmodule, newproperties := group.coreModuleInfo.factory()
 	newmodule := moduleInfo{
@@ -450,6 +447,7 @@ func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants var
 		createdOnDemand:          true,
 		requestedOnDemandVariant: onDemandVariants,
 	}
+	newmodule.createdOnDemandReplaceWith = &newmodule
 	newlogicmodule.setInfo(&newmodule)
 
 	return &newmodule
@@ -457,7 +455,7 @@ func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants var
 
 // Initialize the properties of the on demand variant and
 // re-run the completed mutators on this newly created module.
-func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, tillMutatorIndex int, p pauseFunc) {
+func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMutatorIndex, tillMutatorIndex int, p pauseFunc) {
 	pause := func(dep *moduleInfo) {
 		if dep.createdOnDemand {
 			// Transitive variant on demand.
@@ -465,7 +463,9 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, tillMuta
 			// This will be used in the main coordinator goroutine to create the correct transition for this variant.
 			dep.requestedOnDemandVariant = newmodule.requestedOnDemandVariant
 		}
-		p(dep)
+		if p != nil {
+			p(dep)
+		}
 	}
 	// initialize the properties from coreModuleInfo.
 	newlogicmodule, newproperties := c.cloneLogicModule(&newmodule.group.coreModuleInfo)
@@ -474,6 +474,9 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, tillMuta
 	newmodule.properties = newproperties
 
 	for index, mi := range c.mutatorInfo {
+		if index < fromMutatorIndex {
+			continue
+		}
 		mctx := &mutatorContext{
 			baseModuleContext: baseModuleContext{
 				context: c,
@@ -2226,8 +2229,15 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 // and applies the OutgoingTransition and IncomingTransition methods of each completed TransitionMutator to
 // modify the requested variation.  It finds a variant that existed before the TransitionMutator ran that is
 // a subset of the requested variant to use as the module context for IncomingTransition.
+//
+// for onDemand: true, a copy of the dependency will be created on demand and used as the context
+// for IncomingTransition.
 func (c *Context) applyTransitions(config any, module *moduleInfo, depTag DependencyTag, group *moduleGroup, variant variationMap,
-	requestedVariations []Variation, far bool) (variationMap, []error) {
+	requestedVariations []Variation, far bool, onDemand bool) (variationMap, []error) {
+	// Initialize some variables that will be used to manage IncomingTransition context of on demand variants.
+	onDemandFromMutatorIndex := 0
+	var onDemandMatchingVariant *moduleInfo
+
 	for _, transitionMutator := range c.transitionMutators[:c.completedTransitionMutators] {
 		explicitlyRequested := slices.ContainsFunc(requestedVariations, func(variation Variation) bool {
 			return variation.Mutator == transitionMutator.name
@@ -2268,6 +2278,18 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, depTag Depend
 				matchingInputVariant = module
 				break
 			}
+		}
+
+		if onDemand {
+			// Mutate the onDemand variant through a moving window,
+			// from the previous transition mutator to the current transition mutator.
+			// This variant can then be used as the context for the IncomingTransition.
+			if onDemandFromMutatorIndex == 0 {
+				onDemandMatchingVariant = c.createVariantOnDemand(group, variant) // initialize
+			}
+			c.rerunMutatorsOnVariantOnDemand(onDemandMatchingVariant, onDemandFromMutatorIndex, transitionMutator.mutatorIndex, nil)
+			matchingInputVariant = onDemandMatchingVariant
+			onDemandFromMutatorIndex = transitionMutator.mutatorIndex + 1
 		}
 
 		if matchingInputVariant != nil {
@@ -2322,9 +2344,11 @@ func (c *Context) findVariant(config any, module *moduleInfo, depTag DependencyT
 		newVariant.set(v.Mutator, v.Variation)
 	}
 
+	newVariantBeforeTransitions := newVariant.clone()
+
 	if !reverse {
 		var errs []error
-		newVariant, errs = c.applyTransitions(config, module, depTag, possibleDeps, newVariant, requestedVariations, far)
+		newVariant, errs = c.applyTransitions(config, module, depTag, possibleDeps, newVariant, requestedVariations, far, false)
 		if len(errs) > 0 {
 			return nil, variationMap{}, errs
 		}
@@ -2360,8 +2384,17 @@ func (c *Context) findVariant(config any, module *moduleInfo, depTag DependencyT
 		}
 	}
 
-	if foundDep == nil && possibleDeps.supportsOnDemandVariant(newVariant, far, mutatorIndex, c.transitionMutators) {
-		foundDep = c.createVariantOnDemand(possibleDeps, newVariant)
+	if foundDep == nil &&
+		!c.allowMissingDependencies && // TODO (b/448182009): Skip checking for possible on-demand variant if allowMissingDependencies is set.
+		possibleDeps.supportsOnDemandVariant(newVariantBeforeTransitions, far, mutatorIndex, c.transitionMutators) {
+		newVariantOnDemand, errs := c.applyTransitions(config, module, depTag, possibleDeps, newVariantBeforeTransitions, requestedVariations, far, true)
+		if len(errs) > 0 {
+			return nil, variationMap{}, errs
+		}
+		if possibleDeps.supportsOnDemandVariant(newVariantOnDemand, far, mutatorIndex, c.transitionMutators) {
+			foundDep = c.createVariantOnDemand(possibleDeps, newVariantOnDemand)
+			newVariant = newVariantOnDemand
+		}
 	}
 
 	return foundDep, newVariant, nil
@@ -3379,7 +3412,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			}
 			moduleReplaceWith := <-moduleReplaceWithCh
 			if module == moduleReplaceWith {
-				c.rerunMutatorsOnVariantOnDemand(module, mutatorGroup[len(mutatorGroup)-1].index, pause) // Mutate till the current mutator.
+				c.rerunMutatorsOnVariantOnDemand(module, 0, mutatorGroup[len(mutatorGroup)-1].index, pause) // Mutate till the current mutator.
 				globalStateCh <- globalStateChange{
 					onDemandModules: []*moduleInfo{module},
 				}

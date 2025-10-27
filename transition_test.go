@@ -684,6 +684,51 @@ func TestOnDemandDependencyVariantTransitiveDepsOutgoingTransition(t *testing.T)
 	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "2"), "C_dep_pre_transition(1)")
 }
 
+// Create an on demand variant with multiple transitions.
+func TestOnDemandDependendcyVariantMultipleTransitions(t *testing.T) {
+	t.Parallel()
+	ctx, errs := testTransitionCommon(`
+		transition_module {
+			name: "A",
+			split: ["1"],
+		}
+		transition_module {
+			name: "B",
+			split: ["2"],
+		}
+		transition_module {
+			name: "C",
+			split: ["1"],
+			split_on_demand: ["2"],
+		}
+		transition_module {
+			name: "D",
+			split: ["1"],
+			incoming: "1", // Override the transition request of rdeps.
+		}
+	`,
+		false,
+		func(ctx *Context) {
+			// Add a second transition.
+			ctx.RegisterTransitionMutator("transition2", transitionTestMutator{})
+			// Deps mutator that runs after the two transitions.
+			ctx.RegisterBottomUpMutator("post_transition_bottom_up", func(mctx BottomUpMutatorContext) {
+				if mctx.ModuleName() == "A" || mctx.ModuleName() == "B" {
+					mctx.AddDependency(mctx.Module(), nil, "C")
+				}
+				if mctx.ModuleName() == "C" {
+					mctx.AddDependency(mctx.Module(), nil, "D")
+				}
+			})
+		})
+	assertNoErrors(t, errs)
+
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "A", "1_1"), "C(1_1)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "B", "2_2"), "C(2_2)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "1_1"), "D(1_1)")
+	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "2_2"), "D(1_1)") // via incoming.
+}
+
 // TODO (b/448182009):
 func TestOnDemandDependencyVariantFromCoalesedMutatorGroup(t *testing.T) {
 }
