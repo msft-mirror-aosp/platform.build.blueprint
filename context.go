@@ -53,7 +53,7 @@ import (
 	"github.com/google/blueprint/uniquelist"
 )
 
-//go:generate go run gobtools/codegen/gob_gen.go
+//go:generate go run ./gobtools/codegen
 
 var ErrBuildActionsNotReady = errors.New("build actions are not ready")
 
@@ -335,6 +335,10 @@ type moduleGroup struct {
 	modules moduleList
 
 	namespace Namespace
+
+	// A partial copy of moduleInfo at the end of defaults mutator.
+	// common across all variants.
+	coreModuleInfo moduleInfo
 }
 
 func (group *moduleGroup) moduleByVariantName(name string) *moduleInfo {
@@ -3061,7 +3065,15 @@ func (c *Context) runMutators(ctx context.Context, config interface{}, mutatorGr
 	c.finishedMutators = make([]bool, len(c.mutatorInfo))
 
 	pprof.Do(ctx, pprof.Labels("blueprint", "runMutators"), func(ctx context.Context) {
-		for _, mutatorGroup := range mutatorGroups {
+		lastCreateModuleMutatorIndex := 0
+		for i := len(mutatorGroups) - 1; i >= 0; i-- {
+			if mutatorGroups[i][0].usesCreateModule {
+				lastCreateModuleMutatorIndex = i
+				break
+			}
+		}
+
+		for i, mutatorGroup := range mutatorGroups {
 			name := mutatorGroup[0].name
 			if len(mutatorGroup) > 1 {
 				name += "_plus_" + strconv.Itoa(len(mutatorGroup)-1)
@@ -3071,9 +3083,9 @@ func (c *Context) runMutators(ctx context.Context, config interface{}, mutatorGr
 				defer c.EndEvent(name)
 				var newDeps []string
 				if mutatorGroup[0].transitionPropagateMutator != nil {
-					newDeps, errs = c.runMutator(config, mutatorGroup, topDownMutator)
+					newDeps, errs = c.runMutator(config, mutatorGroup, topDownMutator, i == lastCreateModuleMutatorIndex)
 				} else if mutatorGroup[0].bottomUpMutator != nil {
-					newDeps, errs = c.runMutator(config, mutatorGroup, bottomUpMutator)
+					newDeps, errs = c.runMutator(config, mutatorGroup, bottomUpMutator, i == lastCreateModuleMutatorIndex)
 				} else {
 					panic("no mutator set on " + mutatorGroup[0].name)
 				}
@@ -3150,7 +3162,7 @@ type reverseDep struct {
 var mutatorContextPool = pool.New[mutatorContext]()
 
 func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
-	direction mutatorDirection) (deps []string, errs []error) {
+	direction mutatorDirection, storeCoreModuleInfo bool) (deps []string, errs []error) {
 
 	type globalStateChange struct {
 		reverse    []reverseDep
@@ -3221,6 +3233,10 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				}
 			}
 		}
+		if storeCoreModuleInfo {
+			mctx.storeCoreModuleInfo()
+		}
+
 		mutatorContextPool.Put(mctx)
 		mctx = nil
 
@@ -3481,9 +3497,10 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				// Cache Module.Name() and Module.String() for future use in ModuleProxy.Name() and ModuleProxy.String()
 				mctx.module.cachedName = mctx.module.logicModule.Name()
 				mctx.module.cachedString = mctx.module.logicModule.String()
-				mctx.module.logicModule = nil
 				// When soong debug data is requested, don't remove these info, they will show up in soong-debug-info.json.
 				if c.moduleDebugDataChannel == nil {
+					// TODO: logicModule is needed to evaluate configurable properties, we should figure out an alternative.
+					mctx.module.logicModule = nil
 					mctx.module.properties = nil
 					mctx.module.propertyPos = nil
 				}
