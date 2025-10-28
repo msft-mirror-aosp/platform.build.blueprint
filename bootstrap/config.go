@@ -98,6 +98,10 @@ type BootstrapConfig interface {
 	// IsBootstrap returns true if this is a bootstrap invocation, false if
 	// it is the primary builder.
 	IsBootstrap() bool
+
+	// IsActionSandboxedBuild() returns true if this build is run with action
+	// sandboxing enabled, which would run individual actions in a sandbox.
+	IsActionSandboxedBuild() bool
 }
 
 type StopBefore int

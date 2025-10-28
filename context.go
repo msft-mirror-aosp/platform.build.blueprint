@@ -65,6 +65,12 @@ const OutFilePermissions = 0666
 const BuildActionsCacheFile = "build_actions.gob"
 const OrderOnlyStringsCacheFile = "order_only_strings.gob"
 
+// sandboxConfig is an interface for config objects that can report if the
+// build is action sandboxed.
+type sandboxConfig interface {
+	IsActionSandboxedBuild() bool
+}
+
 // A Context contains all the state needed to parse a set of Blueprints files
 // and generate a Ninja file.  The process of generating a Ninja file proceeds
 // through a series of four phases.  Each phase corresponds with a some methods

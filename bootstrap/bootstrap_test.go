@@ -46,6 +46,10 @@ func (t *testConfig) IsBootstrap() bool {
 	return true
 }
 
+func (t *testConfig) IsActionSandboxedBuild() bool {
+	return false
+}
+
 var _ BootstrapConfig = &testConfig{}
 
 func TestBootstrap(t *testing.T) {
