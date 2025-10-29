@@ -50,6 +50,10 @@ func (t *testConfig) IsActionSandboxedBuild() bool {
 	return false
 }
 
+func (t *testConfig) ActionSandboxMetrics() *blueprint.SandboxMetrics {
+	return nil
+}
+
 var _ BootstrapConfig = &testConfig{}
 
 func TestBootstrap(t *testing.T) {

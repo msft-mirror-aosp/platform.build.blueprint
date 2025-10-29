@@ -1049,11 +1049,14 @@ func (m *moduleContext) Rule(pctx PackageContext, name string,
 
 	m.scope.ReparentTo(pctx)
 
-	if config, ok := m.baseModuleContext.Config().(sandboxConfig); ok && !config.IsActionSandboxedBuild() {
+	config, ok := m.baseModuleContext.Config().(sandboxConfig)
+	if ok && !config.IsActionSandboxedBuild() {
 		// sandbox_disabled variable should be written to the ninja file only when
 		// action sandboxing is enabled, to account for the executors that do not
 		// support this variable and to decrease the ninja file size.
 		params.SandboxDisabled = false
+	} else if ok && config.IsActionSandboxedBuild() && config.ActionSandboxMetrics() != nil {
+		config.ActionSandboxMetrics().updateSandboxMetrics(params.SandboxDisabled)
 	}
 
 	r, err := m.scope.AddLocalRule(name, &params, argNames...)
