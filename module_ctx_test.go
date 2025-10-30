@@ -33,7 +33,7 @@ func newModuleCtxTestModule() (Module, []interface{}) {
 func (f *moduleCtxTestModule) GenerateBuildActions(ModuleContext) {
 }
 
-func addVariantDepsResultMutator(variants []Variation, tag DependencyTag, from, to string, results map[string][]Module) func(ctx BottomUpMutatorContext) {
+func addVariantDepsResultMutator(variants []Variation, tag DependencyTag, from, to string, results map[string][]ModuleProxy) func(ctx BottomUpMutatorContext) {
 	return func(ctx BottomUpMutatorContext) {
 		if ctx.ModuleName() == from {
 			ret := ctx.AddVariationDependencies(variants, tag, to)
@@ -112,7 +112,7 @@ func TestAddVariationDependencies(t *testing.T) {
 	t.Run("parallel", func(t *testing.T) {
 		ctx := NewContext()
 		ctx.RegisterModuleType("test", newModuleCtxTestModule)
-		results := make(map[string][]Module)
+		results := make(map[string][]ModuleProxy)
 		depsMutator := addVariantDepsResultMutator(nil, nil, "foo", "bar", results)
 		ctx.RegisterBottomUpMutator("deps", depsMutator)
 
@@ -125,7 +125,7 @@ func TestAddVariationDependencies(t *testing.T) {
 			t.Fatalf("expected foo deps to be %q, got %q", w, g)
 		}
 
-		if g, w := results["foo"], []Module{bar.logicModule}; !reflect.DeepEqual(g, w) {
+		if g, w := results["foo"], []ModuleProxy{{bar}}; !reflect.DeepEqual(g, w) {
 			t.Fatalf("expected AddVariationDependencies return value to be %q, got %q", w, g)
 		}
 	})
@@ -133,7 +133,7 @@ func TestAddVariationDependencies(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		ctx := NewContext()
 		ctx.RegisterModuleType("test", newModuleCtxTestModule)
-		results := make(map[string][]Module)
+		results := make(map[string][]ModuleProxy)
 		depsMutator := addVariantDepsResultMutator(nil, nil, "foo", "baz", results)
 		ctx.RegisterBottomUpMutator("deps", depsMutator)
 		runWithFailures(ctx, `"foo" depends on undefined module "baz"`)
@@ -144,7 +144,7 @@ func TestAddVariationDependencies(t *testing.T) {
 			t.Fatalf("expected foo deps to be %q, got %q", w, g)
 		}
 
-		if g, w := results["foo"], []Module{nil}; !reflect.DeepEqual(g, w) {
+		if g, w := results["foo"], []ModuleProxy{{nil}}; !reflect.DeepEqual(g, w) {
 			t.Fatalf("expected AddVariationDependencies return value to be %q, got %q", w, g)
 		}
 	})
@@ -153,7 +153,7 @@ func TestAddVariationDependencies(t *testing.T) {
 		ctx := NewContext()
 		ctx.SetAllowMissingDependencies(true)
 		ctx.RegisterModuleType("test", newModuleCtxTestModule)
-		results := make(map[string][]Module)
+		results := make(map[string][]ModuleProxy)
 		depsMutator := addVariantDepsResultMutator(nil, nil, "foo", "baz", results)
 		ctx.RegisterBottomUpMutator("deps", depsMutator)
 		run(ctx)
@@ -164,7 +164,7 @@ func TestAddVariationDependencies(t *testing.T) {
 			t.Fatalf("expected foo deps to be %q, got %q", w, g)
 		}
 
-		if g, w := results["foo"], []Module{nil}; !reflect.DeepEqual(g, w) {
+		if g, w := results["foo"], []ModuleProxy{{nil}}; !reflect.DeepEqual(g, w) {
 			t.Fatalf("expected AddVariationDependencies return value to be %q, got %q", w, g)
 		}
 	})
