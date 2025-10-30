@@ -31,11 +31,6 @@ import (
 	"github.com/google/blueprint/pool"
 )
 
-// byte to insert between elements of lists, fields of structs/maps, etc in order
-// to try and make sure the hash is different when values are moved around between
-// elements. 36 is arbitrary, but it's the ascii code for a record separator
-var recordSeparator []byte = []byte{36}
-
 var hasherPool = pool.New[hasher]()
 
 const HashSize = 8
@@ -82,15 +77,6 @@ func CalculateHash(value interface{}) (Hash, error) {
 	v := reflect.ValueOf(value)
 	var err error
 	if v.IsValid() {
-		var h Hash
-		// Include the hash of the type so that hashes of types with the same contents, for example
-		// empty slices of different types, produce different hashes.  The hash of each type is cached,
-		// so this should be very fast.
-		h, err = typeHash(v.Type())
-		if err != nil {
-			return Hash{}, err
-		}
-		hasher.writeHash(h)
 		err = hasher.calculateHash(v)
 	}
 	return Hash{hasher.Sum64()}, err
@@ -157,10 +143,6 @@ func (hasher *hasher) writeHash(h Hash) {
 	}
 }
 
-func (hasher *hasher) writeRecordSeparator() {
-	hasher.Write(recordSeparator)
-}
-
 func (hasher *hasher) getMapState(size int) *mapState {
 	s := hasher.mapStateCache
 	// Clear hasher.mapStateCache so that any recursive uses don't collide with this frame.
@@ -185,7 +167,16 @@ func (hasher *hasher) putMapState(s *mapState) {
 }
 
 func (hasher *hasher) calculateHash(v reflect.Value) error {
-	hasher.writeUint64(uint64(v.Kind()))
+	var h Hash
+	var err error
+	// Include the hash of the type so that hashes of types with the same contents, for example
+	// empty slices of different types, produce different hashes.  The hash of each type is cached,
+	// so this should be very fast.
+	h, err = typeHash(v.Type())
+	if err != nil {
+		return err
+	}
+	hasher.writeHash(h)
 	v.IsValid()
 	switch v.Kind() {
 	case reflect.Struct:
@@ -200,7 +191,6 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 		l := v.NumField()
 		hasher.writeInt(l)
 		for i := 0; i < l; i++ {
-			hasher.writeRecordSeparator()
 			err := hasher.calculateHash(v.Field(i))
 			if err != nil {
 				return fmt.Errorf("in field %s: %s", v.Type().Field(i).Name, err.Error())
@@ -220,12 +210,10 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 			return compare_values(s.keys[i], s.keys[j])
 		})
 		for i := 0; i < l; i++ {
-			hasher.writeRecordSeparator()
 			err := hasher.calculateHash(s.keys[s.indexes[i]])
 			if err != nil {
 				return fmt.Errorf("in map: %s", err.Error())
 			}
-			hasher.writeRecordSeparator()
 			err = hasher.calculateHash(s.values[s.indexes[i]])
 			if err != nil {
 				return fmt.Errorf("in map: %s", err.Error())
@@ -236,7 +224,6 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 		l := v.Len()
 		hasher.writeInt(l)
 		for i := 0; i < l; i++ {
-			hasher.writeRecordSeparator()
 			err := hasher.calculateHash(v.Index(i))
 			if err != nil {
 				return fmt.Errorf("in %s at index %d: %s", v.Kind().String(), i, err.Error())
@@ -294,7 +281,6 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 				return err
 			}
 			hasher.writeHash(h)
-			hasher.writeRecordSeparator()
 			// The only way get the pointer out of an interface to hash it or check for cycles
 			// would be InterfaceData(), but that's deprecated and seems like it has undefined behavior.
 			err = hasher.calculateHash(v.Elem())
