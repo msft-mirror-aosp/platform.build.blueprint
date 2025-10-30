@@ -39,6 +39,14 @@ const providersDbName = "providers.db"
 const referencesDbName = "references.db"
 const ninjaDbName = "ninja.db"
 
+var IncrementalInfoDbNames = []string{
+	moduleActionsDbName,
+	singletonActionsDbName,
+	providersDbName,
+	referencesDbName,
+	ninjaDbName,
+}
+
 // @auto-generate: gob
 type BuildActionCacheKey struct {
 	Id string
