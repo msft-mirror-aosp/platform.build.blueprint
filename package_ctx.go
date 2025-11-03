@@ -650,15 +650,6 @@ func (p *builtinPool) String() string {
 	return "<builtin>:" + p.name_
 }
 
-type staticRule struct {
-	pctx       *packageContext
-	name_      string
-	params     RuleParams
-	argNames   map[string]bool
-	scope_     *basicScope
-	sync.Mutex // protects scope_ during lazy creation
-}
-
 // StaticRule returns a Rule whose value does not depend on any configuration
 // information.  It may only be called during a Go package's initialization -
 // either from the init() function or as part of a package-scoped Go variable's
@@ -682,77 +673,9 @@ func (p *packageContext) StaticRule(name string, params RuleParams,
 
 	checkCalledFromInit()
 
-	err := validateNinjaName(name)
-	if err != nil {
-		panic(err)
-	}
-
-	err = validateArgNames(argNames)
-	if err != nil {
-		panic(fmt.Errorf("invalid argument name: %s", err))
-	}
-
-	argNamesSet := make(map[string]bool)
-	for _, argName := range argNames {
-		argNamesSet[argName] = true
-	}
-
-	ruleScope := (*basicScope)(nil) // This will get created lazily
-
-	r := &staticRule{
-		pctx:     p,
-		name_:    name,
-		params:   params,
-		argNames: argNamesSet,
-		scope_:   ruleScope,
-	}
-	err = p.scope.AddRule(r)
-	if err != nil {
-		panic(err)
-	}
-
-	return r
-}
-
-func (r *staticRule) packageContext() *packageContext {
-	return r.pctx
-}
-
-func (r *staticRule) name() string {
-	return r.name_
-}
-
-func (r *staticRule) fullName(pkgNames map[*packageContext]string) string {
-	return packageNamespacePrefix(pkgNames[r.pctx]) + r.name_
-}
-
-func (r *staticRule) def(interface{}) (*ruleDef, error) {
-	def, err := parseRuleParams(r.scope(), &r.params)
-	if err != nil {
-		panic(fmt.Errorf("error parsing RuleParams for %s: %s", r, err))
-	}
-	return def, nil
-}
-
-func (r *staticRule) scope() *basicScope {
-	// We lazily create the scope so that all the package-scoped variables get
-	// declared before the args are created.  Otherwise we could incorrectly
-	// shadow a package-scoped variable with an arg variable.
-	r.Lock()
-	defer r.Unlock()
-
-	if r.scope_ == nil {
-		r.scope_ = makeRuleScope(r.pctx.scope, r.argNames)
-	}
-	return r.scope_
-}
-
-func (r *staticRule) isArg(argName string) bool {
-	return r.argNames[argName]
-}
-
-func (r *staticRule) String() string {
-	return r.pctx.pkgPath + "." + r.name_
+	return p.RuleFunc(name, func(config interface{}) (RuleParams, error) {
+		return params, nil
+	}, argNames...)
 }
 
 type ruleFunc struct {
@@ -837,6 +760,17 @@ func (r *ruleFunc) def(config interface{}) (*ruleDef, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	sboxConfig, ok := config.(sandboxConfig)
+	if ok && !sboxConfig.IsActionSandboxedBuild() {
+		// sandbox_disabled variable should be written to the ninja file only when
+		// action sandboxing is enabled, to account for the executors that do not
+		// support this variable and to decrease the ninja file size.
+		params.SandboxDisabled = false
+	} else if ok && sboxConfig.IsActionSandboxedBuild() && sboxConfig.ActionSandboxMetrics() != nil {
+		sboxConfig.ActionSandboxMetrics().updateSandboxMetrics(params.SandboxDisabled)
+	}
+
 	def, err := parseRuleParams(r.scope(), &params)
 	if err != nil {
 		panic(fmt.Errorf("error parsing RuleParams for %s: %s", r, err))

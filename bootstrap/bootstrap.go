@@ -54,9 +54,10 @@ var (
 			Command: "GOROOT='$goRoot' $compileCmd $parallelCompile -o $out.tmp " +
 				"$debugFlags -p $pkgPath -complete $incFlags $embedFlags -pack $in && " +
 				"if cmp --quiet $out.tmp $out; then rm $out.tmp; else mv -f $out.tmp $out; fi",
-			CommandDeps: []string{"$compileCmd"},
-			Description: "compile $out",
-			Restat:      true,
+			CommandDeps:     []string{"$compileCmd"},
+			Description:     "compile $out",
+			Restat:          true,
+			SandboxDisabled: true,
 		},
 		"pkgPath", "incFlags", "embedFlags")
 
@@ -64,61 +65,69 @@ var (
 		blueprint.RuleParams{
 			Command: "GOROOT='$goRoot' $linkCmd -o $out.tmp $libDirFlags $in && " +
 				"if cmp --quiet $out.tmp $out; then rm $out.tmp; else mv -f $out.tmp $out; fi",
-			CommandDeps: []string{"$linkCmd"},
-			Description: "link $out",
-			Restat:      true,
+			CommandDeps:     []string{"$linkCmd"},
+			Description:     "link $out",
+			Restat:          true,
+			SandboxDisabled: true,
 		},
 		"libDirFlags")
 
 	goTestMain = pctx.StaticRule("gotestmain",
 		blueprint.RuleParams{
-			Command:     "$goTestMainCmd -o $out -pkg $pkg $in",
-			CommandDeps: []string{"$goTestMainCmd"},
-			Description: "gotestmain $out",
+			Command:         "$goTestMainCmd -o $out -pkg $pkg $in",
+			CommandDeps:     []string{"$goTestMainCmd"},
+			Description:     "gotestmain $out",
+			SandboxDisabled: true,
 		},
 		"pkg")
 
 	pluginGenSrc = pctx.StaticRule("pluginGenSrc",
 		blueprint.RuleParams{
-			Command:     "$pluginGenSrcCmd -o $out -p $pkg $plugins",
-			CommandDeps: []string{"$pluginGenSrcCmd"},
-			Description: "create $out",
+			Command:         "$pluginGenSrcCmd -o $out -p $pkg $plugins",
+			CommandDeps:     []string{"$pluginGenSrcCmd"},
+			Description:     "create $out",
+			SandboxDisabled: true,
 		},
 		"pkg", "plugins")
 
 	verifySerializers = pctx.StaticRule("generateSerializers",
 		blueprint.RuleParams{
-			Command:     "rm -f $out && $gobGenCmd -verify $in && touch $out",
-			CommandDeps: []string{"$gobGenCmd"},
-			Description: "generate serializers $out",
+			Command:         "rm -f $out && $gobGenCmd -verify $in && touch $out",
+			CommandDeps:     []string{"$gobGenCmd"},
+			Description:     "generate serializers $out",
+			SandboxDisabled: true,
 		})
 
 	test = pctx.StaticRule("test",
 		blueprint.RuleParams{
-			Command:     "$goTestRunnerCmd -p $pkgSrcDir -f $out -- $in -test.short",
-			CommandDeps: []string{"$goTestRunnerCmd"},
-			Description: "test $pkg",
+			Command:         "$goTestRunnerCmd -p $pkgSrcDir -f $out -- $in -test.short",
+			CommandDeps:     []string{"$goTestRunnerCmd"},
+			Description:     "test $pkg",
+			SandboxDisabled: true,
 		},
 		"pkg", "pkgSrcDir")
 
 	cp = pctx.StaticRule("cp",
 		blueprint.RuleParams{
-			Command:     "cp $in $out",
-			Description: "cp $out",
+			Command:         "cp $in $out",
+			Description:     "cp $out",
+			SandboxDisabled: true,
 		},
 		"generator")
 
 	touch = pctx.StaticRule("touch",
 		blueprint.RuleParams{
-			Command:     "touch $out",
-			Description: "touch $out",
+			Command:         "touch $out",
+			Description:     "touch $out",
+			SandboxDisabled: true,
 		},
 		"depfile", "generator")
 
 	cat = pctx.StaticRule("Cat",
 		blueprint.RuleParams{
-			Command:     "rm -f $out && cat $in > $out",
-			Description: "concatenate files to $out",
+			Command:         "rm -f $out && cat $in > $out",
+			Description:     "concatenate files to $out",
+			SandboxDisabled: true,
 		})
 
 	// ubuntu 14.04 offcially use dash for /bin/sh, and its builtin echo command
@@ -126,8 +135,9 @@ var (
 	// content to file.
 	writeFile = pctx.StaticRule("writeFile",
 		blueprint.RuleParams{
-			Command:     `rm -f $out && /bin/bash -c 'echo -e -n "$$0" > $out' $content`,
-			Description: "writing file $out",
+			Command:         `rm -f $out && /bin/bash -c 'echo -e -n "$$0" > $out' $content`,
+			Description:     "writing file $out",
+			SandboxDisabled: true,
 		},
 		"content")
 
@@ -146,20 +156,22 @@ var (
 				`    --soong_out "$soongOutDir" ` +
 				`    --out "$outDir" ` +
 				`    $extra`,
-			CommandDeps: []string{"$builder"},
-			Description: "$builder $out",
-			Deps:        blueprint.DepsGCC,
-			Depfile:     "$out.d",
-			Restat:      true,
+			CommandDeps:     []string{"$builder"},
+			Description:     "$builder $out",
+			Deps:            blueprint.DepsGCC,
+			Depfile:         "$out.d",
+			Restat:          true,
+			SandboxDisabled: true,
 		},
 		"builder", "env", "extra", "pool")
 
 	// Work around a Ninja issue.  See https://github.com/martine/ninja/pull/634
 	phony = pctx.StaticRule("phony",
 		blueprint.RuleParams{
-			Command:     "# phony $out",
-			Description: "phony $out",
-			Generator:   true,
+			Command:         "# phony $out",
+			Description:     "phony $out",
+			Generator:       true,
+			SandboxDisabled: true,
 		},
 		"depfile")
 

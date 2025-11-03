@@ -98,6 +98,14 @@ type BootstrapConfig interface {
 	// IsBootstrap returns true if this is a bootstrap invocation, false if
 	// it is the primary builder.
 	IsBootstrap() bool
+
+	// IsActionSandboxedBuild() returns true if this build is run with action
+	// sandboxing enabled, which would run individual actions in a sandbox.
+	IsActionSandboxedBuild() bool
+
+	// ActionSandboxMetrics() returns the pointer to the [blueprint.SandboxMetrics]
+	// struct, which tracks the metrics collected in action sandboxed builds.
+	ActionSandboxMetrics() *blueprint.SandboxMetrics
 }
 
 type StopBefore int

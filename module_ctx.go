@@ -1049,6 +1049,16 @@ func (m *moduleContext) Rule(pctx PackageContext, name string,
 
 	m.scope.ReparentTo(pctx)
 
+	config, ok := m.baseModuleContext.Config().(sandboxConfig)
+	if ok && !config.IsActionSandboxedBuild() {
+		// sandbox_disabled variable should be written to the ninja file only when
+		// action sandboxing is enabled, to account for the executors that do not
+		// support this variable and to decrease the ninja file size.
+		params.SandboxDisabled = false
+	} else if ok && config.IsActionSandboxedBuild() && config.ActionSandboxMetrics() != nil {
+		config.ActionSandboxMetrics().updateSandboxMetrics(params.SandboxDisabled)
+	}
+
 	r, err := m.scope.AddLocalRule(name, &params, argNames...)
 	if err != nil {
 		panic(err)
@@ -1137,7 +1147,7 @@ type BottomUpMutatorContext interface {
 	// pass, but will be ordered correctly for all future mutator passes.
 	//
 	// This method will pause until the new dependencies have had the current mutator called on them.
-	AddDependency(module Module, tag DependencyTag, name ...string) []Module
+	AddDependency(module Module, tag DependencyTag, name ...string) []ModuleProxy
 
 	// AddReverseDependency adds a dependency from the destination to the given module.
 	// Does not affect the ordering of the current mutator pass, but will be ordered
@@ -1154,7 +1164,7 @@ type BottomUpMutatorContext interface {
 	//
 	//
 	// This method will pause until the new dependencies have had the current mutator called on them.
-	AddVariationDependencies([]Variation, DependencyTag, ...string) []Module
+	AddVariationDependencies([]Variation, DependencyTag, ...string) []ModuleProxy
 
 	// AddReverseVariationDependency adds a dependency from the named module to the current
 	// module. The given variations will be added to the current module's varations, and then the
@@ -1178,7 +1188,7 @@ type BottomUpMutatorContext interface {
 	//
 	//
 	// This method will pause until the new dependencies have had the current mutator called on them.
-	AddFarVariationDependencies([]Variation, DependencyTag, ...string) []Module
+	AddFarVariationDependencies([]Variation, DependencyTag, ...string) []ModuleProxy
 
 	// ReplaceDependencies finds all the variants of the module with the specified name, then
 	// replaces all dependencies onto those variants with the current variant of this module.
@@ -1251,8 +1261,8 @@ func (mctx *mutatorContext) Module() Module {
 	return mctx.module.logicModule
 }
 
-func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps ...string) []Module {
-	depInfos := make([]Module, 0, len(deps))
+func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps ...string) []ModuleProxy {
+	depInfos := make([]ModuleProxy, 0, len(deps))
 	for _, dep := range deps {
 		modInfo := module.info()
 		depInfo, errs := mctx.context.addVariationDependency(modInfo, mctx.mutator, mctx.config, nil, tag, dep, false)
@@ -1263,7 +1273,7 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 			// Pausing not supported by this mutator, new dependencies can't be returned.
 			depInfo = nil
 		}
-		depInfos = append(depInfos, maybeLogicModule(depInfo))
+		depInfos = append(depInfos, ModuleProxy{depInfo})
 	}
 	return depInfos
 }
@@ -1331,9 +1341,9 @@ func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation
 }
 
 func (mctx *mutatorContext) AddVariationDependencies(variations []Variation, tag DependencyTag,
-	deps ...string) []Module {
+	deps ...string) []ModuleProxy {
 
-	depInfos := make([]Module, 0, len(deps))
+	depInfos := make([]ModuleProxy, 0, len(deps))
 	for _, dep := range deps {
 		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.mutator, mctx.config, variations, tag, dep, false)
 		if len(errs) > 0 {
@@ -1343,15 +1353,15 @@ func (mctx *mutatorContext) AddVariationDependencies(variations []Variation, tag
 			// Pausing not supported by this mutator, new dependencies can't be returned.
 			depInfo = nil
 		}
-		depInfos = append(depInfos, maybeLogicModule(depInfo))
+		depInfos = append(depInfos, ModuleProxy{depInfo})
 	}
 	return depInfos
 }
 
 func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, tag DependencyTag,
-	deps ...string) []Module {
+	deps ...string) []ModuleProxy {
 
-	depInfos := make([]Module, 0, len(deps))
+	depInfos := make([]ModuleProxy, 0, len(deps))
 	for _, dep := range deps {
 		depInfo, errs := mctx.context.addVariationDependency(mctx.module, mctx.mutator, mctx.config, variations, tag, dep, true)
 		if len(errs) > 0 {
@@ -1361,7 +1371,7 @@ func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, 
 			// Pausing not supported by this mutator, new dependencies can't be returned.
 			depInfo = nil
 		}
-		depInfos = append(depInfos, maybeLogicModule(depInfo))
+		depInfos = append(depInfos, ModuleProxy{depInfo})
 	}
 	return depInfos
 }
@@ -1618,12 +1628,4 @@ func CheckBlueprintSyntax(moduleFactories map[string]ModuleFactory, filename str
 	}
 
 	return errs
-}
-
-func maybeLogicModule(module *moduleInfo) Module {
-	if module != nil {
-		return module.logicModule
-	} else {
-		return nil
-	}
 }

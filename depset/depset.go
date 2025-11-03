@@ -129,22 +129,22 @@ func (d DepSet[T]) encodeInternal(c gobtools.EncContext, buf *bytes.Buffer, enco
 	var err error
 	var zeroDepSet DepSet[T]
 	if d == zeroDepSet {
-		return gobtools.EncodeSimple(buf, false)
+		return gobtools.EncodeBool(buf, false)
 	} else {
-		if err = gobtools.EncodeSimple(buf, true); err != nil {
+		if err = gobtools.EncodeBool(buf, true); err != nil {
 			return err
 		}
 	}
 	impl := d.impl()
 	if err = errors.Join(
-		gobtools.EncodeSimple(buf, impl.preorder),
-		gobtools.EncodeSimple(buf, impl.reverse),
-		gobtools.EncodeSimple(buf, int16(impl.order))); err != nil {
+		gobtools.EncodeBool(buf, impl.preorder),
+		gobtools.EncodeBool(buf, impl.reverse),
+		gobtools.EncodeInt16(buf, int16(impl.order))); err != nil {
 		return err
 	}
 
 	dlist := impl.direct.ToSlice()
-	if err = gobtools.EncodeSimple(buf, int32(len(dlist))); err != nil {
+	if err = gobtools.EncodeInt32(buf, int32(len(dlist))); err != nil {
 		return err
 	}
 	for i := 0; i < len(dlist); i++ {
@@ -154,7 +154,7 @@ func (d DepSet[T]) encodeInternal(c gobtools.EncContext, buf *bytes.Buffer, enco
 	}
 
 	tlist := impl.transitive.ToSlice()
-	if err = gobtools.EncodeSimple(buf, int32(len(tlist))); err != nil {
+	if err = gobtools.EncodeInt32(buf, int32(len(tlist))); err != nil {
 		return err
 	}
 	for i := 0; i < len(tlist); i++ {
@@ -216,23 +216,23 @@ func (d *DepSet[T]) DecodeString(c gobtools.EncContext, buf *bytes.Reader) error
 func (d *DepSet[T]) decodeInternal(c gobtools.EncContext, buf *bytes.Reader, decode func(reader *bytes.Reader, value *T) error) error {
 	var err error
 	var valueSet bool
-	if err = gobtools.DecodeSimple[bool](buf, &valueSet); err != nil || !valueSet {
+	if err = gobtools.DecodeBool(buf, &valueSet); err != nil || !valueSet {
 		return err
 	}
 
 	var fromGob depSet[T]
 	var order int16
 	if err = errors.Join(
-		gobtools.DecodeSimple[bool](buf, &fromGob.preorder),
-		gobtools.DecodeSimple[bool](buf, &fromGob.reverse),
-		gobtools.DecodeSimple[int16](buf, &order)); err != nil {
+		gobtools.DecodeBool(buf, &fromGob.preorder),
+		gobtools.DecodeBool(buf, &fromGob.reverse),
+		gobtools.DecodeInt16(buf, &order)); err != nil {
 		return err
 	}
 	fromGob.order = Order(order)
 
 	var dlist []T
 	var dlen int32
-	err = gobtools.DecodeSimple[int32](buf, &dlen)
+	err = gobtools.DecodeInt32(buf, &dlen)
 	if err != nil {
 		return err
 	}
@@ -248,7 +248,7 @@ func (d *DepSet[T]) decodeInternal(c gobtools.EncContext, buf *bytes.Reader, dec
 
 	var tlist []DepSet[T]
 	var tlen int32
-	err = gobtools.DecodeSimple[int32](buf, &tlen)
+	err = gobtools.DecodeInt32(buf, &tlen)
 	if err != nil {
 		return err
 	}

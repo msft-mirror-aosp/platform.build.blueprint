@@ -24,7 +24,7 @@ import (
 	"github.com/google/blueprint/uniquelist"
 )
 
-//go:generate go run gob_gen.go
+//go:generate go run ../codegen
 
 type TestEchoInterface interface {
 	EchoTest(string) string

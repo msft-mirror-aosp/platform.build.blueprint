@@ -65,6 +65,35 @@ const OutFilePermissions = 0666
 const BuildActionsCacheFile = "build_actions.gob"
 const OrderOnlyStringsCacheFile = "order_only_strings.gob"
 
+// sandboxConfig is an interface for config objects that can report if the
+// build is action sandboxed.
+type sandboxConfig interface {
+	IsActionSandboxedBuild() bool
+	ActionSandboxMetrics() *SandboxMetrics
+}
+
+// SandboxMetrics tracks the total number of rules and action sandboxing disabled
+// (i.e. opted-out) rules in action sandboxed builds
+type SandboxMetrics struct {
+	totalRules    int64
+	disabledRules int64
+}
+
+func (s *SandboxMetrics) updateSandboxMetrics(isSandboxDisabled bool) {
+	atomic.AddInt64(&s.totalRules, 1)
+	if isSandboxDisabled {
+		atomic.AddInt64(&s.disabledRules, 1)
+	}
+}
+
+func (s *SandboxMetrics) TotalRules() int64 {
+	return atomic.LoadInt64(&s.totalRules)
+}
+
+func (s *SandboxMetrics) DisabledRules() int64 {
+	return atomic.LoadInt64(&s.disabledRules)
+}
+
 // A Context contains all the state needed to parse a set of Blueprints files
 // and generate a Ninja file.  The process of generating a Ninja file proceeds
 // through a series of four phases.  Each phase corresponds with a some methods
