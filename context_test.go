@@ -182,10 +182,7 @@ func (b *barModule) Walk() bool {
 
 type incrementalModule struct {
 	baseTestModule
-	IncrementalModule
 }
-
-var _ Incremental = &incrementalModule{}
 
 const incrementalModuleNinja string = `# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 # Module:  MyIncrementalModule

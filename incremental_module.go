@@ -29,27 +29,15 @@ type ModuleBuildActionCacheInput struct {
 	ProvidersHash  [][]proptools.Hash
 }
 
-type Incremental interface {
-	IncrementalSupported() bool
-}
-
-type IncrementalModule struct{}
-
-func (m *IncrementalModule) IncrementalSupported() bool {
-	return true
-}
-
 func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
 	// Whether the above conditions are true and we can try to restore from
 	// the cache for this module, i.e., no env, product variables and Soong
 	// code changes.
 	incrementalAnalysis := false
 	var cacheKey *BuildActionCacheKey = nil
-	m.incrementalSupported = incrementalSupported(m)
 
-	// Whether the incremental flag is set and the module type supports
-	// incremental, this will decide weather to cache the data for the module.
-	if ctx.GetIncrementalEnabled() && m.incrementalSupported {
+	// Compute the hashes of the input data if incremental analysis is enabled.
+	if ctx.GetIncrementalEnabled() {
 		incrementalAnalysis = ctx.GetIncrementalAnalysis()
 		hash, err := proptools.CalculateHash(m.properties)
 		if err != nil {
@@ -176,14 +164,6 @@ func (m *moduleInfo) cacheModuleBuildActions(ctx gobtools.EncContext, buildActio
 	if err != nil {
 		panic(err)
 	}
-}
-
-func incrementalSupported(m *moduleInfo) bool {
-	if im, ok := m.logicModule.(Incremental); ok {
-		return im.IncrementalSupported()
-	}
-
-	return true
 }
 
 type depProviders struct {

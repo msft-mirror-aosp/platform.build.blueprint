@@ -483,10 +483,8 @@ type commonIncrementalInfo struct {
 	// (indexed in the same order as providerRegistry) exists in the cache but has not yet been
 	// restored.
 	hasUnrestoredProvider []bool
-	// Whether this module support incremental build.
-	incrementalSupported bool
-	providerRestoreLock  sync.Mutex
-	buildActionCacheKey  *BuildActionCacheKey
+	providerRestoreLock   sync.Mutex
+	buildActionCacheKey   *BuildActionCacheKey
 	providerInfo
 }
 
@@ -652,6 +650,8 @@ type singletonInfo struct {
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
 	commonIncrementalInfo
+	// Whether this singleton supports incremental build.
+	incrementalSupported bool
 	// The provider hashes of all the singletons that this singleton might depend on.
 	// These values are calculated before calling the GenerateBuildAction of the current
 	// singleton, and combined with the hashes of all the module providers that this
@@ -5093,7 +5093,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 				defer wg.Done()
 				parallelVisitSimple(slices.Values(modules), parallelVisitLimit,
 					func(m *moduleInfo, _ int) []error {
-						if m.incrementalSupported && !m.incrementalRestored {
+						if !m.incrementalRestored {
 							m.cacheModuleBuildActions(c.EncContext, c.buildActionsCache)
 						}
 						return nil

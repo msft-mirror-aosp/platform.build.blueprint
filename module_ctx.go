@@ -178,7 +178,7 @@ func (m ModuleProxy) IncrementalInfo() *IncrementalMetricsInfo {
 		IncrementalRestored:        m.moduleInfo.incrementalRestored,
 		HasUnrestoredProvider:      m.moduleInfo.hasUnrestoredProvider,
 		ProviderInitialValueHashes: m.moduleInfo.providerInitialValueHashes,
-		IncrementalSupported:       m.moduleInfo.incrementalSupported,
+		IncrementalSupported:       true,
 	}
 }
 
