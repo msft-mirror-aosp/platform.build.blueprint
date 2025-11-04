@@ -331,18 +331,3 @@ func (b *BuildActionCache) write(ctx gobtools.EncContext, db dbtools.KeyValueSto
 
 // @auto-generate: gob
 type OrderOnlyStringsCache map[string][]string
-
-type ModuleBuildActionCacheInput struct {
-	PropertiesHash proptools.Hash
-	ProvidersHash  [][]proptools.Hash
-}
-
-type Incremental interface {
-	IncrementalSupported() bool
-}
-
-type IncrementalModule struct{}
-
-func (m *IncrementalModule) IncrementalSupported() bool {
-	return true
-}

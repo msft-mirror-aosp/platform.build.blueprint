@@ -158,7 +158,7 @@ func calculateHashKey(m *moduleInfo, providerHashes [][]proptools.Hash) (BuildAc
 		panic(newPanicErrorf(err, "failed to calculate cache input hash"))
 	}
 	return BuildActionCacheKey{
-		Id: m.ModuleCacheKey(),
+		Id: m.moduleCacheKey(),
 	}, hash
 }
 

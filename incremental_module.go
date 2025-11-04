@@ -1,0 +1,233 @@
+// Copyright 2025 Google Inc. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package blueprint
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/proptools"
+	"github.com/google/blueprint/uniquelist"
+)
+
+type ModuleBuildActionCacheInput struct {
+	PropertiesHash proptools.Hash
+	ProvidersHash  [][]proptools.Hash
+}
+
+type Incremental interface {
+	IncrementalSupported() bool
+}
+
+type IncrementalModule struct{}
+
+func (m *IncrementalModule) IncrementalSupported() bool {
+	return true
+}
+
+func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
+	// Whether the above conditions are true and we can try to restore from
+	// the cache for this module, i.e., no env, product variables and Soong
+	// code changes.
+	incrementalAnalysis := false
+	var cacheKey *BuildActionCacheKey = nil
+	m.incrementalSupported = incrementalSupported(m)
+
+	// Whether the incremental flag is set and the module type supports
+	// incremental, this will decide weather to cache the data for the module.
+	if ctx.GetIncrementalEnabled() && m.incrementalSupported {
+		incrementalAnalysis = ctx.GetIncrementalAnalysis()
+		hash, err := proptools.CalculateHash(m.properties)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate properties hash"))
+		}
+		cacheInput := new(ModuleBuildActionCacheInput)
+		cacheInput.PropertiesHash = hash
+		for _, dep := range m.directDeps {
+			cacheInput.ProvidersHash =
+				append(cacheInput.ProvidersHash, dep.module.providerInitialValueHashes)
+		}
+		hash, err = proptools.CalculateHash(cacheInput)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
+		}
+		cacheKey = &BuildActionCacheKey{
+			Id: m.moduleCacheKey(),
+		}
+		m.buildActionCacheKey = cacheKey
+		m.buildActionInputHash = hash
+		if ctx.incrementalDebugFile != "" {
+			m.incrementalDebugInfo = m.incrementalDebugData(cacheInput)
+		}
+	}
+
+	if incrementalAnalysis {
+		// Try to restore from cache if there is a cache hit
+		data, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, cacheKey)
+		if err != nil {
+			panic(err)
+		}
+		if data == nil || m.buildActionInputHash != data.InputHash {
+			return false
+		}
+		for _, glob := range data.GlobCache {
+			result, err := ctx.glob(glob.Pattern, glob.Excludes)
+			if err != nil {
+				panic(newPanicErrorf(err, "failed to glob for cached module: %s %s %v", m.Name(), glob.Pattern, glob.Excludes))
+			}
+			hash, err := proptools.CalculateHash(result)
+			if err != nil {
+				panic(newPanicErrorf(err, "failed to calculate hash for cached glob result: %s", m.Name()))
+			}
+			if hash != glob.Result {
+				return false
+			}
+		}
+
+		if m.providerInitialValueHashes == nil {
+			m.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+		}
+
+		m.hasUnrestoredProvider = make([]bool, len(providerRegistry))
+		m.incrementalRestored = true
+
+		for _, provider := range data.ProviderHashes {
+			m.providerInitialValueHashes[provider.Id.id] = provider.Hash
+			m.hasUnrestoredProvider[provider.Id.id] = true
+		}
+
+		m.orderOnlyStrings = data.OrderOnlyStrings
+		m.globCache = data.GlobCache
+		for _, str := range data.OrderOnlyStrings {
+			if !strings.HasPrefix(str, "dedup-") {
+				continue
+			}
+			orderOnlyStrings, ok := ctx.orderOnlyStringsCache[str]
+			if !ok {
+				panic(fmt.Errorf("no cached value found for order only dep: %s", str))
+			}
+			key := uniquelist.Make(orderOnlyStrings)
+			if info, loaded := ctx.orderOnlyStrings.LoadOrStore(key, &orderOnlyStringsInfo{
+				dedup:       true,
+				incremental: true,
+			}); loaded {
+				for {
+					cpy := *info
+					cpy.dedup = true
+					cpy.incremental = true
+					if ctx.orderOnlyStrings.CompareAndSwap(key, info, &cpy) {
+						break
+					}
+					if info, loaded = ctx.orderOnlyStrings.Load(key); !loaded {
+						// This shouldn't happen
+						panic("order only string was removed unexpectedly")
+					}
+				}
+			}
+		}
+	}
+
+	return m.incrementalRestored
+}
+
+func (m *moduleInfo) cacheModuleBuildActions(ctx gobtools.EncContext, buildActionsCache *BuildActionCache) {
+	var providerHashes []ProviderHash
+
+	for i, p := range m.providers {
+		if p != nil && providerRegistry[i].mutator == "" {
+			err := buildActionsCache.writeProvider(ctx, m.providerInitialValueHashes[i],
+				CachedProvider{
+					Id:    providerRegistry[i],
+					Value: p,
+				})
+			if err != nil {
+				panic(err)
+			}
+			providerHashes = append(providerHashes,
+				ProviderHash{
+					Id:   providerRegistry[i],
+					Hash: m.providerInitialValueHashes[i],
+				})
+		}
+	}
+
+	buildActionData := ModuleActionCachedData{
+		InputHash:        m.buildActionInputHash,
+		ProviderHashes:   providerHashes,
+		OrderOnlyStrings: m.orderOnlyStrings,
+		GlobCache:        m.globCache,
+	}
+
+	err := buildActionsCache.writeModuleBuildAction(ctx, m.buildActionCacheKey, &buildActionData)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func incrementalSupported(m *moduleInfo) bool {
+	if im, ok := m.logicModule.(Incremental); ok {
+		return im.IncrementalSupported()
+	}
+
+	return true
+}
+
+type depProviders struct {
+	Name      string   `json:"dep_name"`
+	Type      string   `json:"dep_type"`
+	Variant   string   `json:"dep_variant"`
+	Providers []string `json:"dep_provider_hash"`
+}
+
+func (m *moduleInfo) incrementalDebugData(inputHash *ModuleBuildActionCacheInput) []byte {
+	info := struct {
+		Name      string         `json:"name"`
+		CacheKey  string         `json:"cache_key"`
+		Type      string         `json:"type"`
+		Variant   string         `json:"variant"`
+		PropHash  proptools.Hash `json:"properties_hash"`
+		Providers []depProviders `json:"providers"`
+	}{
+		Name:     m.logicModule.Name(),
+		CacheKey: m.moduleCacheKey(),
+		Type:     m.typeName,
+		Variant:  m.variant.name,
+		PropHash: inputHash.PropertiesHash,
+		Providers: func() []depProviders {
+			result := make([]depProviders, 0, len(m.directDeps))
+			for _, d := range m.directDeps {
+				dep := d.module
+				dp := depProviders{
+					Name:    dep.Name(),
+					Type:    dep.typeName,
+					Variant: dep.variant.name,
+				}
+				for _, p := range providerRegistry {
+					if dep.providerInitialValueHashes[p.id] == proptools.ZeroHash {
+						continue
+					}
+					dp.Providers = append(dp.Providers,
+						fmt.Sprintf("%s:%x", p.typ, dep.providerInitialValueHashes[p.id]))
+				}
+				result = append(result, dp)
+			}
+			return result
+		}(),
+	}
+	buf, _ := json.Marshal(info)
+	return buf
+}
