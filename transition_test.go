@@ -733,6 +733,61 @@ func TestOnDemandDependendcyVariantMultipleTransitions(t *testing.T) {
 func TestOnDemandDependencyVariantFromCoalesedMutatorGroup(t *testing.T) {
 }
 
+// When running the completed mutators on the on-demand variants, the mutator group
+// order must be respected.
+// e.g.
+// For the mutator groups [m0], [m1], [m2, m3]
+// on demand dep A -> B
+// When running m0 on A, A should only have access to B's providers at the end of m0.
+func TestNoPreviewOfFutureStateOfOnDemandVariants(t *testing.T) {
+	t.Parallel()
+	bp := `
+		transition_module {
+			name: "A",
+			split: ["2"],
+			post_transition_deps: ["B"],
+		}
+		transition_module {
+			name: "B",
+			split: ["1"],
+			split_on_demand: ["2"],
+			deps: ["C"],
+		}
+		transition_module {
+			name: "C",
+			split: ["1"],
+			split_on_demand: ["2"],
+		}
+	`
+	ctx := newContext()
+	ctx.MockFileSystem(map[string][]byte{
+		"Android.bp": []byte(bp),
+	})
+	ctx.RegisterBottomUpMutator("deps", depsMutator)
+	ctx.RegisterBottomUpMutator("pre_transition_bottom_up", func(mctx BottomUpMutatorContext) {
+		ctx.VisitDirectDeps(mctx.Module(), func(child Module) {
+			// This should be an error for normal and on-demand variants,
+			// since this provider is set in a future mutator.
+			_, _ = OtherModuleProvider(mctx, child, providerTestMutatorInfoProvider)
+		})
+	})
+	ctx.RegisterTransitionMutator("transition", transitionTestMutator{}).NeverFar()
+	ctx.RegisterBottomUpMutator("provider_mutator", func(mctx BottomUpMutatorContext) {
+		if t, ok := mctx.Module().(*transitionModule); ok {
+			SetProvider(mctx, providerTestMutatorInfoProvider, &providerTestMutatorInfo{
+				Values: []string{t.properties.Mutated},
+			})
+		}
+	})
+	ctx.RegisterBottomUpMutator("post_transition_deps", postTransitionDepsMutator).UsesReverseDependencies()
+	ctx.RegisterModuleType("transition_module", newTransitionModule)
+
+	_, errs := ctx.ParseBlueprintsFiles("Android.bp", nil)
+	assertNoErrors(t, errs)
+	_, errs = ctx.ResolveDependencies(nil)
+	assertOneErrorMatches(t, errs, `Can't get value of provider \*blueprint.providerTestMutatorInfo before mutator provider_mutator finished`)
+}
+
 type transitionTestMutator struct{}
 
 func (transitionTestMutator) TransitionInfoFromVariation(s string) TransitionInfo {
