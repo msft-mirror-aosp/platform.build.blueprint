@@ -729,8 +729,53 @@ func TestOnDemandDependendcyVariantMultipleTransitions(t *testing.T) {
 	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "2_2"), "D(1_1)") // via incoming.
 }
 
-// TODO (b/448182009):
+// Check Bottom-up visit in mutator group for on demand variants.
+// e.g. For a mutator group M=[m0,m1,m2], if an on-demand variant is created at m1,
+// m1 of rdep must pause till the mutators have been run on the on-demand variant
+// till m2.
 func TestOnDemandDependencyVariantFromCoalesedMutatorGroup(t *testing.T) {
+	t.Parallel()
+	_, errs := testTransitionCommon(`
+		transition_module {
+			name: "A",
+			split: ["a1"],
+		}
+
+		transition_module {
+			name: "B",
+			split: ["b1"],
+		}
+		transition_module {
+			name: "C",
+			split: ["a1"],
+			split_on_demand: ["b1", "d1"], // b1 has a rdep, d1 does not.
+		}
+	`,
+		false,
+		func(ctx *Context) {
+			// Add a mutator that runs after transition mutator and
+			// uses AddDependency to create an on-demand variant from B->C
+			ctx.RegisterBottomUpMutator("post_transition_bottom_up", func(mctx BottomUpMutatorContext) {
+				if mctx.ModuleName() == "B" {
+					mctx.AddDependency(mctx.Module(), nil, "C")
+					ctx.VisitDirectDeps(mctx.Module(), func(child Module) {
+						c, _ := child.(*transitionModule)
+						if c.properties.Mutated != "b1_post_transition_bottom_up" {
+							mctx.ModuleErrorf("Incorrect mutator visit order in module group: rdep %s visited before mutator group completion for on-demand dep %s\n", mctx.Module().Name(), child.Name())
+						}
+					})
+				}
+			})
+			// Add a mutator that will be coalesced with the previous mutator.
+			// Check that all the mutators have been run on C before B.
+			ctx.RegisterBottomUpMutator("uses_add_dep_from_previous_mutator", func(mctx BottomUpMutatorContext) {
+				if m, ok := mctx.Module().(*transitionModule); ok {
+					m.properties.Mutated += "_post_transition_bottom_up"
+				}
+			})
+
+		})
+	assertNoErrors(t, errs)
 }
 
 // When running the completed mutators on the on-demand variants, the mutator group
