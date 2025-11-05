@@ -26,6 +26,18 @@ func (g *gobGen) encodeUniqueList(encodeBody *strings.Builder, pkgName string, t
 	g.encodeSlice(encodeBody, pkgName, t.Index, listName)
 }
 
+func (g *gobGen) hashUniqueList(hashBody *strings.Builder, pkgName string, t *ast.IndexExpr, fieldName string) {
+	typeRef := g.findTypeReference(t.Index, pkgName)
+	g.maybeAddImport(typeRef)
+	typeName := typeRef.fullName()
+	hashFuncBody := &strings.Builder{}
+	varName := g.nextVar()
+	g.generateHashForType(hashFuncBody, pkgName, t.Index, varName)
+	hashFunc := g.nextVar()
+	hashBody.WriteString(fmt.Sprintf("\t%s := func(hasher *proptools.Hasher, %s %s) error { %s return nil }\n", hashFunc, varName, typeName, hashFuncBody.String()))
+	hashBody.WriteString(fmt.Sprintf("\tif err := %s.Hash(hasher, \"%s\", %s); err != nil { return err }\n", fieldName, typeName, hashFunc))
+}
+
 func (g *gobGen) decodeUniqueList(decodeBody *strings.Builder, pkgName string, t *ast.IndexExpr, fieldName string) {
 	listName := g.nextVar()
 	typeRef := g.findTypeReference(t.Index, pkgName)

@@ -9,6 +9,7 @@ bootstrap_go_package {
     ],
     deps: [
         "blueprint-syncmap",
+        "blueprint-proptools",
     ],
     visibility: [
         "//build/blueprint",

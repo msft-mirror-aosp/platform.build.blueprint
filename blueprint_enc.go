@@ -4,8 +4,11 @@ package blueprint
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/proptools"
+	"reflect"
+	"unsafe"
 )
 
 // begin of context.go
@@ -42,6 +45,27 @@ func (r globResultCache) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) erro
 		}
 	}
 	return err
+}
+
+func (r globResultCache) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.globResultCache")
+	hasher.WriteInt(3)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.Pattern)
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r.Excludes))
+	for val1 := 0; val1 < len(r.Excludes); val1++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r.Excludes[val1])
+	}
+	hasher.WriteString(":blueprint.proptools.Hash")
+	hasher.WriteString(":.[1]uint64")
+	hasher.WriteInt(len(r.Result))
+	for val2 := 0; val2 < len(r.Result); val2++ {
+		hasher.WriteString(":.uint64")
+		hasher.WriteUint64(uint64(r.Result[val2]))
+	}
+	return nil
 }
 
 func (r *globResultCache) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
@@ -96,6 +120,16 @@ func (r Variation) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	return err
 }
 
+func (r Variation) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.Variation")
+	hasher.WriteInt(2)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.Mutator)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.Variation)
+	return nil
+}
+
 func (r *Variation) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
@@ -139,6 +173,14 @@ func (r BuildActionCacheKey) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) 
 	return err
 }
 
+func (r BuildActionCacheKey) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.BuildActionCacheKey")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.Id)
+	return nil
+}
+
 func (r *BuildActionCacheKey) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
@@ -173,6 +215,50 @@ func (r CachedProvider) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error
 		return err
 	}
 	return err
+}
+
+func (r CachedProvider) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.CachedProvider")
+	hasher.WriteInt(2)
+	hasher.WriteString(":.*providerKey")
+	val1 := r.Id == nil
+	if val1 {
+		hasher.WriteByte(0)
+	} else {
+		val2 := func(hasher *proptools.Hasher) error {
+			if err := (*r.Id).CustomHash(hasher); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.Id)), val2); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":.any")
+	val3 := r.Value == nil
+	if val3 {
+		hasher.WriteByte(0)
+	} else {
+		if v := reflect.ValueOf(r.Value); v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				panic(fmt.Errorf("nil pointer is not supported in interface"))
+			} else {
+				val4 := r.Value == nil
+				if val4 {
+					hasher.WriteByte(0)
+				} else {
+					val5 := func(hasher *proptools.Hasher) error { return r.Value.(proptools.CustomHash).CustomHash(hasher) }
+					if err := proptools.HashReference(hasher, uintptr(v.Pointer()), val5); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			r.Value.(proptools.CustomHash).CustomHash(hasher)
+		}
+	}
+	return nil
 }
 
 func (r *CachedProvider) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
@@ -226,6 +312,34 @@ func (r ProviderHash) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		}
 	}
 	return err
+}
+
+func (r ProviderHash) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.ProviderHash")
+	hasher.WriteInt(2)
+	hasher.WriteString(":.*providerKey")
+	val1 := r.Id == nil
+	if val1 {
+		hasher.WriteByte(0)
+	} else {
+		val2 := func(hasher *proptools.Hasher) error {
+			if err := (*r.Id).CustomHash(hasher); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.Id)), val2); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":blueprint.proptools.Hash")
+	hasher.WriteString(":.[1]uint64")
+	hasher.WriteInt(len(r.Hash))
+	for val3 := 0; val3 < len(r.Hash); val3++ {
+		hasher.WriteString(":.uint64")
+		hasher.WriteUint64(uint64(r.Hash[val3]))
+	}
+	return nil
 }
 
 func (r *ProviderHash) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
@@ -313,6 +427,39 @@ func (r ModuleActionCachedData) Encode(ctx gobtools.EncContext, buf *bytes.Buffe
 		}
 	}
 	return err
+}
+
+func (r ModuleActionCachedData) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.ModuleActionCachedData")
+	hasher.WriteInt(4)
+	hasher.WriteString(":blueprint.proptools.Hash")
+	hasher.WriteString(":.[1]uint64")
+	hasher.WriteInt(len(r.InputHash))
+	for val1 := 0; val1 < len(r.InputHash); val1++ {
+		hasher.WriteString(":.uint64")
+		hasher.WriteUint64(uint64(r.InputHash[val1]))
+	}
+	hasher.WriteString(":.[]ProviderHash")
+	hasher.WriteInt(len(r.ProviderHashes))
+	for val2 := 0; val2 < len(r.ProviderHashes); val2++ {
+		if err := r.ProviderHashes[val2].CustomHash(hasher); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r.OrderOnlyStrings))
+	for val3 := 0; val3 < len(r.OrderOnlyStrings); val3++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r.OrderOnlyStrings[val3])
+	}
+	hasher.WriteString(":.[]globResultCache")
+	hasher.WriteInt(len(r.GlobCache))
+	for val4 := 0; val4 < len(r.GlobCache); val4++ {
+		if err := r.GlobCache[val4].CustomHash(hasher); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *ModuleActionCachedData) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
@@ -417,6 +564,37 @@ func (r SingletonActionCachedData) Encode(ctx gobtools.EncContext, buf *bytes.Bu
 	return err
 }
 
+func (r SingletonActionCachedData) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.SingletonActionCachedData")
+	hasher.WriteInt(2)
+	hasher.WriteString(":.[]ProviderHash")
+	hasher.WriteInt(len(r.ProviderHashes))
+	for val1 := 0; val1 < len(r.ProviderHashes); val1++ {
+		if err := r.ProviderHashes[val1].CustomHash(hasher); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":.map[int]proptools.Hash")
+	hasher.WriteInt(len(r.DependencyProviderHashes))
+	val2 := make([]int, 0, len(r.DependencyProviderHashes))
+	for val4 := range r.DependencyProviderHashes {
+		val2 = append(val2, val4)
+	}
+	proptools.SortOrdered(val2)
+	for _, val3 := range val2 {
+		hasher.WriteString(":.int")
+		hasher.WriteUint64(uint64(val3))
+		hasher.WriteString(":blueprint.proptools.Hash")
+		hasher.WriteString(":.[1]uint64")
+		hasher.WriteInt(len(r.DependencyProviderHashes[val3]))
+		for val5 := 0; val5 < len(r.DependencyProviderHashes[val3]); val5++ {
+			hasher.WriteString(":.uint64")
+			hasher.WriteUint64(uint64(r.DependencyProviderHashes[val3][val5]))
+		}
+	}
+	return nil
+}
+
 func (r *SingletonActionCachedData) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
@@ -501,6 +679,27 @@ func (r OrderOnlyStringsCache) Encode(ctx gobtools.EncContext, buf *bytes.Buffer
 	return err
 }
 
+func (r OrderOnlyStringsCache) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":.map[string][]string")
+	hasher.WriteInt(len(r))
+	val1 := make([]string, 0, len(r))
+	for val3 := range r {
+		val1 = append(val1, val3)
+	}
+	proptools.SortOrdered(val1)
+	for _, val2 := range val1 {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val2)
+		hasher.WriteString(":.[]string")
+		hasher.WriteInt(len(r[val2]))
+		for val4 := 0; val4 < len(r[val2]); val4++ {
+			hasher.WriteString(":.string")
+			hasher.WriteString(r[val2][val4])
+		}
+	}
+	return nil
+}
+
 func (r *OrderOnlyStringsCache) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
@@ -567,6 +766,18 @@ func (r providerKey) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		return err
 	}
 	return err
+}
+
+func (r providerKey) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.providerKey")
+	hasher.WriteInt(3)
+	hasher.WriteString(":.int")
+	hasher.WriteUint64(uint64(r.id))
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.typ)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.mutator)
+	return nil
 }
 
 func (r *providerKey) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {

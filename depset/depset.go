@@ -23,6 +23,7 @@ import (
 	"unique"
 
 	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/uniquelist"
 )
 
@@ -268,6 +269,42 @@ func (d *DepSet[T]) decodeInternal(c gobtools.EncContext, buf *bytes.Reader, dec
 	fromGob.transitive = uniquelist.Make(tlist)
 	d.handle = unique.Make(fromGob)
 	return err
+}
+
+func boolToByte(b bool) byte {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func (d DepSet[T]) Hash(hasher *proptools.Hasher, typeName string, hashT func(*proptools.Hasher, T) error) error {
+	var err error
+	var zeroDepSet DepSet[T]
+	hasher.WriteString(fmt.Sprintf(":.depset.DepSet[%s]", typeName))
+	if d == zeroDepSet {
+		hasher.WriteByte(0)
+		return nil
+	}
+	hash := func(hasher1 *proptools.Hasher) error {
+		impl := d.impl()
+		hasher1.WriteString(":.bool")
+		hasher1.WriteByte(boolToByte(impl.preorder))
+		hasher1.WriteString(":.bool")
+		hasher1.WriteByte(boolToByte(impl.reverse))
+		hasher1.WriteString(":depset.Order")
+		hasher1.WriteInt(int(impl.order))
+		if err = impl.direct.Hash(hasher1, typeName, hashT); err != nil {
+			return err
+		}
+
+		hashD := func(hasher2 *proptools.Hasher, v DepSet[T]) error {
+			return v.Hash(hasher2, typeName, hashT)
+		}
+
+		return impl.transitive.Hash(hasher1, typeName, hashD)
+	}
+	return proptools.HashReference(hasher, d, hash)
 }
 
 // New returns an immutable DepSet with the given order, direct and transitive contents.

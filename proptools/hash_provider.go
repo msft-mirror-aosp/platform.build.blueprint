@@ -24,6 +24,7 @@ import (
 	"math"
 	"reflect"
 	"slices"
+	"sort"
 	"strconv"
 	"text/scanner"
 	"unsafe"
@@ -31,7 +32,11 @@ import (
 	"github.com/google/blueprint/pool"
 )
 
-var hasherPool = pool.New[hasher]()
+var hasherPool = pool.New[Hasher]()
+
+type CustomHash interface {
+	CustomHash(hasher *Hasher) error
+}
 
 const HashSize = 8
 
@@ -74,19 +79,26 @@ func CalculateHash(value interface{}) (Hash, error) {
 	defer hasherPool.Put(hasher)
 	hasher.reset()
 
-	v := reflect.ValueOf(value)
 	var err error
-	if v.IsValid() {
-		err = hasher.calculateHash(v)
+	v := reflect.ValueOf(value)
+
+	if ch, ok := value.(CustomHash); ok {
+		// We need to distinguish A from *A.
+		hasher.HashType(v.Type())
+		err = ch.CustomHash(hasher)
+	} else {
+		if v.IsValid() {
+			err = hasher.CalculateHashReflection(v)
+		}
 	}
 	return Hash{hasher.Sum64()}, err
 }
 
-type hasher struct {
+type Hasher struct {
 	hash.Hash64
 	int64Buf      [8]byte
-	ptrs          map[uintptr]uint64
-	visiting      map[uintptr]bool
+	ptrs          map[any]uint64
+	visiting      map[any]bool
 	mapStateCache *mapState
 }
 
@@ -101,7 +113,51 @@ type mapState struct {
 	values  []reflect.Value
 }
 
-func (hasher *hasher) reset() {
+func NewHasher() *Hasher {
+	hasher := &Hasher{}
+	hasher.reset()
+	return hasher
+}
+
+func HashReference(hasher *Hasher, addr any, hash func(*Hasher) error) error {
+	if hasher.ptrs == nil {
+		hasher.ptrs = make(map[any]uint64, ptrsMapSize)
+	}
+	if hasher.visiting == nil {
+		hasher.visiting = make(map[any]bool, ptrsMapSize)
+	}
+	if _, ok := hasher.visiting[addr]; ok {
+		// Circular dependency detected (we have this in Scope at least), just return nil for now.
+		return nil
+	}
+
+	// The special logic below is to avoid hashing the same pointer more than once.
+	// We store the current hash value, then reset the hasher to a clean state in
+	// order to calculate the hash of the pointer which will be cached for future
+	// encounters. Once we have the hash value of the pointer, we hash both the
+	// stored hash value and the hash value of the pointer.
+	prevHash := hasher.Sum64()
+	hasher.Reset()
+
+	ptrHash, ok := hasher.ptrs[addr]
+	if !ok {
+		hasher.visiting[addr] = true
+		err := hash(hasher)
+		if err != nil {
+			return fmt.Errorf("in pointer: %s", err.Error())
+		}
+		ptrHash = hasher.Sum64()
+		hasher.ptrs[addr] = ptrHash
+		delete(hasher.visiting, addr)
+	}
+
+	hasher.Reset()
+	hasher.WriteUint64(prevHash)
+	hasher.WriteUint64(ptrHash)
+	return nil
+}
+
+func (hasher *Hasher) reset() {
 	if hasher.Hash64 == nil {
 		hasher.Hash64 = fnv.New64()
 	} else {
@@ -112,38 +168,38 @@ func (hasher *hasher) reset() {
 	clear(hasher.visiting)
 }
 
-func (hasher *hasher) writeUint64(i uint64) {
+func (hasher *Hasher) WriteUint64(i uint64) {
 	binary.LittleEndian.PutUint64(hasher.int64Buf[:], i)
 	hasher.Write(hasher.int64Buf[:])
 }
 
-func (hasher *hasher) writeInt(i int) {
-	hasher.writeUint64(uint64(i))
+func (hasher *Hasher) WriteInt(i int) {
+	hasher.WriteUint64(uint64(i))
 }
 
-func (hasher *hasher) writeByte(i byte) {
+func (hasher *Hasher) WriteByte(i byte) {
 	hasher.int64Buf[0] = i
 	hasher.Write(hasher.int64Buf[:1])
 }
 
-func (hasher *hasher) writeString(s string) {
+func (hasher *Hasher) WriteString(s string) {
 	strLen := len(s)
 	if strLen == 0 {
 		// unsafe.StringData is unspecified in this case
-		hasher.writeByte(0)
+		hasher.WriteByte(0)
 		return
 	}
 
 	hasher.Write(unsafe.Slice(unsafe.StringData(s), strLen))
 }
 
-func (hasher *hasher) writeHash(h Hash) {
+func (hasher *Hasher) WriteHash(h Hash) {
 	for _, e := range h {
-		hasher.writeUint64(e)
+		hasher.WriteUint64(e)
 	}
 }
 
-func (hasher *hasher) getMapState(size int) *mapState {
+func (hasher *Hasher) getMapState(size int) *mapState {
 	s := hasher.mapStateCache
 	// Clear hasher.mapStateCache so that any recursive uses don't collide with this frame.
 	hasher.mapStateCache = nil
@@ -160,23 +216,27 @@ func (hasher *hasher) getMapState(size int) *mapState {
 	return s
 }
 
-func (hasher *hasher) putMapState(s *mapState) {
+func (hasher *Hasher) putMapState(s *mapState) {
 	if hasher.mapStateCache == nil || cap(hasher.mapStateCache.indexes) < cap(s.indexes) {
 		hasher.mapStateCache = s
 	}
 }
 
-func (hasher *hasher) calculateHash(v reflect.Value) error {
+func (hasher *Hasher) HashType(t reflect.Type) {
 	var h Hash
 	var err error
+	h, err = TypeHash(t)
+	if err != nil {
+		panic(err)
+	}
+	hasher.WriteHash(h)
+}
+
+func (hasher *Hasher) CalculateHashReflection(v reflect.Value) error {
 	// Include the hash of the type so that hashes of types with the same contents, for example
 	// empty slices of different types, produce different hashes.  The hash of each type is cached,
 	// so this should be very fast.
-	h, err = typeHash(v.Type())
-	if err != nil {
-		return err
-	}
-	hasher.writeHash(h)
+	hasher.HashType(v.Type())
 	v.IsValid()
 	switch v.Kind() {
 	case reflect.Struct:
@@ -189,16 +249,16 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 			return nil
 		}
 		l := v.NumField()
-		hasher.writeInt(l)
+		hasher.WriteInt(l)
 		for i := 0; i < l; i++ {
-			err := hasher.calculateHash(v.Field(i))
+			err := hasher.CalculateHashReflection(v.Field(i))
 			if err != nil {
 				return fmt.Errorf("in field %s: %s", v.Type().Field(i).Name, err.Error())
 			}
 		}
 	case reflect.Map:
 		l := v.Len()
-		hasher.writeInt(l)
+		hasher.WriteInt(l)
 		iter := v.MapRange()
 		s := hasher.getMapState(l)
 		for i := 0; iter.Next(); i++ {
@@ -210,11 +270,11 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 			return compare_values(s.keys[i], s.keys[j])
 		})
 		for i := 0; i < l; i++ {
-			err := hasher.calculateHash(s.keys[s.indexes[i]])
+			err := hasher.CalculateHashReflection(s.keys[s.indexes[i]])
 			if err != nil {
 				return fmt.Errorf("in map: %s", err.Error())
 			}
-			err = hasher.calculateHash(s.values[s.indexes[i]])
+			err = hasher.CalculateHashReflection(s.values[s.indexes[i]])
 			if err != nil {
 				return fmt.Errorf("in map: %s", err.Error())
 			}
@@ -222,90 +282,70 @@ func (hasher *hasher) calculateHash(v reflect.Value) error {
 		hasher.putMapState(s)
 	case reflect.Slice, reflect.Array:
 		l := v.Len()
-		hasher.writeInt(l)
+		hasher.WriteInt(l)
 		for i := 0; i < l; i++ {
-			err := hasher.calculateHash(v.Index(i))
+			err := hasher.CalculateHashReflection(v.Index(i))
 			if err != nil {
 				return fmt.Errorf("in %s at index %d: %s", v.Kind().String(), i, err.Error())
 			}
 		}
 	case reflect.Pointer:
 		if v.IsNil() {
-			hasher.writeByte(0)
+			hasher.WriteByte(0)
 			return nil
 		}
 		addr := v.Pointer()
-		if hasher.ptrs == nil {
-			hasher.ptrs = make(map[uintptr]uint64, ptrsMapSize)
-		}
-		if hasher.visiting == nil {
-			hasher.visiting = make(map[uintptr]bool, ptrsMapSize)
-		}
-		if _, ok := hasher.visiting[addr]; ok {
-			// Circular dependency detected (we have this in Scope at least), just return nil for now.
-			return nil
-		}
-		// The special logic below is to avoid hashing the same pointer more than once.
-		// We store the current hash value, then reset the hasher to a clean state in
-		// order to calculate the hash of the pointer which will be cached for future
-		// encounters. Once we have the hash value of the pointer, we hash both the
-		// stored hash value and the hash value of the pointer.
-		prevHash := hasher.Sum64()
-		hasher.Reset()
-
-		ptrHash, ok := hasher.ptrs[addr]
-		if !ok {
-			hasher.visiting[addr] = true
-			err := hasher.calculateHash(v.Elem())
-			if err != nil {
-				return fmt.Errorf("in pointer: %s", err.Error())
-			}
-			ptrHash = hasher.Sum64()
-			hasher.ptrs[addr] = ptrHash
-			delete(hasher.visiting, addr)
-		}
-
-		hasher.Reset()
-		hasher.writeUint64(prevHash)
-		hasher.writeUint64(ptrHash)
-
+		return HashReference(hasher, addr, func(hasher *Hasher) error {
+			return hasher.CalculateHashReflection(v.Elem())
+		})
 	case reflect.Interface:
 		if v.IsNil() {
-			hasher.writeByte(0)
+			hasher.WriteByte(0)
 		} else {
-			// Include the hash of the type so that hashes of types with the same contents, for example
-			// empty slices of different types, produce different hashes.  The hash of each type is cached,
-			// so this should be very fast.
-			h, err := typeHash(v.Elem().Type())
-			if err != nil {
-				return err
-			}
-			hasher.writeHash(h)
 			// The only way get the pointer out of an interface to hash it or check for cycles
 			// would be InterfaceData(), but that's deprecated and seems like it has undefined behavior.
-			err = hasher.calculateHash(v.Elem())
+			err := hasher.CalculateHashReflection(v.Elem())
 			if err != nil {
 				return fmt.Errorf("in interface: %s", err.Error())
 			}
 		}
 	case reflect.String:
-		hasher.writeString(v.String())
+		hasher.WriteString(v.String())
 	case reflect.Bool:
 		if v.Bool() {
-			hasher.writeByte(1)
+			hasher.WriteByte(1)
 		} else {
-			hasher.writeByte(0)
+			hasher.WriteByte(0)
 		}
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		hasher.writeUint64(v.Uint())
+		hasher.WriteUint64(v.Uint())
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		hasher.writeUint64(uint64(v.Int()))
+		hasher.WriteUint64(uint64(v.Int()))
 	case reflect.Float32, reflect.Float64:
-		hasher.writeUint64(math.Float64bits(v.Float()))
+		hasher.WriteUint64(math.Float64bits(v.Float()))
 	default:
 		return fmt.Errorf("data may only contain primitives, strings, arrays, slices, structs, maps, and pointers, found: %s", v.Kind().String())
 	}
 	return nil
+}
+
+type Comparer[T any] interface {
+	Compare(other T) int
+}
+
+// SortOrdered sorts slices of any type that is in cmp.Ordered
+// (int, string, float64, etc.)
+func SortOrdered[T cmp.Ordered](s []T) {
+	sort.Slice(s, func(i, j int) bool {
+		return s[i] < s[j]
+	})
+}
+
+// SortCustom sorts slices of any type that implements Comparer interface.
+func SortCustom[T Comparer[T]](s []T) {
+	sort.Slice(s, func(i, j int) bool {
+		return s[i].Compare(s[j]) < 0
+	})
 }
 
 func compare_values(x, y reflect.Value) int {
