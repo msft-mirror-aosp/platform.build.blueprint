@@ -29,107 +29,115 @@ type ModuleBuildActionCacheInput struct {
 	ProvidersHash  [][]proptools.Hash
 }
 
+// restoreModuleBuildActions restores a module from the cache if its inputs
+// have not changed.  It returns true if the module was restored.
 func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
-	// Whether the above conditions are true and we can try to restore from
-	// the cache for this module, i.e., no env, product variables and Soong
-	// code changes.
-	incrementalAnalysis := false
-	var cacheKey *BuildActionCacheKey = nil
+	if !ctx.GetIncrementalEnabled() {
+		// Don't restore, incremental analysis is not enabled.
+		return false
+	}
 
-	// Compute the hashes of the input data if incremental analysis is enabled.
-	if ctx.GetIncrementalEnabled() {
-		incrementalAnalysis = ctx.GetIncrementalAnalysis()
-		hash, err := proptools.CalculateHash(m.properties)
+	// Compute the hashes of the input data.
+	hash, err := proptools.CalculateHash(m.properties)
+	if err != nil {
+		panic(newPanicErrorf(err, "failed to calculate properties hash"))
+	}
+	cacheInput := new(ModuleBuildActionCacheInput)
+	cacheInput.PropertiesHash = hash
+	for _, dep := range m.directDeps {
+		cacheInput.ProvidersHash =
+			append(cacheInput.ProvidersHash, dep.module.providerInitialValueHashes)
+	}
+	hash, err = proptools.CalculateHash(cacheInput)
+	if err != nil {
+		panic(newPanicErrorf(err, "failed to calculate cache input hash"))
+	}
+
+	// Store the cache key and hash for use when writing this module to the cache.
+	m.buildActionCacheKey = &BuildActionCacheKey{
+		Id: m.moduleCacheKey(),
+	}
+	m.buildActionInputHash = hash
+
+	if ctx.incrementalDebugFile != "" {
+		m.incrementalDebugInfo = m.incrementalDebugData(cacheInput)
+	}
+
+	if !ctx.GetIncrementalAnalysis() {
+		// Don't restore, incremental analysis is globally disabled (for example
+		// because no cache is present, TARGET_PRODUCT was changed, or soong_build
+		// was rebuilt).
+		return false
+	}
+
+	// Read the module metadata from the cache.
+	data, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, m.buildActionCacheKey)
+	if err != nil {
+		panic(err)
+	}
+	if data == nil || m.buildActionInputHash != data.InputHash {
+		// Don't restore, no cache entry or the input hash doesn't match.
+		return false
+	}
+	for _, glob := range data.GlobCache {
+		result, err := ctx.glob(glob.Pattern, glob.Excludes)
 		if err != nil {
-			panic(newPanicErrorf(err, "failed to calculate properties hash"))
+			panic(newPanicErrorf(err, "failed to glob for cached module: %s %s %v", m.Name(), glob.Pattern, glob.Excludes))
 		}
-		cacheInput := new(ModuleBuildActionCacheInput)
-		cacheInput.PropertiesHash = hash
-		for _, dep := range m.directDeps {
-			cacheInput.ProvidersHash =
-				append(cacheInput.ProvidersHash, dep.module.providerInitialValueHashes)
-		}
-		hash, err = proptools.CalculateHash(cacheInput)
+		hash, err := proptools.CalculateHash(result)
 		if err != nil {
-			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
+			panic(newPanicErrorf(err, "failed to calculate hash for cached glob result: %s", m.Name()))
 		}
-		cacheKey = &BuildActionCacheKey{
-			Id: m.moduleCacheKey(),
-		}
-		m.buildActionCacheKey = cacheKey
-		m.buildActionInputHash = hash
-		if ctx.incrementalDebugFile != "" {
-			m.incrementalDebugInfo = m.incrementalDebugData(cacheInput)
+		if hash != glob.Result {
+			// Don't restore, a glob result has changed.
+			return false
 		}
 	}
 
-	if incrementalAnalysis {
-		// Try to restore from cache if there is a cache hit
-		data, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, cacheKey)
-		if err != nil {
-			panic(err)
-		}
-		if data == nil || m.buildActionInputHash != data.InputHash {
-			return false
-		}
-		for _, glob := range data.GlobCache {
-			result, err := ctx.glob(glob.Pattern, glob.Excludes)
-			if err != nil {
-				panic(newPanicErrorf(err, "failed to glob for cached module: %s %s %v", m.Name(), glob.Pattern, glob.Excludes))
-			}
-			hash, err := proptools.CalculateHash(result)
-			if err != nil {
-				panic(newPanicErrorf(err, "failed to calculate hash for cached glob result: %s", m.Name()))
-			}
-			if hash != glob.Result {
-				return false
-			}
-		}
+	// Restore the module from the cache.
+	if m.providerInitialValueHashes == nil {
+		m.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+	}
 
-		if m.providerInitialValueHashes == nil {
-			m.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+	m.hasUnrestoredProvider = make([]bool, len(providerRegistry))
+	m.incrementalRestored = true
+
+	for _, provider := range data.ProviderHashes {
+		m.providerInitialValueHashes[provider.Id.id] = provider.Hash
+		m.hasUnrestoredProvider[provider.Id.id] = true
+	}
+
+	m.orderOnlyStrings = data.OrderOnlyStrings
+	m.globCache = data.GlobCache
+	for _, str := range data.OrderOnlyStrings {
+		if !strings.HasPrefix(str, "dedup-") {
+			continue
 		}
-
-		m.hasUnrestoredProvider = make([]bool, len(providerRegistry))
-		m.incrementalRestored = true
-
-		for _, provider := range data.ProviderHashes {
-			m.providerInitialValueHashes[provider.Id.id] = provider.Hash
-			m.hasUnrestoredProvider[provider.Id.id] = true
+		orderOnlyStrings, ok := ctx.orderOnlyStringsCache[str]
+		if !ok {
+			panic(fmt.Errorf("no cached value found for order only dep: %s", str))
 		}
-
-		m.orderOnlyStrings = data.OrderOnlyStrings
-		m.globCache = data.GlobCache
-		for _, str := range data.OrderOnlyStrings {
-			if !strings.HasPrefix(str, "dedup-") {
-				continue
-			}
-			orderOnlyStrings, ok := ctx.orderOnlyStringsCache[str]
-			if !ok {
-				panic(fmt.Errorf("no cached value found for order only dep: %s", str))
-			}
-			key := uniquelist.Make(orderOnlyStrings)
-			if info, loaded := ctx.orderOnlyStrings.LoadOrStore(key, &orderOnlyStringsInfo{
-				dedup:       true,
-				incremental: true,
-			}); loaded {
-				for {
-					cpy := *info
-					cpy.dedup = true
-					cpy.incremental = true
-					if ctx.orderOnlyStrings.CompareAndSwap(key, info, &cpy) {
-						break
-					}
-					if info, loaded = ctx.orderOnlyStrings.Load(key); !loaded {
-						// This shouldn't happen
-						panic("order only string was removed unexpectedly")
-					}
+		key := uniquelist.Make(orderOnlyStrings)
+		if info, loaded := ctx.orderOnlyStrings.LoadOrStore(key, &orderOnlyStringsInfo{
+			dedup:       true,
+			incremental: true,
+		}); loaded {
+			for {
+				cpy := *info
+				cpy.dedup = true
+				cpy.incremental = true
+				if ctx.orderOnlyStrings.CompareAndSwap(key, info, &cpy) {
+					break
+				}
+				if info, loaded = ctx.orderOnlyStrings.Load(key); !loaded {
+					// This shouldn't happen
+					panic("order only string was removed unexpectedly")
 				}
 			}
 		}
 	}
 
-	return m.incrementalRestored
+	return true
 }
 
 func (m *moduleInfo) cacheModuleBuildActions(ctx gobtools.EncContext, buildActionsCache *BuildActionCache) {
