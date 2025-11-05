@@ -802,6 +802,11 @@ func (m *baseModuleContext) VisitDirectDepsProxy(visit func(proxy ModuleProxy)) 
 }
 
 func (m *baseModuleContext) WalkDeps(visit func(child, parent Module) bool) {
+	if m.module.startedGenerateBuildActions {
+		if _, ok := m.module.logicModule.(moduleUsesIncrementalWalkDeps); !ok {
+			panic(fmt.Errorf("WalkDeps called during GenerateBuildActions from a module not marked with ModuleUsesIncrementalWalkDeps"))
+		}
+	}
 	m.context.walkDeps(m.module, true, func(dep depInfo, parent *moduleInfo) bool {
 		m.visitingParent = parent
 		m.visitingDep = dep
@@ -816,6 +821,11 @@ func (m *baseModuleContext) WalkDeps(visit func(child, parent Module) bool) {
 }
 
 func (m *baseModuleContext) WalkDepsProxy(visit func(child, parent ModuleProxy) bool) {
+	if m.module.startedGenerateBuildActions {
+		if _, ok := m.module.logicModule.(moduleUsesIncrementalWalkDeps); !ok {
+			panic(fmt.Errorf("WalkDeps called during GenerateBuildActions from a module not marked with ModuleUsesIncrementalWalkDeps"))
+		}
+	}
 	m.context.walkDeps(m.module, true, func(dep depInfo, parent *moduleInfo) bool {
 		m.visitingParent = parent
 		m.visitingDep = dep
