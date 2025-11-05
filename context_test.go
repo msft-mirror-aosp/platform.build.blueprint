@@ -180,26 +180,6 @@ func (b *barModule) Walk() bool {
 	return false
 }
 
-type incrementalModule struct {
-	baseTestModule
-}
-
-const incrementalModuleNinja string = `# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
-# Module:  MyIncrementalModule
-# Variant:
-# Type:    incremental_module
-# Factory: github.com/google/blueprint.newIncrementalModule
-# Defined: Android.bp:2:4
-
-build MyIncrementalModule_phony_output: phony || dedup-d479e9a8133ff998
-    tags = module_name=MyIncrementalModule;module_type=incremental_module;rule_name=phony
-`
-
-func newIncrementalModule() (Module, []interface{}) {
-	m := &incrementalModule{}
-	return m, []interface{}{&m.baseTestModule.properties, &m.SimpleName.Properties}
-}
-
 type walkerDepsTag struct {
 	BaseDependencyTag
 	// True if the dependency should be followed, false otherwise.

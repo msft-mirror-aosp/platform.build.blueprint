@@ -29,6 +29,22 @@ type ModuleBuildActionCacheInput struct {
 	ProvidersHash  [][]proptools.Hash
 }
 
+// ModuleUsesIncrementalWalkDeps is embedded into Modules to mark them
+// as using WalkDepsProxy in methods that can be cached for incremental
+// analysis.  It forces incremental analysis to compare the hashes of
+// all transitive dependencies.  This causes more cache misses, so should
+// be avoided in favor of propagating information into the providers of
+// the direct dependencies.
+type ModuleUsesIncrementalWalkDeps struct{}
+
+func (ModuleUsesIncrementalWalkDeps) moduleUsesIncrementalWalkDeps() {}
+
+var _ moduleUsesIncrementalWalkDeps = ModuleUsesIncrementalWalkDeps{}
+
+type moduleUsesIncrementalWalkDeps interface {
+	moduleUsesIncrementalWalkDeps()
+}
+
 // restoreModuleBuildActions restores a module from the cache if its inputs
 // have not changed.  It returns true if the module was restored.
 func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
@@ -44,9 +60,17 @@ func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
 	}
 	cacheInput := new(ModuleBuildActionCacheInput)
 	cacheInput.PropertiesHash = hash
-	for _, dep := range m.directDeps {
-		cacheInput.ProvidersHash =
-			append(cacheInput.ProvidersHash, dep.module.providerInitialValueHashes)
+	if _, ok := m.logicModule.(moduleUsesIncrementalWalkDeps); ok {
+		ctx.walkDeps(m, true, func(depInfo depInfo, dep *moduleInfo) bool {
+			cacheInput.ProvidersHash =
+				append(cacheInput.ProvidersHash, dep.providerInitialValueHashes)
+			return true
+		}, nil)
+	} else {
+		for _, dep := range m.directDeps {
+			cacheInput.ProvidersHash =
+				append(cacheInput.ProvidersHash, dep.module.providerInitialValueHashes)
+		}
 	}
 	hash, err = proptools.CalculateHash(cacheInput)
 	if err != nil {

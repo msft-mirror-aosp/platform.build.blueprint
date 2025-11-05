@@ -17,6 +17,7 @@ package blueprint
 import (
 	"bytes"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -36,6 +37,7 @@ func bpSetup(t *testing.T, bp string) *Context {
 	ctx.MockFileSystem(fileSystem)
 	ctx.RegisterBottomUpMutator("deps", depsMutator)
 	ctx.RegisterModuleType("incremental_module", newIncrementalModule)
+	ctx.RegisterModuleType("incremental_transitive_module", newIncrementalTransitiveModule)
 	ctx.RegisterModuleType("foo_module", newFooModule)
 	ctx.RegisterModuleType("bar_module", newBarModule)
 
@@ -58,6 +60,60 @@ func bpSetup(t *testing.T, bp string) *Context {
 	}
 
 	return ctx
+}
+
+type incrementalModule struct {
+	baseTestModule
+}
+
+const incrementalModuleNinja string = `# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+# Module:  MyIncrementalModule
+# Variant:
+# Type:    incremental_module
+# Factory: github.com/google/blueprint.newIncrementalModule
+# Defined: Android.bp:2:4
+
+build MyIncrementalModule_phony_output: phony || dedup-d479e9a8133ff998
+    tags = module_name=MyIncrementalModule;module_type=incremental_module;rule_name=phony
+`
+
+func newIncrementalModule() (Module, []interface{}) {
+	m := &incrementalModule{}
+	return m, []interface{}{&m.baseTestModule.properties, &m.SimpleName.Properties}
+}
+
+type incrementalTransitiveModule struct {
+	ModuleBase
+	SimpleName
+	ModuleUsesIncrementalWalkDeps
+	properties struct {
+		Deps []string
+	}
+
+	visited []string
+
+	generateBuildActionsCalled bool
+}
+
+func newIncrementalTransitiveModule() (Module, []interface{}) {
+	m := &incrementalTransitiveModule{}
+	return m, []interface{}{&m.SimpleName.Properties, &m.properties}
+}
+
+func (t *incrementalTransitiveModule) GenerateBuildActions(ctx ModuleContext) {
+	ctx.WalkDepsProxy(func(child ModuleProxy, parent ModuleProxy) bool {
+		t.visited = append(t.visited, ctx.OtherModuleName(child))
+		return true
+	})
+	t.generateBuildActionsCalled = true
+}
+
+func (t *incrementalTransitiveModule) Deps() []string {
+	return t.properties.Deps
+}
+
+func (t *incrementalTransitiveModule) IgnoreDeps() []string {
+	return nil
 }
 
 func incrementalSetup(t *testing.T) *Context {
@@ -930,4 +986,112 @@ func TestSingletonNotRestoreForSingletonChange(t *testing.T) {
 	if noProviderSingleton.GenerateBuildActionsCalled != 0 {
 		t.Errorf("expected noProviderParallelSingleton GenerateBuildActions to be not called, got %d", noProviderSingleton.GenerateBuildActionsCalled)
 	}
+}
+
+func TestIncrementalTransitiveDependencies(t *testing.T) {
+	incrementalSetup(t)
+	bp := `
+		incremental_transitive_module {
+			name: "top",
+			deps: ["a"],
+		}
+
+		foo_module {
+			name: "a",
+			outputs: ["a"],
+			deps: ["b"],
+		}
+
+		foo_module {
+			name: "b",
+			outputs: ["b"],
+		}
+
+		foo_module {
+			name: "c",
+			outputs: ["c"],
+		}
+	`
+
+	ctx := bpSetup(t, bp)
+
+	cache := &BuildActionCache{}
+	err := cache.openForTests()
+	if err != nil {
+		t.Fatalf("failed to open cache: %s", err)
+	}
+	ctx.buildActionsCache = cache
+
+	ctx.SetIncrementalEnabled(true)
+
+	_, errs := ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	buf := bytes.NewBuffer(nil)
+	w := newNinjaWriter(buf)
+	ctx.writeAllModuleActions(w, true, "test.ninja")
+
+	top := ctx.moduleGroupFromName("top", nil).modules.firstModule().logicModule.(*incrementalTransitiveModule)
+
+	if !top.generateBuildActionsCalled {
+		t.Fatalf("expected GenerateBuildActions called on top in first pass")
+	}
+
+	if g, w := top.visited, []string{"a", "b"}; !slices.Equal(g, w) {
+		t.Fatalf("unexpected visited on first pass, expected %q got %q", w, g)
+	}
+
+	cache.flush()
+
+	bp = addDepToModule(t, bp, "b", "c")
+
+	ctx = bpSetup(t, bp)
+	ctx.SetIncrementalEnabled(true)
+	ctx.SetIncrementalAnalysis(true)
+	ctx.buildActionsCache = cache
+
+	_, errs = ctx.PrepareBuildActions(nil)
+	if len(errs) > 0 {
+		t.Errorf("unexpected errors calling generateModuleBuildActions:")
+		for _, err := range errs {
+			t.Errorf("  %s", err)
+		}
+		t.FailNow()
+	}
+
+	top = ctx.moduleGroupFromName("top", nil).modules.firstModule().logicModule.(*incrementalTransitiveModule)
+
+	if !top.generateBuildActionsCalled {
+		t.Fatalf("expected GenerateBuildActions called on top in second pass")
+	}
+
+	if g, w := top.visited, []string{"a", "b", "c"}; !slices.Equal(g, w) {
+		t.Fatalf("unexpected visited on second pass, expected %q got %q", w, g)
+	}
+}
+
+func addDepToModule(t *testing.T, bp, module, dep string) string {
+	t.Helper()
+
+	bpm, err := bpmodify.NewBlueprint("Android.bp", []byte(bp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := bpm.ModulesByName(module).GetOrCreateProperty(bpmodify.List, "deps")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = p.AddStringToList(dep)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return bpm.String()
 }
