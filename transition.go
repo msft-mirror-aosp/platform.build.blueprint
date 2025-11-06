@@ -88,6 +88,12 @@ type TransitionMutator interface {
 	// on.
 	Split(ctx BaseModuleContext) []TransitionInfo
 
+	// SplitOnDemand returns the set of additional supported variations.
+	// Unlike Split(), these are not created when the transition runs.
+	// However if a subsequent mutator requests one of these variations via
+	// AddDependency*, the variation will be created adhoc.
+	SplitOnDemand(ctx BaseModuleContext) []TransitionInfo
+
 	// OutgoingTransition is called on a module to determine which variation it wants
 	// from its direct dependencies. The dependency itself can override this decision.
 	// This method should not mutate the module itself.
@@ -198,6 +204,8 @@ type TransitionInfo interface {
 	Variation() string
 }
 
+type TransitionInfos []TransitionInfo
+
 type transitionMutatorImpl struct {
 	name          string
 	mutator       TransitionMutator
@@ -295,6 +303,7 @@ func (t *transitionMutatorImpl) propagateMutator(mctx BaseModuleContext) {
 	module.outgoingTransitionCache = outgoingTransitionVariationCache
 	module.splitTransitionVariations = transitionVariations
 	module.splitTransitionInfos = transitionInfos
+	module.group.registerSupportedVariants(t.name, t.mutator.SplitOnDemand(mctx))
 }
 
 var (
@@ -410,8 +419,19 @@ func (t *transitionMutatorImpl) transition(mctx BaseModuleContext) Transition {
 	}
 }
 
+type onDemandVariationTransitionInfo string
+
+func (v onDemandVariationTransitionInfo) Variation() string {
+	return string(v)
+}
+
 func (t *transitionMutatorImpl) bottomUpMutator(mctx BottomUpMutatorContext) {
 	mc := mctx.(*mutatorContext)
+	// on demand variant.
+	if mc.module.createdOnDemand {
+		mc.context.setModuleTransitionInfo(mc.module, t, onDemandVariationTransitionInfo(mc.module.variant.variations.variations[t.name]))
+		return
+	}
 	// Fetch and clean up transition mutator state. No locking needed since the
 	// only time interaction between multiple modules is required is during the
 	// computation of the variations required by a given module.
