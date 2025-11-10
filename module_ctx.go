@@ -16,7 +16,6 @@ package blueprint
 
 import (
 	"cmp"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -27,7 +26,6 @@ import (
 	"github.com/google/blueprint/parser"
 	"github.com/google/blueprint/pathtools"
 	"github.com/google/blueprint/proptools"
-	"github.com/google/blueprint/uniquelist"
 )
 
 // A Module handles generating all of the Ninja build actions needed to build a
@@ -180,7 +178,7 @@ func (m ModuleProxy) IncrementalInfo() *IncrementalMetricsInfo {
 		IncrementalRestored:        m.moduleInfo.incrementalRestored,
 		HasUnrestoredProvider:      m.moduleInfo.hasUnrestoredProvider,
 		ProviderInitialValueHashes: m.moduleInfo.providerInitialValueHashes,
-		IncrementalSupported:       m.moduleInfo.incrementalSupported,
+		IncrementalSupported:       true,
 	}
 }
 
@@ -444,8 +442,6 @@ type ModuleContext interface {
 	// ModuleSubDir returns a unique name for the current variant of a module that can be used as part of the path
 	// to ensure that each variant of a module gets its own intermediates directory to write to.
 	ModuleSubDir() string
-
-	ModuleCacheKey() string
 
 	// Variable creates a new ninja variable scoped to the module.  It can be referenced by calls to Rule and Build
 	// in the same module.
@@ -746,169 +742,6 @@ func (m *baseModuleContext) SetProvider(provider AnyProviderKey, value interface
 	m.context.setProvider(m.module, provider.provider(), value)
 }
 
-func (m *moduleContext) restoreModuleBuildActions() bool {
-	// Whether the above conditions are true and we can try to restore from
-	// the cache for this module, i.e., no env, product variables and Soong
-	// code changes.
-	incrementalAnalysis := false
-	var cacheKey *BuildActionCacheKey = nil
-	m.module.incrementalSupported = incrementalSupported(m.module)
-
-	// Whether the incremental flag is set and the module type supports
-	// incremental, this will decide weather to cache the data for the module.
-	if m.context.GetIncrementalEnabled() && m.module.incrementalSupported {
-		incrementalAnalysis = m.context.GetIncrementalAnalysis()
-		hash, err := proptools.CalculateHash(m.module.properties)
-		if err != nil {
-			panic(newPanicErrorf(err, "failed to calculate properties hash"))
-		}
-		cacheInput := new(ModuleBuildActionCacheInput)
-		cacheInput.PropertiesHash = hash
-		var deps []ModuleProxy
-		m.VisitDirectDepsProxy(func(module ModuleProxy) {
-			cacheInput.ProvidersHash =
-				append(cacheInput.ProvidersHash, module.info().providerInitialValueHashes)
-			if m.context.incrementalDebugFile != "" {
-				deps = append(deps, module)
-			}
-		})
-		hash, err = proptools.CalculateHash(cacheInput)
-		if err != nil {
-			panic(newPanicErrorf(err, "failed to calculate cache input hash"))
-		}
-		cacheKey = &BuildActionCacheKey{
-			Id: m.ModuleCacheKey(),
-		}
-		m.module.buildActionCacheKey = cacheKey
-		m.module.buildActionInputHash = hash
-		if m.context.incrementalDebugFile != "" {
-			m.module.incrementalDebugInfo = incrementalDebugData(m, deps, cacheInput)
-		}
-	}
-
-	if incrementalAnalysis {
-		// Try to restore from cache if there is a cache hit
-		data, err := m.context.buildActionsCache.readModuleBuildAction(m.context.EncContext, cacheKey)
-		if err != nil {
-			panic(err)
-		}
-		if data == nil || m.module.buildActionInputHash != data.InputHash {
-			return false
-		}
-		for _, glob := range data.GlobCache {
-			result, err := m.context.glob(glob.Pattern, glob.Excludes)
-			if err != nil {
-				panic(newPanicErrorf(err, "failed to glob for cached module: %s %s %v", m.ModuleName(), glob.Pattern, glob.Excludes))
-			}
-			hash, err := proptools.CalculateHash(result)
-			if err != nil {
-				panic(newPanicErrorf(err, "failed to calculate hash for cached glob result: %s", m.ModuleName()))
-			}
-			if hash != glob.Result {
-				return false
-			}
-		}
-
-		if m.module.providerInitialValueHashes == nil {
-			m.module.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
-		}
-
-		m.module.hasUnrestoredProvider = make([]bool, len(providerRegistry))
-		m.module.incrementalRestored = true
-
-		for _, provider := range data.ProviderHashes {
-			m.module.providerInitialValueHashes[provider.Id.id] = provider.Hash
-			m.module.hasUnrestoredProvider[provider.Id.id] = true
-		}
-
-		m.module.orderOnlyStrings = data.OrderOnlyStrings
-		m.module.globCache = data.GlobCache
-		for _, str := range data.OrderOnlyStrings {
-			if !strings.HasPrefix(str, "dedup-") {
-				continue
-			}
-			orderOnlyStrings, ok := m.context.orderOnlyStringsCache[str]
-			if !ok {
-				panic(fmt.Errorf("no cached value found for order only dep: %s", str))
-			}
-			key := uniquelist.Make(orderOnlyStrings)
-			if info, loaded := m.context.orderOnlyStrings.LoadOrStore(key, &orderOnlyStringsInfo{
-				dedup:       true,
-				incremental: true,
-			}); loaded {
-				for {
-					cpy := *info
-					cpy.dedup = true
-					cpy.incremental = true
-					if m.context.orderOnlyStrings.CompareAndSwap(key, info, &cpy) {
-						break
-					}
-					if info, loaded = m.context.orderOnlyStrings.Load(key); !loaded {
-						// This shouldn't happen
-						panic("order only string was removed unexpectedly")
-					}
-				}
-			}
-		}
-	}
-
-	return m.module.incrementalRestored
-}
-
-func incrementalSupported(m *moduleInfo) bool {
-	if im, ok := m.logicModule.(Incremental); ok {
-		return im.IncrementalSupported()
-	}
-
-	return true
-}
-
-type depProviders struct {
-	Name      string   `json:"dep_name"`
-	Type      string   `json:"dep_type"`
-	Variant   string   `json:"dep_variant"`
-	Providers []string `json:"dep_provider_hash"`
-}
-
-func incrementalDebugData(m *moduleContext, deps []ModuleProxy, inputHash *ModuleBuildActionCacheInput) []byte {
-	info := struct {
-		Name      string         `json:"name"`
-		CacheKey  string         `json:"cache_key"`
-		Type      string         `json:"type"`
-		Variant   string         `json:"variant"`
-		PropHash  proptools.Hash `json:"properties_hash"`
-		Providers []depProviders `json:"providers"`
-	}{
-		Name:     m.module.logicModule.Name(),
-		CacheKey: m.ModuleCacheKey(),
-		Type:     m.module.typeName,
-		Variant:  m.module.variant.name,
-		PropHash: inputHash.PropertiesHash,
-		Providers: func() []depProviders {
-			result := make([]depProviders, 0, len(deps))
-			for _, d := range deps {
-				dep := d.info()
-				dp := depProviders{
-					Name:    dep.Name(),
-					Type:    dep.typeName,
-					Variant: dep.variant.name,
-				}
-				for _, p := range providerRegistry {
-					if dep.providerInitialValueHashes[p.id] == proptools.ZeroHash {
-						continue
-					}
-					dp.Providers = append(dp.Providers,
-						fmt.Sprintf("%s:%x", p.typ, dep.providerInitialValueHashes[p.id]))
-				}
-				result = append(result, dp)
-			}
-			return result
-		}(),
-	}
-	buf, _ := json.Marshal(info)
-	return buf
-}
-
 func (m *baseModuleContext) GetDirectDepProxyWithTag(name string, tag DependencyTag) ModuleProxy {
 	var deps []depInfo
 	for _, dep := range m.module.directDeps {
@@ -1029,10 +862,6 @@ func (m *moduleContext) ModuleSubDir() string {
 	return m.module.variant.name
 }
 
-func (m *moduleContext) ModuleCacheKey() string {
-	return m.module.ModuleCacheKey()
-}
-
 func (m *moduleContext) Variable(pctx PackageContext, name, value string) {
 	m.scope.ReparentTo(pctx)
 
@@ -1135,6 +964,7 @@ type mutatorContext struct {
 	replace          []replace
 	newVariations    moduleList    // new variants of existing modules
 	newModules       []*moduleInfo // brand new modules
+	onDemandDeps     []onDemandDep // dependencies created on demand.
 	defaultVariation *string
 	pauseFunc        pauseFunc
 }
@@ -1273,6 +1103,9 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 			// Pausing not supported by this mutator, new dependencies can't be returned.
 			depInfo = nil
 		}
+		if depInfo != nil && depInfo.createdOnDemand {
+			mctx.onDemandDeps = append(mctx.onDemandDeps, onDemandDep{modInfo, depInfo, tag})
+		}
 		depInfos = append(depInfos, ModuleProxy{depInfo})
 	}
 	return depInfos
@@ -1353,6 +1186,9 @@ func (mctx *mutatorContext) AddVariationDependencies(variations []Variation, tag
 			// Pausing not supported by this mutator, new dependencies can't be returned.
 			depInfo = nil
 		}
+		if depInfo != nil && depInfo.createdOnDemand {
+			mctx.onDemandDeps = append(mctx.onDemandDeps, onDemandDep{mctx.module, depInfo, tag})
+		}
 		depInfos = append(depInfos, ModuleProxy{depInfo})
 	}
 	return depInfos
@@ -1370,6 +1206,9 @@ func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, 
 		if !mctx.pause(depInfo) {
 			// Pausing not supported by this mutator, new dependencies can't be returned.
 			depInfo = nil
+		}
+		if depInfo != nil && depInfo.createdOnDemand {
+			mctx.onDemandDeps = append(mctx.onDemandDeps, onDemandDep{mctx.module, depInfo, tag})
 		}
 		depInfos = append(depInfos, ModuleProxy{depInfo})
 	}

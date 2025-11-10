@@ -358,8 +358,7 @@ func (l moduleList) lastModule() *moduleInfo {
 }
 
 type moduleGroup struct {
-	name      string
-	ninjaName string
+	name string
 
 	modules moduleList
 
@@ -368,6 +367,13 @@ type moduleGroup struct {
 	// A partial copy of moduleInfo at the end of defaults mutator.
 	// common across all variants.
 	coreModuleInfo moduleInfo
+
+	// used for creating on demand variants.
+	variantOnDemandLock sync.Mutex
+
+	// Additional variations supported by this module group that were not
+	// created by Split.
+	supportedVariantsOnDemand map[string]TransitionInfos
 }
 
 func (group *moduleGroup) moduleByVariantName(name string) *moduleInfo {
@@ -377,6 +383,110 @@ func (group *moduleGroup) moduleByVariantName(name string) *moduleInfo {
 		}
 	}
 	return nil
+}
+
+// registerSupportedVariants registers the supported variants, but does not create them
+func (group *moduleGroup) registerSupportedVariants(mutatorName string, infos TransitionInfos) {
+	group.variantOnDemandLock.Lock()
+	defer group.variantOnDemandLock.Unlock()
+	if group.supportedVariantsOnDemand == nil {
+		group.supportedVariantsOnDemand = map[string]TransitionInfos{}
+	}
+	if _, exists := group.supportedVariantsOnDemand[mutatorName]; exists {
+		return
+	}
+	group.supportedVariantsOnDemand[mutatorName] = append(group.supportedVariantsOnDemand[mutatorName], infos...)
+}
+
+func (group *moduleGroup) supportsOnDemandVariant(onDemandVariants variationMap, far bool) bool {
+	for mutator, variant := range onDemandVariants.variations {
+		if supportedOnDemandVariants, exists := group.supportedVariantsOnDemand[mutator]; exists {
+			found := false
+			for _, supportedOnDemandVariant := range supportedOnDemandVariants {
+				if supportedOnDemandVariant.Variation() == variant {
+					found = true
+				}
+			}
+			if !found {
+				return false
+			}
+		} else {
+			return false
+		}
+	}
+	if !far {
+		// non-far uses strict equality.
+		// check that the mutator keys of requested variant and supported variants of the group match.
+		for mutator := range group.supportedVariantsOnDemand {
+			if _, exists := onDemandVariants.variations[mutator]; !exists {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// createVariantOnDemand uses group.coreModuleInfo to create a new on demand variant.
+// locking is not necessary since it does not mutate the global state by modifying moduleGroup.
+// `runMutator` will be responsible for creating the dependency edges to this on demand variant.
+func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants variationMap, currentMutatorIndex int) *moduleInfo {
+	if len(onDemandVariants.variations) > 1 {
+		panic("TODO(b/448182009): Support Variants on demand for 2 or more transition mutators.")
+	}
+	var mutatorName, variantName string
+	for k, v := range onDemandVariants.variations {
+		mutatorName = k
+		variantName = v
+	}
+
+	newlogicmodule, newproperties := c.cloneLogicModule(&group.coreModuleInfo)
+	newmodule := moduleInfo{
+		logicModule:     newlogicmodule,
+		properties:      newproperties,
+		directDeps:      slices.Clone(group.coreModuleInfo.directDeps),
+		factory:         group.coreModuleInfo.factory,
+		group:           group,
+		createdOnDemand: true,
+	}
+
+	newmodule.variant = newVariant(&group.coreModuleInfo, mutatorName, variantName)
+
+	c.rerunMutatorsOnVariantOnDemand(&newmodule, currentMutatorIndex)
+
+	return &newmodule
+}
+
+// Re-run the completed mutators on this newly created module.
+func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, currentMutatorIndex int) {
+	pause := func(dep *moduleInfo) {
+		if dep != nil {
+			panic("TODO (b/448182009): Add support for on demand variants of non leaf nodes.")
+		}
+	}
+	for index, mi := range c.mutatorInfo {
+		mctx := &mutatorContext{
+			baseModuleContext: baseModuleContext{
+				context: c,
+				module:  newmodule,
+			},
+			mutator:   mi,
+			pauseFunc: pause,
+		}
+		if mi.transitionPropagateMutator != nil {
+			mi.transitionPropagateMutator(mctx)
+		} else {
+			mctx.mutator = mi
+			mi.bottomUpMutator(mctx)
+		}
+		if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 {
+			panic("TODO (b/448182009): Add support for AddReverseDependency, ReplaceDependency, Rename")
+		}
+		// The module has been mutated till the current mutator.
+		// Do not mutate further.
+		if index == currentMutatorIndex {
+			break
+		}
+	}
 }
 
 type moduleInfo struct {
@@ -405,6 +515,7 @@ type moduleInfo struct {
 
 	// used by parallelVisit
 	waitingCount atomic.Int32
+	addedToVisit atomic.Bool
 
 	// set during each runMutator
 	splitModules           moduleList
@@ -456,6 +567,8 @@ type moduleInfo struct {
 	cachedUniqueName string
 
 	moduleIncrementalInfo
+
+	createdOnDemand bool
 }
 
 type providerInfo struct {
@@ -484,10 +597,8 @@ type commonIncrementalInfo struct {
 	// (indexed in the same order as providerRegistry) exists in the cache but has not yet been
 	// restored.
 	hasUnrestoredProvider []bool
-	// Whether this module support incremental build.
-	incrementalSupported bool
-	providerRestoreLock  sync.Mutex
-	buildActionCacheKey  *BuildActionCacheKey
+	providerRestoreLock   sync.Mutex
+	buildActionCacheKey   *BuildActionCacheKey
 	providerInfo
 }
 
@@ -530,7 +641,7 @@ func (module *moduleInfo) namespace() Namespace {
 	return module.group.namespace
 }
 
-func (module *moduleInfo) ModuleCacheKey() string {
+func (module *moduleInfo) moduleCacheKey() string {
 	variant := module.variant.name
 	if variant == "" {
 		variant = "none"
@@ -653,6 +764,8 @@ type singletonInfo struct {
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
 	commonIncrementalInfo
+	// Whether this singleton supports incremental build.
+	incrementalSupported bool
 	// The provider hashes of all the singletons that this singleton might depend on.
 	// These values are calculated before calling the GenerateBuildAction of the current
 	// singleton, and combined with the hashes of all the module providers that this
@@ -2235,6 +2348,10 @@ func (c *Context) findVariant(config any, module *moduleInfo, depTag DependencyT
 		}
 	}
 
+	if foundDep == nil && possibleDeps.supportsOnDemandVariant(newVariant, far) {
+		foundDep = c.createVariantOnDemand(possibleDeps, newVariant, module.startedMutator)
+	}
+
 	return foundDep, newVariant, nil
 }
 
@@ -2282,6 +2399,11 @@ func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInf
 			Err: fmt.Errorf("%q depends on later version of itself", depName),
 			Pos: module.pos,
 		}}
+	}
+	if foundDep.createdOnDemand {
+		// return the on demand variant.
+		// `runMutator` will create the dependency edges, deduping on demand variants if necessary.
+		return foundDep, nil
 	}
 
 	// The mutator will pause until the newly added dependency has finished running the current mutator,
@@ -2734,6 +2856,26 @@ func parallelVisit(moduleIter iter.Seq[*moduleInfo], order visitOrderer, limit i
 				pausedWorkers++
 				activeModules--
 			}
+
+			// If a dependency is created on demand, add it to the queue for processing.
+			// Since multiple rdeps can request this on demand variant, use an atomic.Bool
+			// to add it once.
+			if response.pause.until.createdOnDemand {
+				added := response.pause.until.addedToVisit.Load()
+				if !added {
+					toVisit++
+					module := response.pause.until
+					waitingCount := order.waitCount(module)
+					module.waitingCount.Store(int32(waitingCount))
+					if waitingCount == 0 {
+						queue = append(queue, module)
+						queuedModules++
+					}
+
+					response.pause.until.addedToVisit.CompareAndSwap(false, true)
+				}
+			}
+
 		}
 
 		// Each time a response has been handled check if there is work that can now be queued.
@@ -3194,17 +3336,19 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	direction mutatorDirection, storeCoreModuleInfo bool) (deps []string, errs []error) {
 
 	type globalStateChange struct {
-		reverse    []reverseDep
-		rename     []rename
-		replace    []replace
-		newModules []*moduleInfo
-		deps       []string
+		reverse      []reverseDep
+		rename       []rename
+		replace      []replace
+		newModules   []*moduleInfo
+		onDemandDeps []onDemandDep
+		deps         []string
 	}
 
 	reverseDeps := make(map[*moduleInfo][]depInfo)
 	var rename []rename
 	var replace []replace
 	var newModules []*moduleInfo
+	var onDemandDeps []onDemandDep
 
 	errsCh := make(chan []error)
 	globalStateCh := make(chan globalStateChange)
@@ -3252,13 +3396,14 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			errsCh <- mctx.errs
 			hasErrors = true
 		} else {
-			if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 {
+			if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 || len(mctx.onDemandDeps) > 0 {
 				globalStateCh <- globalStateChange{
-					reverse:    mctx.reverseDeps,
-					replace:    mctx.replace,
-					rename:     mctx.rename,
-					newModules: mctx.newModules,
-					deps:       mctx.ninjaFileDeps,
+					reverse:      mctx.reverseDeps,
+					replace:      mctx.replace,
+					rename:       mctx.rename,
+					newModules:   mctx.newModules,
+					onDemandDeps: mctx.onDemandDeps,
+					deps:         mctx.ninjaFileDeps,
 				}
 			}
 		}
@@ -3286,6 +3431,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				rename = append(rename, globalStateChange.rename...)
 				newModules = append(newModules, globalStateChange.newModules...)
 				deps = append(deps, globalStateChange.deps...)
+				onDemandDeps = append(onDemandDeps, globalStateChange.onDemandDeps...)
 			case <-done:
 				return
 			}
@@ -3362,6 +3508,21 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		errs = c.addModule(module)
 		if len(errs) > 0 {
 			return nil, errs
+		}
+	}
+
+	// Create the dependency edges to the variants created on demand.
+	// Since multiple rdeps can request a dependency on demand,
+	// use (moduleGroup,variantName) as the unique key.
+	variantToOnDemandDep := map[string]*moduleInfo{}
+	for _, odd := range onDemandDeps {
+		uniqueDepKey := odd.to.group.name + "." + odd.to.variant.name
+		if existing, exists := variantToOnDemandDep[uniqueDepKey]; exists {
+			odd.from.directDeps = append(odd.from.directDeps, depInfo{existing, odd.tag})
+		} else {
+			odd.from.directDeps = append(odd.from.directDeps, depInfo{odd.to, odd.tag})
+			odd.to.group.modules = append(odd.to.group.modules, odd.to)
+			variantToOnDemandDep[uniqueDepKey] = odd.to
 		}
 	}
 
@@ -3483,7 +3644,7 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				mctx.evaluator = nil
 			}()
 
-			mctx.module.startedGenerateBuildActions = true
+			module.startedGenerateBuildActions = true
 
 			func() {
 				defer func() {
@@ -3497,12 +3658,12 @@ func (c *Context) generateModuleBuildActions(config interface{},
 						}
 					}
 				}()
-				if !mctx.restoreModuleBuildActions() || c.incrementalProviderTest {
-					mctx.module.logicModule.GenerateBuildActions(mctx)
+				if !module.restoreModuleBuildActions(c) || c.incrementalProviderTest {
+					module.logicModule.GenerateBuildActions(mctx)
 				}
 			}()
 
-			mctx.module.finishedGenerateBuildActions = true
+			module.finishedGenerateBuildActions = true
 
 			if len(mctx.errs) > 0 {
 				errsCh <- mctx.errs
@@ -3520,18 +3681,18 @@ func (c *Context) generateModuleBuildActions(config interface{},
 
 			depsCh <- mctx.ninjaFileDeps
 
-			if mctx.module.freeAfterGenerateBuildActions {
+			if module.freeAfterGenerateBuildActions {
 				// This module is freed after GenerateBuildActions complete, requiring all future accesses
 				// to go through ModuleProxy instead of the Module.
 				// Cache Module.Name() and Module.String() for future use in ModuleProxy.Name() and ModuleProxy.String()
-				mctx.module.cachedName = mctx.module.logicModule.Name()
-				mctx.module.cachedString = mctx.module.logicModule.String()
+				module.cachedName = module.logicModule.Name()
+				module.cachedString = module.logicModule.String()
 				// When soong debug data is requested, don't remove these info, they will show up in soong-debug-info.json.
 				if c.moduleDebugDataChannel == nil {
 					// TODO: logicModule is needed to evaluate configurable properties, we should figure out an alternative.
-					mctx.module.logicModule = nil
-					mctx.module.properties = nil
-					mctx.module.propertyPos = nil
+					module.logicModule = nil
+					module.properties = nil
+					module.propertyPos = nil
 				}
 			}
 
@@ -3963,6 +4124,11 @@ type replace struct {
 type rename struct {
 	group *moduleGroup
 	name  string
+}
+
+type onDemandDep struct {
+	from, to *moduleInfo
+	tag      DependencyTag
 }
 
 // moduleVariantsThatDependOn takes the name of a module and a dependency and returns the all the variants of the
@@ -5094,8 +5260,8 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 				defer wg.Done()
 				parallelVisitSimple(slices.Values(modules), parallelVisitLimit,
 					func(m *moduleInfo, _ int) []error {
-						if m.incrementalSupported && !m.incrementalRestored {
-							c.cacheModuleBuildActions(m)
+						if !m.incrementalRestored {
+							m.cacheModuleBuildActions(c.EncContext, c.buildActionsCache)
 						}
 						return nil
 					})
@@ -5437,40 +5603,6 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 		})
 
 	return &localBuildActions{buildDefs: phonys}
-}
-
-func (c *Context) cacheModuleBuildActions(module *moduleInfo) {
-	var providerHashes []ProviderHash
-
-	for i, p := range module.providers {
-		if p != nil && providerRegistry[i].mutator == "" {
-			err := c.buildActionsCache.writeProvider(c.EncContext, module.providerInitialValueHashes[i],
-				CachedProvider{
-					Id:    providerRegistry[i],
-					Value: p,
-				})
-			if err != nil {
-				panic(err)
-			}
-			providerHashes = append(providerHashes,
-				ProviderHash{
-					Id:   providerRegistry[i],
-					Hash: module.providerInitialValueHashes[i],
-				})
-		}
-	}
-
-	buildActionData := ModuleActionCachedData{
-		InputHash:        module.buildActionInputHash,
-		ProviderHashes:   providerHashes,
-		OrderOnlyStrings: module.orderOnlyStrings,
-		GlobCache:        module.globCache,
-	}
-
-	err := c.buildActionsCache.writeModuleBuildAction(c.EncContext, module.buildActionCacheKey, &buildActionData)
-	if err != nil {
-		panic(err)
-	}
 }
 
 func (c *Context) writeLocalBuildActions(nw *ninjaWriter,

@@ -53,6 +53,7 @@ bootstrap_go_package {
         "blueprint_enc.go",
         "context.go",
         "incremental.go",
+        "incremental_module.go",
         "levenshtein.go",
         "glob.go",
         "live_tracker.go",
