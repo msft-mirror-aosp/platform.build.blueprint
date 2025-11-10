@@ -426,9 +426,9 @@ func (group *moduleGroup) supportsOnDemandVariant(onDemandVariants variationMap,
 	return true
 }
 
-// createVariantOnDemand uses group.coreModuleInfo to create a new on demand variant.
-// locking is not necessary since it does not mutate the global state by modifying moduleGroup.
-// `runMutator` will be responsible for creating the dependency edges to this on demand variant.
+// createVariantOnDemand uses group.coreModuleInfo.factory() to create an "empty" variant on demand.
+// `runMutator` will be responsible for populating this variant using cloneLogicModule
+// and creating the dependency edges to this on demand variant.
 func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants variationMap, currentMutatorIndex int) *moduleInfo {
 	if len(onDemandVariants.variations) > 1 {
 		panic("TODO(b/448182009): Support Variants on demand for 2 or more transition mutators.")
@@ -439,7 +439,7 @@ func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants var
 		variantName = v
 	}
 
-	newlogicmodule, newproperties := c.cloneLogicModule(&group.coreModuleInfo)
+	newlogicmodule, newproperties := group.coreModuleInfo.factory()
 	newmodule := moduleInfo{
 		logicModule:     newlogicmodule,
 		properties:      newproperties,
@@ -448,21 +448,27 @@ func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants var
 		group:           group,
 		createdOnDemand: true,
 	}
+	newlogicmodule.setInfo(&newmodule)
 
 	newmodule.variant = newVariant(&group.coreModuleInfo, mutatorName, variantName)
-
-	c.rerunMutatorsOnVariantOnDemand(&newmodule, currentMutatorIndex)
 
 	return &newmodule
 }
 
-// Re-run the completed mutators on this newly created module.
-func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, currentMutatorIndex int) {
+// Initialize the properties of the on demand variant and
+// re-run the completed mutators on this newly created module.
+func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, tillMutatorIndex int) {
 	pause := func(dep *moduleInfo) {
 		if dep != nil {
 			panic("TODO (b/448182009): Add support for on demand variants of non leaf nodes.")
 		}
 	}
+	// initialize the properties from coreModuleInfo.
+	newlogicmodule, newproperties := c.cloneLogicModule(&newmodule.group.coreModuleInfo)
+	newlogicmodule.setInfo(newmodule)
+	newmodule.logicModule = newlogicmodule
+	newmodule.properties = newproperties
+
 	for index, mi := range c.mutatorInfo {
 		mctx := &mutatorContext{
 			baseModuleContext: baseModuleContext{
@@ -483,7 +489,7 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, currentM
 		}
 		// The module has been mutated till the current mutator.
 		// Do not mutate further.
-		if index == currentMutatorIndex {
+		if index == tillMutatorIndex {
 			break
 		}
 	}
@@ -568,7 +574,8 @@ type moduleInfo struct {
 
 	moduleIncrementalInfo
 
-	createdOnDemand bool
+	createdOnDemand            bool
+	createdOnDemandReplaceWith *moduleInfo
 }
 
 type providerInfo struct {
@@ -3336,22 +3343,28 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	direction mutatorDirection, storeCoreModuleInfo bool) (deps []string, errs []error) {
 
 	type globalStateChange struct {
-		reverse      []reverseDep
-		rename       []rename
-		replace      []replace
-		newModules   []*moduleInfo
-		onDemandDeps []onDemandDep
-		deps         []string
+		reverse         []reverseDep
+		rename          []rename
+		replace         []replace
+		newModules      []*moduleInfo
+		onDemandModules []*moduleInfo
+		deps            []string
+	}
+
+	type createdOnDemandStateChange struct {
+		module              *moduleInfo
+		moduleReplaceWithCh chan *moduleInfo
 	}
 
 	reverseDeps := make(map[*moduleInfo][]depInfo)
 	var rename []rename
 	var replace []replace
 	var newModules []*moduleInfo
-	var onDemandDeps []onDemandDep
+	var onDemandModules []*moduleInfo
 
 	errsCh := make(chan []error)
 	globalStateCh := make(chan globalStateChange)
+	createdOnDemandStateCh := make(chan createdOnDemandStateChange)
 	done := make(chan bool)
 
 	c.needsUpdateDependencies = 0
@@ -3359,6 +3372,26 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	visit := func(module *moduleInfo, pause pauseFunc) bool {
 		if module.splitModules != nil {
 			panic("split module found in sorted module list")
+		}
+
+		if module.createdOnDemand {
+			// Send a request to the main coordinator goroutine to check
+			// if the previous mutators need to be run on this on demand variant.
+			// This allows the coordinator goroutine to dedupe processing if necessary.
+			moduleReplaceWithCh := make(chan *moduleInfo)
+			createdOnDemandStateCh <- createdOnDemandStateChange{
+				module,
+				moduleReplaceWithCh,
+			}
+			moduleReplaceWith := <-moduleReplaceWithCh
+			if module == moduleReplaceWith {
+				c.rerunMutatorsOnVariantOnDemand(module, mutatorGroup[0].index) // Mutate till the current mutator.
+				globalStateCh <- globalStateChange{
+					onDemandModules: []*moduleInfo{module},
+				}
+			}
+			module.createdOnDemandReplaceWith = moduleReplaceWith
+			return false
 		}
 
 		mctx := mutatorContextPool.Get()
@@ -3396,14 +3429,13 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			errsCh <- mctx.errs
 			hasErrors = true
 		} else {
-			if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 || len(mctx.onDemandDeps) > 0 {
+			if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 || len(mctx.newModules) > 0 || len(mctx.ninjaFileDeps) > 0 {
 				globalStateCh <- globalStateChange{
-					reverse:      mctx.reverseDeps,
-					replace:      mctx.replace,
-					rename:       mctx.rename,
-					newModules:   mctx.newModules,
-					onDemandDeps: mctx.onDemandDeps,
-					deps:         mctx.ninjaFileDeps,
+					reverse:    mctx.reverseDeps,
+					replace:    mctx.replace,
+					rename:     mctx.rename,
+					newModules: mctx.newModules,
+					deps:       mctx.ninjaFileDeps,
 				}
 			}
 		}
@@ -3416,6 +3448,12 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 		return hasErrors
 	}
+
+	type onDemandModuleUniqueKey struct {
+		group   *moduleGroup
+		variant string
+	}
+	variantToOnDemandModule := map[onDemandModuleUniqueKey]*moduleInfo{}
 
 	// Process errs and reverseDeps in a single goroutine
 	go func() {
@@ -3430,8 +3468,19 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				replace = append(replace, globalStateChange.replace...)
 				rename = append(rename, globalStateChange.rename...)
 				newModules = append(newModules, globalStateChange.newModules...)
+				onDemandModules = append(onDemandModules, globalStateChange.onDemandModules...)
 				deps = append(deps, globalStateChange.deps...)
-				onDemandDeps = append(onDemandDeps, globalStateChange.onDemandDeps...)
+			case createdOnDemandStateChange := <-createdOnDemandStateCh:
+				uniqueDepKey := onDemandModuleUniqueKey{
+					createdOnDemandStateChange.module.group,
+					createdOnDemandStateChange.module.variant.name,
+				}
+				if existing, exists := variantToOnDemandModule[uniqueDepKey]; exists {
+					createdOnDemandStateChange.moduleReplaceWithCh <- existing
+				} else {
+					createdOnDemandStateChange.moduleReplaceWithCh <- createdOnDemandStateChange.module
+					variantToOnDemandModule[uniqueDepKey] = createdOnDemandStateChange.module
+				}
 			case <-done:
 				return
 			}
@@ -3511,21 +3560,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		}
 	}
 
-	// Create the dependency edges to the variants created on demand.
-	// Since multiple rdeps can request a dependency on demand,
-	// use (moduleGroup,variantName) as the unique key.
-	variantToOnDemandDep := map[string]*moduleInfo{}
-	for _, odd := range onDemandDeps {
-		uniqueDepKey := odd.to.group.name + "." + odd.to.variant.name
-		if existing, exists := variantToOnDemandDep[uniqueDepKey]; exists {
-			odd.from.directDeps = append(odd.from.directDeps, depInfo{existing, odd.tag})
-		} else {
-			odd.from.directDeps = append(odd.from.directDeps, depInfo{odd.to, odd.tag})
-			odd.to.group.modules = append(odd.to.group.modules, odd.to)
-			variantToOnDemandDep[uniqueDepKey] = odd.to
-		}
-	}
-
 	errs = c.handleRenames(rename)
 	if len(errs) > 0 {
 		return nil, errs
@@ -3541,6 +3575,15 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		if len(errs) > 0 {
 			return nil, errs
 		}
+	}
+
+	for _, module := range onDemandModules {
+		module.group.modules = append(module.group.modules, module)
+		// The module has been created and mutated.
+		// For future mutators, this variant is the same as normal variants.
+		// Set this flag to false so that we do not try to call `rerunMutatorsOnVariantOnDemand` again.
+		module.createdOnDemand = false
+		module.createdOnDemandReplaceWith = nil
 	}
 
 	return deps, errs
