@@ -25,8 +25,8 @@ import (
 )
 
 type ModuleBuildActionCacheInput struct {
-	PropertiesHash proptools.Hash
-	ProvidersHash  [][]proptools.Hash
+	PropertiesHash    proptools.Hash
+	DepProviderHashes []proptools.Hash
 }
 
 // ModuleUsesIncrementalWalkDeps is embedded into Modules to mark them
@@ -58,18 +58,20 @@ func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate properties hash"))
 	}
+
+	// If the module is marked as using WalkDeps then collect hashes of transitive
+	// dependencies into the input hash.  Otherwise, only collect the hashes of the
+	// direct dependencies, which will reduce the cache miss rate.
+	_, hashTransitiveDeps := m.logicModule.(moduleUsesIncrementalWalkDeps)
+
 	cacheInput := new(ModuleBuildActionCacheInput)
 	cacheInput.PropertiesHash = hash
-	if _, ok := m.logicModule.(moduleUsesIncrementalWalkDeps); ok {
-		ctx.walkDeps(m, true, func(depInfo depInfo, dep *moduleInfo) bool {
-			cacheInput.ProvidersHash =
-				append(cacheInput.ProvidersHash, dep.providerInitialValueHashes)
-			return true
-		}, nil)
-	} else {
-		for _, dep := range m.directDeps {
-			cacheInput.ProvidersHash =
-				append(cacheInput.ProvidersHash, dep.module.providerInitialValueHashes)
+	cacheInput.DepProviderHashes = make([]proptools.Hash, 0, len(m.directDeps))
+	for _, dep := range m.directDeps {
+		if hashTransitiveDeps {
+			cacheInput.DepProviderHashes = append(cacheInput.DepProviderHashes, dep.module.transitiveProvidersHash)
+		} else {
+			cacheInput.DepProviderHashes = append(cacheInput.DepProviderHashes, dep.module.providersHash)
 		}
 	}
 	hash, err = proptools.CalculateHash(cacheInput)
@@ -162,6 +164,27 @@ func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
 	}
 
 	return true
+}
+
+// calculateProviderHash stores the hash of the providers of this module into
+// moduleInfo.providersHash, and the hash of the providers of this module and
+// all transitive dependencies into moduleInfo.transitiveProvidersHash.
+func (m *moduleInfo) calculateProviderHash() {
+	var err error
+	m.providersHash, err = proptools.CalculateHash(m.providerInitialValueHashes)
+	if err != nil {
+		panic(newPanicErrorf(err, "failed to calculate providers hash"))
+	}
+
+	transitiveHashes := make([]proptools.Hash, 0, len(m.directDeps)+1)
+	transitiveHashes = append(transitiveHashes, m.providersHash)
+	for _, dep := range m.directDeps {
+		transitiveHashes = append(transitiveHashes, dep.module.transitiveProvidersHash)
+	}
+	m.transitiveProvidersHash, err = proptools.CalculateHash(transitiveHashes)
+	if err != nil {
+		panic(newPanicErrorf(err, "failed to calculate transitive providers hash"))
+	}
 }
 
 func (m *moduleInfo) cacheModuleBuildActions(ctx gobtools.EncContext, buildActionsCache *BuildActionCache) {
