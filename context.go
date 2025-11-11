@@ -596,6 +596,12 @@ type moduleIncrementalInfo struct {
 	orderOnlyStrings     []string
 	incrementalDebugInfo []byte
 	globCache            []globResultCache
+
+	// providersHash is the hash of the providers set by this module
+	providersHash proptools.Hash
+	// transitiveProvidersHash is the hash of the providers set by
+	// this module and all transitive dependencies of this module.
+	transitiveProvidersHash proptools.Hash
 }
 
 type commonIncrementalInfo struct {
@@ -3704,6 +3710,7 @@ func (c *Context) generateModuleBuildActions(config interface{},
 				if !module.restoreModuleBuildActions(c) || c.incrementalProviderTest {
 					module.logicModule.GenerateBuildActions(mctx)
 				}
+				module.calculateProviderHash()
 			}()
 
 			module.finishedGenerateBuildActions = true
