@@ -689,7 +689,7 @@ func (m *baseModuleContext) OtherModuleDependencyVariantExists(variations []Vari
 	if possibleDeps == nil {
 		return false
 	}
-	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, variations, false, false)
+	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, variations, false, false, -1)
 	if errs != nil {
 		panic(errors.Join(errs...))
 	}
@@ -701,7 +701,7 @@ func (m *baseModuleContext) OtherModuleFarDependencyVariantExists(variations []V
 	if possibleDeps == nil {
 		return false
 	}
-	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, variations, true, false)
+	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, variations, true, false, -1)
 	if errs != nil {
 		panic(errors.Join(errs...))
 	}
@@ -713,7 +713,7 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 	if possibleDeps == nil {
 		return false
 	}
-	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, nil, false, true)
+	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, nil, false, true, -1)
 	if errs != nil {
 		panic(errors.Join(errs...))
 	}
@@ -1144,7 +1144,7 @@ func (mctx *mutatorContext) AddReverseVariationDependency(variations []Variation
 		return
 	}
 
-	found, newVariant, errs := mctx.context.findVariant(mctx.config, mctx.module, tag, possibleDeps, variations, false, true)
+	found, newVariant, errs := mctx.context.findVariant(mctx.config, mctx.module, tag, possibleDeps, variations, false, true, -1)
 	if errs != nil {
 		mctx.errs = append(mctx.errs, errs...)
 		return
