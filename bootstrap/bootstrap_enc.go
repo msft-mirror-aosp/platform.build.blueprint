@@ -5,6 +5,7 @@ package bootstrap
 import (
 	"bytes"
 	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/proptools"
 )
 
 // begin of bootstrap.go
@@ -51,6 +52,40 @@ func (r PackageInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		return err
 	}
 	return err
+}
+
+func (r PackageInfo) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":bootstrap.PackageInfo")
+	hasher.WriteInt(6)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.PkgPath)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.PkgRoot)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.PackageTarget)
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r.TestTargets))
+	for val1 := 0; val1 < len(r.TestTargets); val1++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r.TestTargets[val1])
+	}
+	val3 := func(hasher *proptools.Hasher, val2 string) error {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val2)
+		return nil
+	}
+	if err := r.TransitivePkgRoot.Hash(hasher, "string", val3); err != nil {
+		return err
+	}
+	val5 := func(hasher *proptools.Hasher, val4 string) error {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val4)
+		return nil
+	}
+	if err := r.TransitivePackageTarget.Hash(hasher, "string", val5); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *PackageInfo) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
@@ -129,6 +164,22 @@ func (r BinaryInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		}
 	}
 	return err
+}
+
+func (r BinaryInfo) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":bootstrap.BinaryInfo")
+	hasher.WriteInt(3)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.IntermediatePath)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.InstallPath)
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r.TestTargets))
+	for val1 := 0; val1 < len(r.TestTargets); val1++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r.TestTargets[val1])
+	}
+	return nil
 }
 
 func (r *BinaryInfo) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {

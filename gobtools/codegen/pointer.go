@@ -41,3 +41,18 @@ func (g *gobGen) decodePointer(decodeBody *strings.Builder, pkgName string, t *a
 	decodeBody.WriteString(fmt.Sprintf("\t%s = &%s\n", fieldName, valId))
 	decodeBody.WriteString("\t}\n")
 }
+
+func (g *gobGen) hashPointer(hashBody *strings.Builder, pkgName string, t *ast.StarExpr, fieldName string) {
+	isNil := g.nextVar()
+	hashBody.WriteString(fmt.Sprintf("\t%s := %s == nil\n", isNil, fieldName))
+	hashBody.WriteString(fmt.Sprintf("\tif %s {\n", isNil))
+	hashBody.WriteString(fmt.Sprintf("\t\thasher.WriteByte(0)\n")) // 0 for nil
+	hashBody.WriteString(fmt.Sprintf("\t} else {\n"))
+	hashFuncBody := &strings.Builder{}
+	g.generateHashForType(hashFuncBody, pkgName, t.X, "(*"+fieldName+")")
+	hashFunc := g.nextVar()
+	hashBody.WriteString(fmt.Sprintf("\t%s := func(hasher *proptools.Hasher) error { %s return nil }\n", hashFunc, hashFuncBody.String()))
+	hashBody.WriteString(fmt.Sprintf("\tif err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(%s)), %s); err != nil { return err }\n", fieldName, hashFunc))
+	hashBody.WriteString(fmt.Sprintf("\t}\n"))
+	g.imports[`"unsafe"`] = true
+}

@@ -42,3 +42,11 @@ func (g *gobGen) decodeSlice(decodeBody *strings.Builder, pkgName string, t ast.
 	decodeBody.WriteString("\t}\n")
 	decodeBody.WriteString("\t}\n")
 }
+
+func (g *gobGen) hashSlice(hashBody *strings.Builder, pkgName string, t ast.Expr, fieldName string) {
+	hashBody.WriteString(fmt.Sprintf("\thasher.WriteInt(len(%s))\n", fieldName))
+	index := g.nextVar()
+	hashBody.WriteString(fmt.Sprintf("\tfor %s := 0; %s < len(%s); %s++ {\n", index, index, fieldName, index))
+	g.generateHashForType(hashBody, pkgName, t, fmt.Sprintf("%s[%s]", fieldName, index))
+	hashBody.WriteString("\t}\n")
+}

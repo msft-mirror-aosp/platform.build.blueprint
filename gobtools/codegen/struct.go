@@ -15,6 +15,7 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"strings"
 )
@@ -44,6 +45,36 @@ func (g *gobGen) generateDecodeForStruct(decodeBody *strings.Builder, pkgName st
 		} else {
 			for _, name := range f.Names {
 				g.generateDecodeForType(decodeBody, pkgName, f.Type, fName+name.Name)
+			}
+		}
+	}
+}
+
+func (g *gobGen) generateHashForStruct(hashBody *strings.Builder, pkgName, structName string, t *ast.StructType, fieldName string) {
+	if structName == "" {
+		// anonymous struct
+		structName = fieldName
+	}
+	typeNameForHash := g.getTypeNameForHash(pkgName, structName)
+	hashBody.WriteString(fmt.Sprintf("\thasher.WriteString(%s)\n", typeNameForHash))
+	numFields := 0
+	for _, f := range t.Fields.List {
+		if len(f.Names) > 0 {
+			numFields += len(f.Names)
+		} else {
+			numFields++ // Count embedded field
+		}
+	}
+	hashBody.WriteString(fmt.Sprintf("\thasher.WriteInt(%d)\n", numFields))
+
+	for _, f := range t.Fields.List {
+		fName := fieldName + "."
+		if len(f.Names) == 0 {
+			typeRef := g.findTypeReference(f.Type, pkgName)
+			g.generateHashForType(hashBody, pkgName, f.Type, fName+typeRef.typeName)
+		} else {
+			for _, name := range f.Names {
+				g.generateHashForType(hashBody, pkgName, f.Type, fName+name.Name)
 			}
 		}
 	}

@@ -34,6 +34,21 @@ func (g *gobGen) encodeUniqueHandle(encodeBody *strings.Builder, pkgName string,
 	g.imports[`"unique"`] = true
 }
 
+func (g *gobGen) hashUniqueHandle(hashBody *strings.Builder, pkgName string, t *ast.IndexExpr, fieldName string) {
+	isZeroValue := g.nextVar()
+	typeRef := g.findTypeReference(t.Index, pkgName)
+	hashBody.WriteString(fmt.Sprintf("\t %s := %s == unique.Handle[%s]{}\n", isZeroValue, fieldName, typeRef.fullName()))
+	g.maybeAddImport(typeRef)
+	hashBody.WriteString(fmt.Sprintf("\tif %s {\n", isZeroValue))
+	hashBody.WriteString(fmt.Sprintf("\t\thasher.WriteByte(0)\n")) // 0 for nil
+	hashBody.WriteString(fmt.Sprintf("\t} else {\n"))
+	hashBody.WriteString(fmt.Sprintf("\tif err := proptools.HashReference(hasher, %s, func(*proptools.Hasher) error {\n", fieldName))
+	hashBody.WriteString(fmt.Sprintf("\treturn %s.Value().CustomHash(hasher)\n", fieldName))
+	hashBody.WriteString(fmt.Sprintf("\t}); err != nil { return err }\n"))
+	hashBody.WriteString(fmt.Sprintf("\t}\n"))
+	g.imports[`"unique"`] = true
+}
+
 func (g *gobGen) decodeUniqueHandle(decodeBody *strings.Builder, pkgName string, t *ast.IndexExpr, fieldName string) {
 	isZeroValue := g.nextVar()
 	decodeBody.WriteString(fmt.Sprintf("\tvar %s bool\n", isZeroValue))

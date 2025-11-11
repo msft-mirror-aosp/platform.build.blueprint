@@ -4,10 +4,14 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/gobtools/test"
+	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/uniquelist"
+	"reflect"
 	"unique"
+	"unsafe"
 )
 
 // begin of gob_test_data.go
@@ -19,6 +23,22 @@ func init() {
 	testEchoMapGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(testEchoMap) })
 	TestEmbedPtrGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(TestEmbedPtr) })
 	TestPtrsGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(TestPtrs) })
+	HashStructGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(HashStruct) })
+	PointersGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Pointers) })
+	SlicesGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Slices) })
+	MapsGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Maps) })
+	InnerGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Inner) })
+	EmbeddedGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Embedded) })
+	NestedGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Nested) })
+	InterfaceImpl1GobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(InterfaceImpl1) })
+	InterfaceImpl2GobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(InterfaceImpl2) })
+	InterfaceHolderGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(InterfaceHolder) })
+	UnexportedGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Unexported) })
+	ComplexGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Complex) })
+	PointerDuplicationGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(PointerDuplication) })
+	Type1GobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Type1) })
+	Type2GobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Type2) })
+	InterfaceWrapperGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(InterfaceWrapper) })
 }
 
 func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
@@ -380,10 +400,8 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 			return err
 		}
 		for val24, val25 := range r.f40 {
-			for val26 := 0; val26 < len(val24); val26++ {
-				if err = gobtools.EncodeString(buf, val24[val26]); err != nil {
-					return err
-				}
+			if err = gobtools.EncodeString(buf, val24); err != nil {
+				return err
 			}
 			if val25 == nil {
 				if err = gobtools.EncodeInt(buf, -1); err != nil {
@@ -393,25 +411,25 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 				if err = gobtools.EncodeInt(buf, len(val25)); err != nil {
 					return err
 				}
-				for val27, val28 := range val25 {
-					if err = gobtools.EncodeInt(buf, val27); err != nil {
+				for val26, val27 := range val25 {
+					if err = gobtools.EncodeInt(buf, val26); err != nil {
 						return err
 					}
-					if val28 == nil {
+					if val27 == nil {
 						if err = gobtools.EncodeInt(buf, -1); err != nil {
 							return err
 						}
 					} else {
-						if err = gobtools.EncodeInt(buf, len(val28)); err != nil {
+						if err = gobtools.EncodeInt(buf, len(val27)); err != nil {
 							return err
 						}
-						for val29 := 0; val29 < len(val28); val29++ {
-							val30 := val28[val29] == nil
-							if err = gobtools.EncodeBool(buf, val30); err != nil {
+						for val28 := 0; val28 < len(val27); val28++ {
+							val29 := val27[val28] == nil
+							if err = gobtools.EncodeBool(buf, val29); err != nil {
 								return err
 							}
-							if !val30 {
-								if err = gobtools.EncodeBool(buf, (*val28[val29])); err != nil {
+							if !val29 {
+								if err = gobtools.EncodeBool(buf, (*val27[val28])); err != nil {
 									return err
 								}
 							}
@@ -422,11 +440,11 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		}
 	}
 
-	val31 := r.f41 == unique.Handle[TestEcho]{}
-	if err = gobtools.EncodeBool(buf, val31); err != nil {
+	val30 := r.f41 == unique.Handle[TestEcho]{}
+	if err = gobtools.EncodeBool(buf, val30); err != nil {
 		return err
 	}
-	if !val31 {
+	if !val30 {
 		if err = gobtools.EncodeReference(ctx, r.f41, buf, func(v unique.Handle[TestEcho], buf *bytes.Buffer) error {
 			return v.Value().Encode(ctx, buf)
 		}); err != nil {
@@ -434,11 +452,11 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		}
 	}
 
-	val32 := r.f42 == unique.Handle[TestEcho]{}
-	if err = gobtools.EncodeBool(buf, val32); err != nil {
+	val31 := r.f42 == unique.Handle[TestEcho]{}
+	if err = gobtools.EncodeBool(buf, val31); err != nil {
 		return err
 	}
-	if !val32 {
+	if !val31 {
 		if err = gobtools.EncodeReference(ctx, r.f42, buf, func(v unique.Handle[TestEcho], buf *bytes.Buffer) error {
 			return v.Value().Encode(ctx, buf)
 		}); err != nil {
@@ -446,6 +464,433 @@ func (r TestStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		}
 	}
 	return err
+}
+
+func (r TestStruct) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.TestStruct")
+	hasher.WriteInt(43)
+	if err := r.TestEcho.CustomHash(hasher); err != nil {
+		return err
+	}
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.f1)
+	hasher.WriteString(":.int16")
+	hasher.WriteUint64(uint64(r.f2))
+	hasher.WriteString(":.int32")
+	hasher.WriteUint64(uint64(r.f3))
+	hasher.WriteString(":.bool")
+	if r.f4 {
+		hasher.WriteByte(1)
+	} else {
+		hasher.WriteByte(0)
+	}
+	hasher.WriteString(":.int64")
+	hasher.WriteUint64(uint64(r.f5))
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.f6)
+	if err := r.f7.CustomHash(hasher); err != nil {
+		return err
+	}
+	hasher.WriteString(":.uint16")
+	hasher.WriteUint64(uint64(r.f8))
+	hasher.WriteString(":.uint32")
+	hasher.WriteUint64(uint64(r.f9))
+	hasher.WriteString(":.uint64")
+	hasher.WriteUint64(uint64(r.f10))
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r.f11))
+	for val1 := 0; val1 < len(r.f11); val1++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r.f11[val1])
+	}
+	hasher.WriteString(":.map[string]int")
+	hasher.WriteInt(len(r.f12))
+	val2 := make([]string, 0, len(r.f12))
+	for val4 := range r.f12 {
+		val2 = append(val2, val4)
+	}
+	proptools.SortOrdered(val2)
+	for _, val3 := range val2 {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val3)
+		hasher.WriteString(":.int")
+		hasher.WriteUint64(uint64(r.f12[val3]))
+	}
+	hasher.WriteString(":.*string")
+	val5 := r.f13 == nil
+	if val5 {
+		hasher.WriteByte(0)
+	} else {
+		val6 := func(hasher *proptools.Hasher) error {
+			hasher.WriteString(":.string")
+			hasher.WriteString((*r.f13))
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.f13)), val6); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":.int")
+	hasher.WriteUint64(uint64(r.f14))
+	hasher.WriteString(":.[]int")
+	hasher.WriteInt(len(r.f15))
+	for val7 := 0; val7 < len(r.f15); val7++ {
+		hasher.WriteString(":.int")
+		hasher.WriteUint64(uint64(r.f15[val7]))
+	}
+	hasher.WriteString(":.[]TestEcho")
+	hasher.WriteInt(len(r.f16))
+	for val8 := 0; val8 < len(r.f16); val8++ {
+		if err := r.f16[val8].CustomHash(hasher); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":.*TestEcho")
+	val9 := r.f17 == nil
+	if val9 {
+		hasher.WriteByte(0)
+	} else {
+		val10 := func(hasher *proptools.Hasher) error {
+			if err := (*r.f17).CustomHash(hasher); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.f17)), val10); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":main.TestEchoInterface")
+	val11 := r.f18 == nil
+	if val11 {
+		hasher.WriteByte(0)
+	} else {
+		if v := reflect.ValueOf(r.f18); v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				panic(fmt.Errorf("nil pointer is not supported in interface"))
+			} else {
+				val12 := r.f18 == nil
+				if val12 {
+					hasher.WriteByte(0)
+				} else {
+					val13 := func(hasher *proptools.Hasher) error { return r.f18.(proptools.CustomHash).CustomHash(hasher) }
+					if err := proptools.HashReference(hasher, uintptr(v.Pointer()), val13); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			r.f18.(proptools.CustomHash).CustomHash(hasher)
+		}
+	}
+	hasher.WriteString(":main.testStrings")
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r.f19))
+	for val14 := 0; val14 < len(r.f19); val14++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r.f19[val14])
+	}
+	hasher.WriteString(":.uniquelist.UniqueList[TestEcho]")
+	val16 := func(hasher *proptools.Hasher, val15 TestEcho) error {
+		if err := val15.CustomHash(hasher); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := r.f20.Hash(hasher, "TestEcho", val16); err != nil {
+		return err
+	}
+	hasher.WriteString(":.uniquelist.UniqueList[TestEchoInterface]")
+	val21 := func(hasher *proptools.Hasher, val17 TestEchoInterface) error {
+		hasher.WriteString(":main.TestEchoInterface")
+		val18 := val17 == nil
+		if val18 {
+			hasher.WriteByte(0)
+		} else {
+			if v := reflect.ValueOf(val17); v.Kind() == reflect.Ptr {
+				if v.IsNil() {
+					panic(fmt.Errorf("nil pointer is not supported in interface"))
+				} else {
+					val19 := val17 == nil
+					if val19 {
+						hasher.WriteByte(0)
+					} else {
+						val20 := func(hasher *proptools.Hasher) error { return val17.(proptools.CustomHash).CustomHash(hasher) }
+						if err := proptools.HashReference(hasher, uintptr(v.Pointer()), val20); err != nil {
+							return err
+						}
+					}
+				}
+			} else {
+				val17.(proptools.CustomHash).CustomHash(hasher)
+			}
+		}
+		return nil
+	}
+	if err := r.f21.Hash(hasher, "TestEchoInterface", val21); err != nil {
+		return err
+	}
+	if err := r.f22.CustomHash(hasher); err != nil {
+		return err
+	}
+	hasher.WriteString(":.[]test.TypeAlias")
+	hasher.WriteInt(len(r.f23))
+	for val22 := 0; val22 < len(r.f23); val22++ {
+		hasher.WriteString(":main.test.TypeAlias")
+		hasher.WriteString(":.[]TypeStruct")
+		hasher.WriteInt(len(r.f23[val22]))
+		for val23 := 0; val23 < len(r.f23[val22]); val23++ {
+			if err := r.f23[val22][val23].CustomHash(hasher); err != nil {
+				return err
+			}
+		}
+	}
+	hasher.WriteString(":main.test.TypeInterface")
+	val24 := r.f24 == nil
+	if val24 {
+		hasher.WriteByte(0)
+	} else {
+		if v := reflect.ValueOf(r.f24); v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				panic(fmt.Errorf("nil pointer is not supported in interface"))
+			} else {
+				val25 := r.f24 == nil
+				if val25 {
+					hasher.WriteByte(0)
+				} else {
+					val26 := func(hasher *proptools.Hasher) error { return r.f24.(proptools.CustomHash).CustomHash(hasher) }
+					if err := proptools.HashReference(hasher, uintptr(v.Pointer()), val26); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			r.f24.(proptools.CustomHash).CustomHash(hasher)
+		}
+	}
+	hasher.WriteString(":main.test.TypeIdent")
+	hasher.WriteString("github.com/google/blueprint/gobtools/test:test.TypeStruct")
+	if err := test.TypeStruct(r.f25).CustomHash(hasher); err != nil {
+		return err
+	}
+	val28 := func(hasher *proptools.Hasher, val27 TestEcho) error {
+		if err := val27.CustomHash(hasher); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := r.f26.Hash(hasher, "TestEcho", val28); err != nil {
+		return err
+	}
+	val33 := func(hasher *proptools.Hasher, val29 TestEchoInterface) error {
+		hasher.WriteString(":main.TestEchoInterface")
+		val30 := val29 == nil
+		if val30 {
+			hasher.WriteByte(0)
+		} else {
+			if v := reflect.ValueOf(val29); v.Kind() == reflect.Ptr {
+				if v.IsNil() {
+					panic(fmt.Errorf("nil pointer is not supported in interface"))
+				} else {
+					val31 := val29 == nil
+					if val31 {
+						hasher.WriteByte(0)
+					} else {
+						val32 := func(hasher *proptools.Hasher) error { return val29.(proptools.CustomHash).CustomHash(hasher) }
+						if err := proptools.HashReference(hasher, uintptr(v.Pointer()), val32); err != nil {
+							return err
+						}
+					}
+				}
+			} else {
+				val29.(proptools.CustomHash).CustomHash(hasher)
+			}
+		}
+		return nil
+	}
+	if err := r.f27.Hash(hasher, "TestEchoInterface", val33); err != nil {
+		return err
+	}
+	hasher.WriteString(":.map[int][]string")
+	hasher.WriteInt(len(r.f28))
+	val34 := make([]int, 0, len(r.f28))
+	for val36 := range r.f28 {
+		val34 = append(val34, val36)
+	}
+	proptools.SortOrdered(val34)
+	for _, val35 := range val34 {
+		hasher.WriteString(":.int")
+		hasher.WriteUint64(uint64(val35))
+		hasher.WriteString(":.[]string")
+		hasher.WriteInt(len(r.f28[val35]))
+		for val37 := 0; val37 < len(r.f28[val35]); val37++ {
+			hasher.WriteString(":.string")
+			hasher.WriteString(r.f28[val35][val37])
+		}
+	}
+	hasher.WriteString(":.[][]string")
+	hasher.WriteInt(len(r.f29))
+	for val38 := 0; val38 < len(r.f29); val38++ {
+		hasher.WriteString(":.[]string")
+		hasher.WriteInt(len(r.f29[val38]))
+		for val39 := 0; val39 < len(r.f29[val38]); val39++ {
+			hasher.WriteString(":.string")
+			hasher.WriteString(r.f29[val38][val39])
+		}
+	}
+	val41 := func(hasher *proptools.Hasher, val40 string) error {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val40)
+		return nil
+	}
+	if err := r.f30.Hash(hasher, "string", val41); err != nil {
+		return err
+	}
+	hasher.WriteString(":.any")
+	val42 := r.f31 == nil
+	if val42 {
+		hasher.WriteByte(0)
+	} else {
+		if v := reflect.ValueOf(r.f31); v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				panic(fmt.Errorf("nil pointer is not supported in interface"))
+			} else {
+				val43 := r.f31 == nil
+				if val43 {
+					hasher.WriteByte(0)
+				} else {
+					val44 := func(hasher *proptools.Hasher) error { return r.f31.(proptools.CustomHash).CustomHash(hasher) }
+					if err := proptools.HashReference(hasher, uintptr(v.Pointer()), val44); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			r.f31.(proptools.CustomHash).CustomHash(hasher)
+		}
+	}
+	hasher.WriteString(":.[]*test.TypeStruct")
+	hasher.WriteInt(len(r.f32))
+	for val45 := 0; val45 < len(r.f32); val45++ {
+		hasher.WriteString(":.*test.TypeStruct")
+		val46 := r.f32[val45] == nil
+		if val46 {
+			hasher.WriteByte(0)
+		} else {
+			val47 := func(hasher *proptools.Hasher) error {
+				if err := (*r.f32[val45]).CustomHash(hasher); err != nil {
+					return err
+				}
+				return nil
+			}
+			if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.f32[val45])), val47); err != nil {
+				return err
+			}
+		}
+	}
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.f33)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.f34)
+	hasher.WriteString(":main.r.f35")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.f35.s)
+	if err := hasher.CalculateHashReflection(reflect.ValueOf(r.f36)); err != nil {
+		return err
+	}
+	hasher.WriteString(":.*TestEmbedPtr")
+	val48 := r.TestEmbedPtr == nil
+	if val48 {
+		hasher.WriteByte(0)
+	} else {
+		val49 := func(hasher *proptools.Hasher) error {
+			if err := (*r.TestEmbedPtr).CustomHash(hasher); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.TestEmbedPtr)), val49); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":main.test.TypeBasic")
+	hasher.WriteString(":.int")
+	hasher.WriteUint64(uint64(int(r.f38)))
+	hasher.WriteString(":.[2]uint64")
+	hasher.WriteInt(len(r.f39))
+	for val50 := 0; val50 < len(r.f39); val50++ {
+		hasher.WriteString(":.uint64")
+		hasher.WriteUint64(uint64(r.f39[val50]))
+	}
+	hasher.WriteString(":.map[string]map[int][]*bool")
+	hasher.WriteInt(len(r.f40))
+	val51 := make([]string, 0, len(r.f40))
+	for val53 := range r.f40 {
+		val51 = append(val51, val53)
+	}
+	proptools.SortOrdered(val51)
+	for _, val52 := range val51 {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val52)
+		hasher.WriteString(":.map[int][]*bool")
+		hasher.WriteInt(len(r.f40[val52]))
+		val54 := make([]int, 0, len(r.f40[val52]))
+		for val56 := range r.f40[val52] {
+			val54 = append(val54, val56)
+		}
+		proptools.SortOrdered(val54)
+		for _, val55 := range val54 {
+			hasher.WriteString(":.int")
+			hasher.WriteUint64(uint64(val55))
+			hasher.WriteString(":.[]*bool")
+			hasher.WriteInt(len(r.f40[val52][val55]))
+			for val57 := 0; val57 < len(r.f40[val52][val55]); val57++ {
+				hasher.WriteString(":.*bool")
+				val58 := r.f40[val52][val55][val57] == nil
+				if val58 {
+					hasher.WriteByte(0)
+				} else {
+					val59 := func(hasher *proptools.Hasher) error {
+						hasher.WriteString(":.bool")
+						if *r.f40[val52][val55][val57] {
+							hasher.WriteByte(1)
+						} else {
+							hasher.WriteByte(0)
+						}
+						return nil
+					}
+					if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.f40[val52][val55][val57])), val59); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	hasher.WriteString(":.unique.Handle[TestEcho]")
+	val60 := r.f41 == unique.Handle[TestEcho]{}
+	if val60 {
+		hasher.WriteByte(0)
+	} else {
+		if err := proptools.HashReference(hasher, r.f41, func(*proptools.Hasher) error {
+			return r.f41.Value().CustomHash(hasher)
+		}); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":main.testEchoHandle")
+	hasher.WriteString(":.unique.Handle[TestEcho]")
+	val61 := r.f42 == unique.Handle[TestEcho]{}
+	if val61 {
+		hasher.WriteByte(0)
+	} else {
+		if err := proptools.HashReference(hasher, r.f42, func(*proptools.Hasher) error {
+			return r.f42.Value().CustomHash(hasher)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
@@ -850,70 +1295,68 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 		return err
 	}
 	if val110 != -1 {
-		r.f40 = make(map[[1]string]map[int][]*bool, val110)
+		r.f40 = make(map[string]map[int][]*bool, val110)
 		for val111 := 0; val111 < int(val110); val111++ {
-			var val112 [1]string
+			var val112 string
 			var val113 map[int][]*bool
-			for val115 := 0; val115 < len(val112); val115++ {
-				err = gobtools.DecodeString(buf, &val112[val115])
-				if err != nil {
-					return err
-				}
-			}
-			var val117 int
-			err = gobtools.DecodeInt(buf, &val117)
+			err = gobtools.DecodeString(buf, &val112)
 			if err != nil {
 				return err
 			}
-			if val117 != -1 {
-				val113 = make(map[int][]*bool, val117)
-				for val118 := 0; val118 < int(val117); val118++ {
-					var val119 int
-					var val120 []*bool
-					err = gobtools.DecodeInt(buf, &val119)
+			var val115 int
+			err = gobtools.DecodeInt(buf, &val115)
+			if err != nil {
+				return err
+			}
+			if val115 != -1 {
+				val113 = make(map[int][]*bool, val115)
+				for val116 := 0; val116 < int(val115); val116++ {
+					var val117 int
+					var val118 []*bool
+					err = gobtools.DecodeInt(buf, &val117)
 					if err != nil {
 						return err
 					}
-					var val123 int
-					err = gobtools.DecodeInt(buf, &val123)
+					var val121 int
+					err = gobtools.DecodeInt(buf, &val121)
 					if err != nil {
 						return err
 					}
-					if val123 != -1 {
-						val120 = make([]*bool, val123)
-						for val124 := 0; val124 < int(val123); val124++ {
-							var val126 bool
-							if err = gobtools.DecodeBool(buf, &val126); err != nil {
+					if val121 != -1 {
+						val118 = make([]*bool, val121)
+						for val122 := 0; val122 < int(val121); val122++ {
+							var val124 bool
+							if err = gobtools.DecodeBool(buf, &val124); err != nil {
 								return err
 							}
-							if !val126 {
-								var val125 bool
-								err = gobtools.DecodeBool(buf, &val125)
+							if !val124 {
+								var val123 bool
+								err = gobtools.DecodeBool(buf, &val123)
 								if err != nil {
 									return err
 								}
-								val120[val124] = &val125
+								val118[val122] = &val123
 							}
 						}
 					}
-					val113[val119] = val120
+					val113[val117] = val118
 				}
 			}
 			r.f40[val112] = val113
 		}
 	}
 
-	var val129 bool
-	if err = gobtools.DecodeBool(buf, &val129); err != nil {
+	var val127 bool
+	if err = gobtools.DecodeBool(buf, &val127); err != nil {
 		return err
 	}
-	if !val129 {
+	if !val127 {
 		tmp, err := gobtools.DecodeReference(ctx, &r.f41, buf, func(value *unique.Handle[TestEcho], buf *bytes.Reader) error {
-			var val130 TestEcho
-			if err = val130.Decode(ctx, buf); err != nil {
+			var val128 TestEcho
+			if err = val128.Decode(ctx, buf); err != nil {
 				return err
 			}
-			*value = unique.Make(val130)
+			*value = unique.Make(val128)
 			return nil
 		})
 		if err != nil {
@@ -922,17 +1365,17 @@ func (r *TestStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 		r.f41 = *tmp
 	}
 
-	var val133 bool
-	if err = gobtools.DecodeBool(buf, &val133); err != nil {
+	var val131 bool
+	if err = gobtools.DecodeBool(buf, &val131); err != nil {
 		return err
 	}
-	if !val133 {
+	if !val131 {
 		tmp, err := gobtools.DecodeReference(ctx, &r.f42, buf, func(value *unique.Handle[TestEcho], buf *bytes.Reader) error {
-			var val134 TestEcho
-			if err = val134.Decode(ctx, buf); err != nil {
+			var val132 TestEcho
+			if err = val132.Decode(ctx, buf); err != nil {
 				return err
 			}
-			*value = unique.Make(val134)
+			*value = unique.Make(val132)
 			return nil
 		})
 		if err != nil {
@@ -957,6 +1400,14 @@ func (r TestEcho) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		return err
 	}
 	return err
+}
+
+func (r TestEcho) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.TestEcho")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.EchoStr)
+	return nil
 }
 
 func (r *TestEcho) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
@@ -994,6 +1445,37 @@ func (r testEchos) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		}
 	}
 	return err
+}
+
+func (r testEchos) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":.[]TestEchoInterface")
+	hasher.WriteInt(len(r))
+	for val1 := 0; val1 < len(r); val1++ {
+		hasher.WriteString(":main.TestEchoInterface")
+		val2 := r[val1] == nil
+		if val2 {
+			hasher.WriteByte(0)
+		} else {
+			if v := reflect.ValueOf(r[val1]); v.Kind() == reflect.Ptr {
+				if v.IsNil() {
+					panic(fmt.Errorf("nil pointer is not supported in interface"))
+				} else {
+					val3 := r[val1] == nil
+					if val3 {
+						hasher.WriteByte(0)
+					} else {
+						val4 := func(hasher *proptools.Hasher) error { return r[val1].(proptools.CustomHash).CustomHash(hasher) }
+						if err := proptools.HashReference(hasher, uintptr(v.Pointer()), val4); err != nil {
+							return err
+						}
+					}
+				}
+			} else {
+				r[val1].(proptools.CustomHash).CustomHash(hasher)
+			}
+		}
+	}
+	return nil
 }
 
 func (r *testEchos) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
@@ -1058,6 +1540,27 @@ func (r testStringMap) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error 
 		}
 	}
 	return err
+}
+
+func (r testStringMap) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":.map[string][]string")
+	hasher.WriteInt(len(r))
+	val1 := make([]string, 0, len(r))
+	for val3 := range r {
+		val1 = append(val1, val3)
+	}
+	proptools.SortOrdered(val1)
+	for _, val2 := range val1 {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val2)
+		hasher.WriteString(":.[]string")
+		hasher.WriteInt(len(r[val2]))
+		for val4 := 0; val4 < len(r[val2]); val4++ {
+			hasher.WriteString(":.string")
+			hasher.WriteString(r[val2][val4])
+		}
+	}
+	return nil
 }
 
 func (r *testStringMap) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
@@ -1133,6 +1636,37 @@ func (r testEchoMap) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	return err
 }
 
+func (r testEchoMap) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":.map[TestEcho]*TestEcho")
+	hasher.WriteInt(len(r))
+	val1 := make([]TestEcho, 0, len(r))
+	for val3 := range r {
+		val1 = append(val1, val3)
+	}
+	proptools.SortCustom(val1)
+	for _, val2 := range val1 {
+		if err := val2.CustomHash(hasher); err != nil {
+			return err
+		}
+		hasher.WriteString(":.*TestEcho")
+		val4 := r[val2] == nil
+		if val4 {
+			hasher.WriteByte(0)
+		} else {
+			val5 := func(hasher *proptools.Hasher) error {
+				if err := (*r[val2]).CustomHash(hasher); err != nil {
+					return err
+				}
+				return nil
+			}
+			if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r[val2])), val5); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (r *testEchoMap) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
@@ -1182,6 +1716,14 @@ func (r TestEmbedPtr) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	return err
 }
 
+func (r TestEmbedPtr) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.TestEmbedPtr")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.f37)
+	return nil
+}
+
 func (r *TestEmbedPtr) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
@@ -1224,6 +1766,42 @@ func (r TestPtrs) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	return err
 }
 
+func (r TestPtrs) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.TestPtrs")
+	hasher.WriteInt(2)
+	hasher.WriteString(":.*TestEcho")
+	val1 := r.f1 == nil
+	if val1 {
+		hasher.WriteByte(0)
+	} else {
+		val2 := func(hasher *proptools.Hasher) error {
+			if err := (*r.f1).CustomHash(hasher); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.f1)), val2); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":.*TestEcho")
+	val3 := r.f2 == nil
+	if val3 {
+		hasher.WriteByte(0)
+	} else {
+		val4 := func(hasher *proptools.Hasher) error {
+			if err := (*r.f2).CustomHash(hasher); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.f2)), val4); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *TestPtrs) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
@@ -1258,6 +1836,1089 @@ var TestPtrsGobRegId int16
 
 func (r TestPtrs) GetTypeId() int16 {
 	return TestPtrsGobRegId
+}
+
+func (r HashStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeInt(buf, r.I); err != nil {
+		return err
+	}
+
+	if err = gobtools.EncodeString(buf, r.S); err != nil {
+		return err
+	}
+
+	if err = gobtools.EncodeBool(buf, r.B); err != nil {
+		return err
+	}
+
+	if err = gobtools.EncodeInt64(buf, r.F64); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r HashStruct) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.HashStruct")
+	hasher.WriteInt(4)
+	hasher.WriteString(":.int")
+	hasher.WriteUint64(uint64(r.I))
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.S)
+	hasher.WriteString(":.bool")
+	if r.B {
+		hasher.WriteByte(1)
+	} else {
+		hasher.WriteByte(0)
+	}
+	hasher.WriteString(":.int64")
+	hasher.WriteUint64(uint64(r.F64))
+	return nil
+}
+
+func (r *HashStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeInt(buf, &r.I)
+	if err != nil {
+		return err
+	}
+
+	err = gobtools.DecodeString(buf, &r.S)
+	if err != nil {
+		return err
+	}
+
+	err = gobtools.DecodeBool(buf, &r.B)
+	if err != nil {
+		return err
+	}
+
+	err = gobtools.DecodeInt64(buf, &r.F64)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var HashStructGobRegId int16
+
+func (r HashStruct) GetTypeId() int16 {
+	return HashStructGobRegId
+}
+
+func (r Pointers) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	val1 := r.A == nil
+	if err = gobtools.EncodeBool(buf, val1); err != nil {
+		return err
+	}
+	if !val1 {
+		if err = gobtools.EncodeInt(buf, (*r.A)); err != nil {
+			return err
+		}
+	}
+
+	val2 := r.S == nil
+	if err = gobtools.EncodeBool(buf, val2); err != nil {
+		return err
+	}
+	if !val2 {
+		if err = gobtools.EncodeString(buf, (*r.S)); err != nil {
+			return err
+		}
+	}
+	return err
+}
+
+func (r Pointers) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.Pointers")
+	hasher.WriteInt(2)
+	hasher.WriteString(":.*int")
+	val1 := r.A == nil
+	if val1 {
+		hasher.WriteByte(0)
+	} else {
+		val2 := func(hasher *proptools.Hasher) error {
+			hasher.WriteString(":.int")
+			hasher.WriteUint64(uint64((*r.A)))
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.A)), val2); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":.*string")
+	val3 := r.S == nil
+	if val3 {
+		hasher.WriteByte(0)
+	} else {
+		val4 := func(hasher *proptools.Hasher) error {
+			hasher.WriteString(":.string")
+			hasher.WriteString((*r.S))
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.S)), val4); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Pointers) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	var val2 bool
+	if err = gobtools.DecodeBool(buf, &val2); err != nil {
+		return err
+	}
+	if !val2 {
+		var val1 int
+		err = gobtools.DecodeInt(buf, &val1)
+		if err != nil {
+			return err
+		}
+		r.A = &val1
+	}
+
+	var val5 bool
+	if err = gobtools.DecodeBool(buf, &val5); err != nil {
+		return err
+	}
+	if !val5 {
+		var val4 string
+		err = gobtools.DecodeString(buf, &val4)
+		if err != nil {
+			return err
+		}
+		r.S = &val4
+	}
+
+	return err
+}
+
+var PointersGobRegId int16
+
+func (r Pointers) GetTypeId() int16 {
+	return PointersGobRegId
+}
+
+func (r Slices) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if r.A == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r.A)); err != nil {
+			return err
+		}
+		for val1 := 0; val1 < len(r.A); val1++ {
+			if err = gobtools.EncodeInt(buf, r.A[val1]); err != nil {
+				return err
+			}
+		}
+	}
+
+	if r.B == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r.B)); err != nil {
+			return err
+		}
+		for val2 := 0; val2 < len(r.B); val2++ {
+			if err = gobtools.EncodeString(buf, r.B[val2]); err != nil {
+				return err
+			}
+		}
+	}
+	return err
+}
+
+func (r Slices) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.Slices")
+	hasher.WriteInt(2)
+	hasher.WriteString(":.[]int")
+	hasher.WriteInt(len(r.A))
+	for val1 := 0; val1 < len(r.A); val1++ {
+		hasher.WriteString(":.int")
+		hasher.WriteUint64(uint64(r.A[val1]))
+	}
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r.B))
+	for val2 := 0; val2 < len(r.B); val2++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r.B[val2])
+	}
+	return nil
+}
+
+func (r *Slices) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	var val2 int
+	err = gobtools.DecodeInt(buf, &val2)
+	if err != nil {
+		return err
+	}
+	if val2 != -1 {
+		r.A = make([]int, val2)
+		for val3 := 0; val3 < int(val2); val3++ {
+			err = gobtools.DecodeInt(buf, &r.A[val3])
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	var val6 int
+	err = gobtools.DecodeInt(buf, &val6)
+	if err != nil {
+		return err
+	}
+	if val6 != -1 {
+		r.B = make([]string, val6)
+		for val7 := 0; val7 < int(val6); val7++ {
+			err = gobtools.DecodeString(buf, &r.B[val7])
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return err
+}
+
+var SlicesGobRegId int16
+
+func (r Slices) GetTypeId() int16 {
+	return SlicesGobRegId
+}
+
+func (r Maps) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if r.M == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r.M)); err != nil {
+			return err
+		}
+		for val1, val2 := range r.M {
+			if err = gobtools.EncodeString(buf, val1); err != nil {
+				return err
+			}
+			if err = gobtools.EncodeInt(buf, val2); err != nil {
+				return err
+			}
+		}
+	}
+	return err
+}
+
+func (r Maps) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.Maps")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.map[string]int")
+	hasher.WriteInt(len(r.M))
+	val1 := make([]string, 0, len(r.M))
+	for val3 := range r.M {
+		val1 = append(val1, val3)
+	}
+	proptools.SortOrdered(val1)
+	for _, val2 := range val1 {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val2)
+		hasher.WriteString(":.int")
+		hasher.WriteUint64(uint64(r.M[val2]))
+	}
+	return nil
+}
+
+func (r *Maps) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	var val1 int
+	err = gobtools.DecodeInt(buf, &val1)
+	if err != nil {
+		return err
+	}
+	if val1 != -1 {
+		r.M = make(map[string]int, val1)
+		for val2 := 0; val2 < int(val1); val2++ {
+			var val3 string
+			var val4 int
+			err = gobtools.DecodeString(buf, &val3)
+			if err != nil {
+				return err
+			}
+			err = gobtools.DecodeInt(buf, &val4)
+			if err != nil {
+				return err
+			}
+			r.M[val3] = val4
+		}
+	}
+
+	return err
+}
+
+var MapsGobRegId int16
+
+func (r Maps) GetTypeId() int16 {
+	return MapsGobRegId
+}
+
+func (r Inner) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.Val); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r Inner) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.Inner")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.Val)
+	return nil
+}
+
+func (r *Inner) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.Val)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var InnerGobRegId int16
+
+func (r Inner) GetTypeId() int16 {
+	return InnerGobRegId
+}
+
+func (r Embedded) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = r.Inner.Encode(ctx, buf); err != nil {
+		return err
+	}
+
+	if err = gobtools.EncodeInt32(buf, r.F); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r Embedded) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.Embedded")
+	hasher.WriteInt(2)
+	if err := r.Inner.CustomHash(hasher); err != nil {
+		return err
+	}
+	hasher.WriteString(":.int32")
+	hasher.WriteUint64(uint64(r.F))
+	return nil
+}
+
+func (r *Embedded) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	if err = r.Inner.Decode(ctx, buf); err != nil {
+		return err
+	}
+
+	err = gobtools.DecodeInt32(buf, &r.F)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var EmbeddedGobRegId int16
+
+func (r Embedded) GetTypeId() int16 {
+	return EmbeddedGobRegId
+}
+
+func (r Nested) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = r.A.Encode(ctx, buf); err != nil {
+		return err
+	}
+
+	val1 := r.B == nil
+	if err = gobtools.EncodeBool(buf, val1); err != nil {
+		return err
+	}
+	if !val1 {
+		if err = (*r.B).Encode(ctx, buf); err != nil {
+			return err
+		}
+	}
+	return err
+}
+
+func (r Nested) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.Nested")
+	hasher.WriteInt(2)
+	if err := r.A.CustomHash(hasher); err != nil {
+		return err
+	}
+	hasher.WriteString(":.*Inner")
+	val1 := r.B == nil
+	if val1 {
+		hasher.WriteByte(0)
+	} else {
+		val2 := func(hasher *proptools.Hasher) error {
+			if err := (*r.B).CustomHash(hasher); err != nil {
+				return err
+			}
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.B)), val2); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Nested) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	if err = r.A.Decode(ctx, buf); err != nil {
+		return err
+	}
+
+	var val3 bool
+	if err = gobtools.DecodeBool(buf, &val3); err != nil {
+		return err
+	}
+	if !val3 {
+		var val2 Inner
+		if err = val2.Decode(ctx, buf); err != nil {
+			return err
+		}
+		r.B = &val2
+	}
+
+	return err
+}
+
+var NestedGobRegId int16
+
+func (r Nested) GetTypeId() int16 {
+	return NestedGobRegId
+}
+
+func (r InterfaceImpl1) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.V); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r InterfaceImpl1) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.InterfaceImpl1")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.V)
+	return nil
+}
+
+func (r *InterfaceImpl1) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.V)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var InterfaceImpl1GobRegId int16
+
+func (r InterfaceImpl1) GetTypeId() int16 {
+	return InterfaceImpl1GobRegId
+}
+
+func (r InterfaceImpl2) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.V); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r InterfaceImpl2) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.InterfaceImpl2")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.V)
+	return nil
+}
+
+func (r *InterfaceImpl2) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.V)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var InterfaceImpl2GobRegId int16
+
+func (r InterfaceImpl2) GetTypeId() int16 {
+	return InterfaceImpl2GobRegId
+}
+
+func (r InterfaceHolder) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeInterface(ctx, buf, r.I); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r InterfaceHolder) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.InterfaceHolder")
+	hasher.WriteInt(1)
+	hasher.WriteString(":main.MyInterface")
+	val1 := r.I == nil
+	if val1 {
+		hasher.WriteByte(0)
+	} else {
+		if v := reflect.ValueOf(r.I); v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				panic(fmt.Errorf("nil pointer is not supported in interface"))
+			} else {
+				val2 := r.I == nil
+				if val2 {
+					hasher.WriteByte(0)
+				} else {
+					val3 := func(hasher *proptools.Hasher) error { return r.I.(proptools.CustomHash).CustomHash(hasher) }
+					if err := proptools.HashReference(hasher, uintptr(v.Pointer()), val3); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			r.I.(proptools.CustomHash).CustomHash(hasher)
+		}
+	}
+	return nil
+}
+
+func (r *InterfaceHolder) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	if val2, err := gobtools.DecodeInterface(ctx, buf); err != nil {
+		return err
+	} else if val2 == nil {
+		r.I = nil
+	} else {
+		r.I = val2.(MyInterface)
+	}
+
+	return err
+}
+
+var InterfaceHolderGobRegId int16
+
+func (r InterfaceHolder) GetTypeId() int16 {
+	return InterfaceHolderGobRegId
+}
+
+func (r Unexported) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.Exported); err != nil {
+		return err
+	}
+
+	if err = gobtools.EncodeString(buf, r.unexported); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r Unexported) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.Unexported")
+	hasher.WriteInt(2)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.Exported)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.unexported)
+	return nil
+}
+
+func (r *Unexported) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.Exported)
+	if err != nil {
+		return err
+	}
+
+	err = gobtools.DecodeString(buf, &r.unexported)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var UnexportedGobRegId int16
+
+func (r Unexported) GetTypeId() int16 {
+	return UnexportedGobRegId
+}
+
+func (r Complex) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if r.MapOfSlices == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r.MapOfSlices)); err != nil {
+			return err
+		}
+		for val1, val2 := range r.MapOfSlices {
+			if err = gobtools.EncodeString(buf, val1); err != nil {
+				return err
+			}
+			if val2 == nil {
+				if err = gobtools.EncodeInt(buf, -1); err != nil {
+					return err
+				}
+			} else {
+				if err = gobtools.EncodeInt(buf, len(val2)); err != nil {
+					return err
+				}
+				for val3 := 0; val3 < len(val2); val3++ {
+					if err = gobtools.EncodeInt(buf, val2[val3]); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+
+	if r.SliceOfPtrs == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r.SliceOfPtrs)); err != nil {
+			return err
+		}
+		for val4 := 0; val4 < len(r.SliceOfPtrs); val4++ {
+			val5 := r.SliceOfPtrs[val4] == nil
+			if err = gobtools.EncodeBool(buf, val5); err != nil {
+				return err
+			}
+			if !val5 {
+				if err = (*r.SliceOfPtrs[val4]).Encode(ctx, buf); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if err = gobtools.EncodeInterface(ctx, buf, r.InterfaceField); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r Complex) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.Complex")
+	hasher.WriteInt(3)
+	hasher.WriteString(":.map[string][]int")
+	hasher.WriteInt(len(r.MapOfSlices))
+	val1 := make([]string, 0, len(r.MapOfSlices))
+	for val3 := range r.MapOfSlices {
+		val1 = append(val1, val3)
+	}
+	proptools.SortOrdered(val1)
+	for _, val2 := range val1 {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val2)
+		hasher.WriteString(":.[]int")
+		hasher.WriteInt(len(r.MapOfSlices[val2]))
+		for val4 := 0; val4 < len(r.MapOfSlices[val2]); val4++ {
+			hasher.WriteString(":.int")
+			hasher.WriteUint64(uint64(r.MapOfSlices[val2][val4]))
+		}
+	}
+	hasher.WriteString(":.[]*Inner")
+	hasher.WriteInt(len(r.SliceOfPtrs))
+	for val5 := 0; val5 < len(r.SliceOfPtrs); val5++ {
+		hasher.WriteString(":.*Inner")
+		val6 := r.SliceOfPtrs[val5] == nil
+		if val6 {
+			hasher.WriteByte(0)
+		} else {
+			val7 := func(hasher *proptools.Hasher) error {
+				if err := (*r.SliceOfPtrs[val5]).CustomHash(hasher); err != nil {
+					return err
+				}
+				return nil
+			}
+			if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.SliceOfPtrs[val5])), val7); err != nil {
+				return err
+			}
+		}
+	}
+	hasher.WriteString(":main.MyInterface")
+	val8 := r.InterfaceField == nil
+	if val8 {
+		hasher.WriteByte(0)
+	} else {
+		if v := reflect.ValueOf(r.InterfaceField); v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				panic(fmt.Errorf("nil pointer is not supported in interface"))
+			} else {
+				val9 := r.InterfaceField == nil
+				if val9 {
+					hasher.WriteByte(0)
+				} else {
+					val10 := func(hasher *proptools.Hasher) error {
+						return r.InterfaceField.(proptools.CustomHash).CustomHash(hasher)
+					}
+					if err := proptools.HashReference(hasher, uintptr(v.Pointer()), val10); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			r.InterfaceField.(proptools.CustomHash).CustomHash(hasher)
+		}
+	}
+	return nil
+}
+
+func (r *Complex) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	var val1 int
+	err = gobtools.DecodeInt(buf, &val1)
+	if err != nil {
+		return err
+	}
+	if val1 != -1 {
+		r.MapOfSlices = make(map[string][]int, val1)
+		for val2 := 0; val2 < int(val1); val2++ {
+			var val3 string
+			var val4 []int
+			err = gobtools.DecodeString(buf, &val3)
+			if err != nil {
+				return err
+			}
+			var val7 int
+			err = gobtools.DecodeInt(buf, &val7)
+			if err != nil {
+				return err
+			}
+			if val7 != -1 {
+				val4 = make([]int, val7)
+				for val8 := 0; val8 < int(val7); val8++ {
+					err = gobtools.DecodeInt(buf, &val4[val8])
+					if err != nil {
+						return err
+					}
+				}
+			}
+			r.MapOfSlices[val3] = val4
+		}
+	}
+
+	var val11 int
+	err = gobtools.DecodeInt(buf, &val11)
+	if err != nil {
+		return err
+	}
+	if val11 != -1 {
+		r.SliceOfPtrs = make([]*Inner, val11)
+		for val12 := 0; val12 < int(val11); val12++ {
+			var val14 bool
+			if err = gobtools.DecodeBool(buf, &val14); err != nil {
+				return err
+			}
+			if !val14 {
+				var val13 Inner
+				if err = val13.Decode(ctx, buf); err != nil {
+					return err
+				}
+				r.SliceOfPtrs[val12] = &val13
+			}
+		}
+	}
+
+	if val17, err := gobtools.DecodeInterface(ctx, buf); err != nil {
+		return err
+	} else if val17 == nil {
+		r.InterfaceField = nil
+	} else {
+		r.InterfaceField = val17.(MyInterface)
+	}
+
+	return err
+}
+
+var ComplexGobRegId int16
+
+func (r Complex) GetTypeId() int16 {
+	return ComplexGobRegId
+}
+
+func (r PointerDuplication) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	val1 := r.F1 == nil
+	if err = gobtools.EncodeBool(buf, val1); err != nil {
+		return err
+	}
+	if !val1 {
+		if err = gobtools.EncodeString(buf, (*r.F1)); err != nil {
+			return err
+		}
+	}
+
+	val2 := r.F2 == nil
+	if err = gobtools.EncodeBool(buf, val2); err != nil {
+		return err
+	}
+	if !val2 {
+		if err = gobtools.EncodeString(buf, (*r.F2)); err != nil {
+			return err
+		}
+	}
+	return err
+}
+
+func (r PointerDuplication) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.PointerDuplication")
+	hasher.WriteInt(2)
+	hasher.WriteString(":.*string")
+	val1 := r.F1 == nil
+	if val1 {
+		hasher.WriteByte(0)
+	} else {
+		val2 := func(hasher *proptools.Hasher) error {
+			hasher.WriteString(":.string")
+			hasher.WriteString((*r.F1))
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.F1)), val2); err != nil {
+			return err
+		}
+	}
+	hasher.WriteString(":.*string")
+	val3 := r.F2 == nil
+	if val3 {
+		hasher.WriteByte(0)
+	} else {
+		val4 := func(hasher *proptools.Hasher) error {
+			hasher.WriteString(":.string")
+			hasher.WriteString((*r.F2))
+			return nil
+		}
+		if err := proptools.HashReference(hasher, uintptr(unsafe.Pointer(r.F2)), val4); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *PointerDuplication) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	var val2 bool
+	if err = gobtools.DecodeBool(buf, &val2); err != nil {
+		return err
+	}
+	if !val2 {
+		var val1 string
+		err = gobtools.DecodeString(buf, &val1)
+		if err != nil {
+			return err
+		}
+		r.F1 = &val1
+	}
+
+	var val5 bool
+	if err = gobtools.DecodeBool(buf, &val5); err != nil {
+		return err
+	}
+	if !val5 {
+		var val4 string
+		err = gobtools.DecodeString(buf, &val4)
+		if err != nil {
+			return err
+		}
+		r.F2 = &val4
+	}
+
+	return err
+}
+
+var PointerDuplicationGobRegId int16
+
+func (r PointerDuplication) GetTypeId() int16 {
+	return PointerDuplicationGobRegId
+}
+
+func (r Type1) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.S); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r Type1) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.Type1")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.S)
+	return nil
+}
+
+func (r *Type1) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.S)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var Type1GobRegId int16
+
+func (r Type1) GetTypeId() int16 {
+	return Type1GobRegId
+}
+
+func (r Type2) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.S); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r Type2) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.Type2")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.S)
+	return nil
+}
+
+func (r *Type2) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.S)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var Type2GobRegId int16
+
+func (r Type2) GetTypeId() int16 {
+	return Type2GobRegId
+}
+
+func (r InterfaceWrapper) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeInterface(ctx, buf, r.V); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r InterfaceWrapper) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":main.InterfaceWrapper")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.any")
+	val1 := r.V == nil
+	if val1 {
+		hasher.WriteByte(0)
+	} else {
+		if v := reflect.ValueOf(r.V); v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				panic(fmt.Errorf("nil pointer is not supported in interface"))
+			} else {
+				val2 := r.V == nil
+				if val2 {
+					hasher.WriteByte(0)
+				} else {
+					val3 := func(hasher *proptools.Hasher) error { return r.V.(proptools.CustomHash).CustomHash(hasher) }
+					if err := proptools.HashReference(hasher, uintptr(v.Pointer()), val3); err != nil {
+						return err
+					}
+				}
+			}
+		} else {
+			r.V.(proptools.CustomHash).CustomHash(hasher)
+		}
+	}
+	return nil
+}
+
+func (r *InterfaceWrapper) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	if val2, err := gobtools.DecodeInterface(ctx, buf); err != nil {
+		return err
+	} else if val2 == nil {
+		r.V = nil
+	} else {
+		r.V = val2
+	}
+
+	return err
+}
+
+var InterfaceWrapperGobRegId int16
+
+func (r InterfaceWrapper) GetTypeId() int16 {
+	return InterfaceWrapperGobRegId
 }
 
 // end of gob_test_data.go

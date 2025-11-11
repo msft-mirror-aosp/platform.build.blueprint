@@ -22,14 +22,14 @@ import (
 
 var typeHashCache syncmap.SyncMap[reflect.Type, Hash]
 
-// typeHash computes a hash for a reflect.Type that is stable across
+// TypeHash computes a hash for a reflect.Type that is stable across
 // multiple runs of the same binary, and should return identical values
 // for the same reflect.Type and different values for different reflect.Type,
 // except that types constructed at runtime, for example with reflect.StructOf,
 // will give identical hashes if constructed from identical inputs.  Since the
 // hash of a type is constant the result is cached, so calling this method will
 // be very fast on average.
-func typeHash(typ reflect.Type) (Hash, error) {
+func TypeHash(typ reflect.Type) (Hash, error) {
 	// Fast path, attempt to load from cache.
 	if h, ok := typeHashCache.Load(typ); ok {
 		return h, nil
@@ -54,7 +54,7 @@ func typeHashSlow(typ reflect.Type) (Hash, error) {
 	hasher.reset()
 	// Hash the package path to ensure types with the same package short name
 	// are different.
-	hasher.writeString(typ.PkgPath())
-	hasher.writeString(typ.String())
+	hasher.WriteString(typ.PkgPath())
+	hasher.WriteString(typ.String())
 	return Hash{hasher.Sum64()}, nil
 }
