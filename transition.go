@@ -238,7 +238,7 @@ func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation st
 	}
 
 	m.currentTransitionMutator = t.name
-	hash, err := proptools.CalculateHash(transitionInfo)
+	hash, err := proptools.CalculateHashReflection(transitionInfo)
 	if err != nil {
 		panic(err)
 	}

@@ -14,6 +14,7 @@ import (
 // begin of context.go
 func init() {
 	globResultCacheGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(globResultCache) })
+	stringHashGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(stringHash) })
 	VariationGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(Variation) })
 }
 
@@ -105,6 +106,40 @@ var globResultCacheGobRegId int16
 
 func (r globResultCache) GetTypeId() int16 {
 	return globResultCacheGobRegId
+}
+
+func (r stringHash) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.string); err != nil {
+		return err
+	}
+	return err
+}
+
+func (r stringHash) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.stringHash")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.string)
+	return nil
+}
+
+func (r *stringHash) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.string)
+	if err != nil {
+		return err
+	}
+
+	return err
+}
+
+var stringHashGobRegId int16
+
+func (r stringHash) GetTypeId() int16 {
+	return stringHashGobRegId
 }
 
 func (r Variation) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
@@ -745,6 +780,226 @@ func (r OrderOnlyStringsCache) GetTypeId() int16 {
 }
 
 // end of incremental.go
+
+// begin of incremental_module.go
+func init() {
+	ModuleBuildActionCacheInputGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(ModuleBuildActionCacheInput) })
+	hashListGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(hashList) })
+	stringListGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(stringList) })
+}
+
+func (r ModuleBuildActionCacheInput) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	for val1 := 0; val1 < len(r.PropertiesHash); val1++ {
+		if err = gobtools.EncodeUint64(buf, r.PropertiesHash[val1]); err != nil {
+			return err
+		}
+	}
+
+	if r.DepProviderHashes == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r.DepProviderHashes)); err != nil {
+			return err
+		}
+		for val2 := 0; val2 < len(r.DepProviderHashes); val2++ {
+			for val3 := 0; val3 < len(r.DepProviderHashes[val2]); val3++ {
+				if err = gobtools.EncodeUint64(buf, r.DepProviderHashes[val2][val3]); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return err
+}
+
+func (r ModuleBuildActionCacheInput) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.ModuleBuildActionCacheInput")
+	hasher.WriteInt(2)
+	hasher.WriteString(":blueprint.proptools.Hash")
+	hasher.WriteString(":.[1]uint64")
+	hasher.WriteInt(len(r.PropertiesHash))
+	for val1 := 0; val1 < len(r.PropertiesHash); val1++ {
+		hasher.WriteString(":.uint64")
+		hasher.WriteUint64(uint64(r.PropertiesHash[val1]))
+	}
+	hasher.WriteString(":.[]proptools.Hash")
+	hasher.WriteInt(len(r.DepProviderHashes))
+	for val2 := 0; val2 < len(r.DepProviderHashes); val2++ {
+		hasher.WriteString(":blueprint.proptools.Hash")
+		hasher.WriteString(":.[1]uint64")
+		hasher.WriteInt(len(r.DepProviderHashes[val2]))
+		for val3 := 0; val3 < len(r.DepProviderHashes[val2]); val3++ {
+			hasher.WriteString(":.uint64")
+			hasher.WriteUint64(uint64(r.DepProviderHashes[val2][val3]))
+		}
+	}
+	return nil
+}
+
+func (r *ModuleBuildActionCacheInput) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	for val3 := 0; val3 < len(r.PropertiesHash); val3++ {
+		err = gobtools.DecodeUint64(buf, &r.PropertiesHash[val3])
+		if err != nil {
+			return err
+		}
+	}
+
+	var val6 int
+	err = gobtools.DecodeInt(buf, &val6)
+	if err != nil {
+		return err
+	}
+	if val6 != -1 {
+		r.DepProviderHashes = make([]proptools.Hash, val6)
+		for val7 := 0; val7 < int(val6); val7++ {
+			for val10 := 0; val10 < len(r.DepProviderHashes[val7]); val10++ {
+				err = gobtools.DecodeUint64(buf, &r.DepProviderHashes[val7][val10])
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return err
+}
+
+var ModuleBuildActionCacheInputGobRegId int16
+
+func (r ModuleBuildActionCacheInput) GetTypeId() int16 {
+	return ModuleBuildActionCacheInputGobRegId
+}
+
+func (r hashList) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if r == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r)); err != nil {
+			return err
+		}
+		for val1 := 0; val1 < len(r); val1++ {
+			for val2 := 0; val2 < len(r[val1]); val2++ {
+				if err = gobtools.EncodeUint64(buf, r[val1][val2]); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return err
+}
+
+func (r hashList) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":.[]proptools.Hash")
+	hasher.WriteInt(len(r))
+	for val1 := 0; val1 < len(r); val1++ {
+		hasher.WriteString(":blueprint.proptools.Hash")
+		hasher.WriteString(":.[1]uint64")
+		hasher.WriteInt(len(r[val1]))
+		for val2 := 0; val2 < len(r[val1]); val2++ {
+			hasher.WriteString(":.uint64")
+			hasher.WriteUint64(uint64(r[val1][val2]))
+		}
+	}
+	return nil
+}
+
+func (r *hashList) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	var val2 int
+	err = gobtools.DecodeInt(buf, &val2)
+	if err != nil {
+		return err
+	}
+	if val2 != -1 {
+		(*r) = make([]proptools.Hash, val2)
+		for val3 := 0; val3 < int(val2); val3++ {
+			for val6 := 0; val6 < len((*r)[val3]); val6++ {
+				err = gobtools.DecodeUint64(buf, &(*r)[val3][val6])
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return err
+}
+
+var hashListGobRegId int16
+
+func (r hashList) GetTypeId() int16 {
+	return hashListGobRegId
+}
+
+func (r stringList) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if r == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r)); err != nil {
+			return err
+		}
+		for val1 := 0; val1 < len(r); val1++ {
+			if err = gobtools.EncodeString(buf, r[val1]); err != nil {
+				return err
+			}
+		}
+	}
+	return err
+}
+
+func (r stringList) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r))
+	for val1 := 0; val1 < len(r); val1++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r[val1])
+	}
+	return nil
+}
+
+func (r *stringList) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	var val2 int
+	err = gobtools.DecodeInt(buf, &val2)
+	if err != nil {
+		return err
+	}
+	if val2 != -1 {
+		(*r) = make([]string, val2)
+		for val3 := 0; val3 < int(val2); val3++ {
+			err = gobtools.DecodeString(buf, &(*r)[val3])
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return err
+}
+
+var stringListGobRegId int16
+
+func (r stringList) GetTypeId() int16 {
+	return stringListGobRegId
+}
+
+// end of incremental_module.go
 
 // begin of provider.go
 func init() {

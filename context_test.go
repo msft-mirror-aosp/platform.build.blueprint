@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/parser"
+	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/uniquelist"
 )
 
@@ -92,6 +93,12 @@ func (r *IncrementalTestInfo) Decode(ctx gobtools.EncContext, buf *bytes.Reader)
 	}
 
 	return err
+}
+
+func (r IncrementalTestInfo) CustomHash(hasher *proptools.Hasher) error {
+	hasher.HashType(reflect.TypeOf(r))
+	hasher.WriteString(r.Value)
+	return nil
 }
 
 var IncrementalTestProviderGobRegId int16

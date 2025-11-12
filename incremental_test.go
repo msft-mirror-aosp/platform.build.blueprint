@@ -169,20 +169,20 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 			Value: barInfo.Name(),
 		},
 	} {
-		hash, err := proptools.CalculateHash(v)
+		hash, err := proptools.CalculateHashReflection(v)
 		if err != nil {
 			panic("Can't hash value of providers")
 		}
 		providerHashes[k.id] = hash
 	}
-	hash, err := proptools.CalculateHash(providerHashes)
+	hash, err := proptools.CalculateHash(hashList(providerHashes))
 	if err != nil {
 		panic(err)
 	}
 
 	cacheKey, hash := calculateHashKey(incInfo, []proptools.Hash{hash})
 	var providerValue any = IncrementalTestInfo{Value: "MyIncrementalModule"}
-	providerHash, _ := proptools.CalculateHash(providerValue)
+	providerHash, _ := proptools.CalculateHashReflection(providerValue)
 	ctx.buildActionsCache.writeModuleBuildAction(ctx.EncContext, &cacheKey, &ModuleActionCachedData{
 		InputHash: hash,
 		ProviderHashes: []ProviderHash{{
@@ -207,7 +207,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 }
 
 func calculateHashKey(m *moduleInfo, providerHashes []proptools.Hash) (BuildActionCacheKey, proptools.Hash) {
-	hash, err := proptools.CalculateHash(m.properties)
+	hash, err := proptools.CalculateHashReflection(m.properties)
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate properties hash"))
 	}
@@ -224,8 +224,8 @@ func calculateHashKey(m *moduleInfo, providerHashes []proptools.Hash) (BuildActi
 }
 
 func calculateGlobCache() []globResultCache {
-	globHash1, _ := proptools.CalculateHash([]string{"file2.cc"})
-	globHash2, _ := proptools.CalculateHash([]string{"file2.cpp"})
+	globHash1, _ := proptools.CalculateHash(stringList{"file2.cc"})
+	globHash2, _ := proptools.CalculateHash(stringList{"file2.cpp"})
 
 	return []globResultCache{
 		{
@@ -272,7 +272,7 @@ func TestCacheBuildActions(t *testing.T) {
 		t.Errorf("failed to find cached build actions for the incremental module")
 	}
 	var providerValue any = IncrementalTestInfo{Value: "MyIncrementalModule"}
-	providerHash, _ := proptools.CalculateHash(providerValue)
+	providerHash, _ := proptools.CalculateHashReflection(providerValue)
 	expectedCache := ModuleActionCachedData{
 		InputHash: hash,
 		ProviderHashes: []ProviderHash{{

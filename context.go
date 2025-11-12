@@ -671,8 +671,13 @@ func (module *moduleInfo) moduleCacheKey() string {
 		filepath.Dir(module.relBlueprintsFile), module.Name(), variant, module.typeName))
 }
 
+// @auto-generate: gob
+type stringHash struct {
+	string
+}
+
 func calculateFileNameHash(name string) string {
-	hash, err := proptools.CalculateHash(name)
+	hash, err := proptools.CalculateHash(stringHash{name})
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate hash for file name: %s", name))
 	}
@@ -4049,7 +4054,7 @@ func (c *Context) calculateProvidersHashes() {
 				})
 			}
 			var err error
-			c.providerValueHashes[i], err = proptools.CalculateHash(providerHashes)
+			c.providerValueHashes[i], err = proptools.CalculateHash(hashList(providerHashes))
 			if err != nil {
 				panic(err)
 			}
@@ -4106,7 +4111,7 @@ func (c *Context) generateSingletonBuildActions(config interface{},
 						})
 					}
 					var err error
-					info.providerValueHashes[i], err = proptools.CalculateHash(providerHashes)
+					info.providerValueHashes[i], err = proptools.CalculateHash(hashList(providerHashes))
 					if err != nil {
 						panic(err)
 					}
@@ -4926,7 +4931,7 @@ func (c *Context) VerifyProvidersWereUnchanged() []error {
 		var errors []error
 		for i, provider := range m.providers {
 			if provider != nil {
-				hash, err := proptools.CalculateHash(provider)
+				hash, err := proptools.CalculateHashReflection(provider)
 				if err != nil {
 					errors = append(errors, fmt.Errorf("provider %q on module %q was modified after being set, and no longer hashable afterwards: %s", providerRegistry[i].typ, m.Name(), err.Error()))
 					continue

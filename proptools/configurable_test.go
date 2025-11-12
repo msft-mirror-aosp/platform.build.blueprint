@@ -42,7 +42,7 @@ func TestPostProcessor(t *testing.T) {
 		t.Fatalf("Expected %v, got %v", expected, x.Get())
 	}
 
-	_, err := CalculateHash(prop)
+	_, err := CalculateHashReflection(prop)
 	if err != nil {
 		t.Errorf("Error calculating hash of configurable after AddPostProcessor: %s", err.Error())
 	}

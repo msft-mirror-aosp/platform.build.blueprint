@@ -190,11 +190,11 @@ func TestEncDec(t *testing.T) {
 				t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.origin, tc.decoded)
 			}
 
-			originalHash, err := proptools.CalculateHash(tc.origin)
+			originalHash, err := proptools.CalculateHash(tc.origin.(proptools.CustomHash))
 			if err != nil {
 				t.Fatal(err)
 			}
-			decodedHash, err := proptools.CalculateHash(tc.decoded)
+			decodedHash, err := proptools.CalculateHash(tc.decoded.(proptools.CustomHash))
 			if err != nil {
 				t.Fatal(err)
 			}

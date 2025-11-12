@@ -24,6 +24,9 @@ import (
 	"github.com/google/blueprint/uniquelist"
 )
 
+//go:generate go run ./gobtools/codegen
+
+// @auto-generate: gob
 type ModuleBuildActionCacheInput struct {
 	PropertiesHash    proptools.Hash
 	DepProviderHashes []proptools.Hash
@@ -54,7 +57,7 @@ func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
 	}
 
 	// Compute the hashes of the input data.
-	hash, err := proptools.CalculateHash(m.properties)
+	hash, err := proptools.CalculateHashReflection(m.properties)
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate properties hash"))
 	}
@@ -110,7 +113,7 @@ func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to glob for cached module: %s %s %v", m.Name(), glob.Pattern, glob.Excludes))
 		}
-		hash, err := proptools.CalculateHash(result)
+		hash, err := proptools.CalculateHash(stringList(result))
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate hash for cached glob result: %s", m.Name()))
 		}
@@ -166,12 +169,18 @@ func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
 	return true
 }
 
+// @auto-generate: gob
+type hashList []proptools.Hash
+
+// @auto-generate: gob
+type stringList []string
+
 // calculateProviderHash stores the hash of the providers of this module into
 // moduleInfo.providersHash, and the hash of the providers of this module and
 // all transitive dependencies into moduleInfo.transitiveProvidersHash.
 func (m *moduleInfo) calculateProviderHash() {
 	var err error
-	m.providersHash, err = proptools.CalculateHash(m.providerInitialValueHashes)
+	m.providersHash, err = proptools.CalculateHash(hashList(m.providerInitialValueHashes))
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate providers hash"))
 	}
@@ -181,7 +190,7 @@ func (m *moduleInfo) calculateProviderHash() {
 	for _, dep := range m.directDeps {
 		transitiveHashes = append(transitiveHashes, dep.module.transitiveProvidersHash)
 	}
-	m.transitiveProvidersHash, err = proptools.CalculateHash(transitiveHashes)
+	m.transitiveProvidersHash, err = proptools.CalculateHash(hashList(transitiveHashes))
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate transitive providers hash"))
 	}

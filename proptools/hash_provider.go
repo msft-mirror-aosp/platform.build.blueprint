@@ -74,24 +74,42 @@ func (h *Hash) Bytes() []byte {
 	return unsafe.Slice((*byte)(ptr), len(h)*int(unsafe.Sizeof(h[0])))
 }
 
-func CalculateHash(value interface{}) (Hash, error) {
+// CalculateHashReflection calculates the hash of any value, using the CustomHash
+// interface if the type implements it, or falling back to reflection if it does not.
+func CalculateHashReflection(value any) (Hash, error) {
+	if value == nil {
+		return ZeroHash, nil
+	}
+	if ch, ok := value.(CustomHash); ok {
+		return CalculateHash(ch)
+	}
+
 	hasher := hasherPool.Get()
 	defer hasherPool.Put(hasher)
 	hasher.reset()
 
-	var err error
 	v := reflect.ValueOf(value)
-
-	if ch, ok := value.(CustomHash); ok {
-		// We need to distinguish A from *A.
-		hasher.HashType(v.Type())
-		err = ch.CustomHash(hasher)
-	} else {
-		if v.IsValid() {
-			err = hasher.CalculateHashReflection(v)
-		}
+	err := hasher.CalculateHashReflection(v)
+	if err != nil {
+		return ZeroHash, err
 	}
-	return Hash{hasher.Sum64()}, err
+
+	return Hash{hasher.Sum64()}, nil
+}
+
+// CalculateHash calculates the hash of a value that implements CustomHash.
+func CalculateHash[T CustomHash](v T) (Hash, error) {
+	hasher := hasherPool.Get()
+	defer hasherPool.Put(hasher)
+	hasher.reset()
+
+	// We need to distinguish A from *A.
+	hasher.HashType(reflect.TypeOf(v))
+	err := v.CustomHash(hasher)
+	if err != nil {
+		return Hash{}, err
+	}
+	return Hash{hasher.Sum64()}, nil
 }
 
 type Hasher struct {
@@ -237,7 +255,6 @@ func (hasher *Hasher) CalculateHashReflection(v reflect.Value) error {
 	// empty slices of different types, produce different hashes.  The hash of each type is cached,
 	// so this should be very fast.
 	hasher.HashType(v.Type())
-	v.IsValid()
 	switch v.Kind() {
 	case reflect.Struct:
 		// The scanner.Position is intentionally excluded from the hash calculation.
@@ -302,9 +319,14 @@ func (hasher *Hasher) CalculateHashReflection(v reflect.Value) error {
 		if v.IsNil() {
 			hasher.WriteByte(0)
 		} else {
+			var err error
 			// The only way get the pointer out of an interface to hash it or check for cycles
 			// would be InterfaceData(), but that's deprecated and seems like it has undefined behavior.
-			err := hasher.CalculateHashReflection(v.Elem())
+			if ch, ok := isCustomHash(v); ok {
+				err = ch.CustomHash(hasher)
+			} else {
+				err = hasher.CalculateHashReflection(v.Elem())
+			}
 			if err != nil {
 				return fmt.Errorf("in interface: %s", err.Error())
 			}
@@ -327,6 +349,14 @@ func (hasher *Hasher) CalculateHashReflection(v reflect.Value) error {
 		return fmt.Errorf("data may only contain primitives, strings, arrays, slices, structs, maps, and pointers, found: %s", v.Kind().String())
 	}
 	return nil
+}
+
+func isCustomHash(v reflect.Value) (CustomHash, bool) {
+	if !v.CanInterface() {
+		return nil, false
+	}
+	ch, ok := v.Interface().(CustomHash)
+	return ch, ok
 }
 
 type Comparer[T any] interface {

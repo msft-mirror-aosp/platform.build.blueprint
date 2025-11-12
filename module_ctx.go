@@ -558,7 +558,7 @@ func (d *baseModuleContext) GlobWithDeps(pattern string,
 	excludes []string) ([]string, error) {
 	result, err := d.context.glob(pattern, excludes)
 	if err == nil && d.context.incrementalEnabled {
-		hash, err := proptools.CalculateHash(result)
+		hash, err := proptools.CalculateHash(stringList(result))
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate hash for glob result: %s", d.ModuleName()))
 		}
