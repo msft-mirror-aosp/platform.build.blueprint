@@ -20,7 +20,6 @@ import (
 	"slices"
 
 	"github.com/google/blueprint/pool"
-	"github.com/google/blueprint/proptools"
 )
 
 // TransitionMutator implements a top-down mechanism where a module tells its
@@ -238,23 +237,10 @@ func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation st
 	}
 
 	m.currentTransitionMutator = t.name
-	hash, err := proptools.CalculateHashReflection(transitionInfo)
-	if err != nil {
-		panic(err)
+	if m.incomingTransitionInfos == nil {
+		m.incomingTransitionInfos = make(map[string]TransitionInfo)
 	}
-	if existing, exists := m.incomingTransitionInfoHashes[variation]; exists {
-		if existing != hash {
-			panic(fmt.Errorf("TransitionInfo %#v and %#v are different but have same variation %q (hash %x vs %x)",
-				m.incomingTransitionInfos[variation], transitionInfo, variation, existing, hash))
-		}
-	} else {
-		if m.incomingTransitionInfos == nil {
-			m.incomingTransitionInfos = make(map[string]TransitionInfo)
-			m.incomingTransitionInfoHashes = make(map[string]proptools.Hash)
-		}
-		m.incomingTransitionInfos[variation] = transitionInfo
-		m.incomingTransitionInfoHashes[variation] = hash
-	}
+	m.incomingTransitionInfos[variation] = transitionInfo
 }
 
 func (t *transitionMutatorImpl) propagateMutator(mctx BaseModuleContext) {
@@ -274,7 +260,6 @@ func (t *transitionMutatorImpl) propagateMutator(mctx BaseModuleContext) {
 	transitionVariations := slices.Sorted(maps.Keys(module.incomingTransitionInfos))
 	transitionInfoMap := module.incomingTransitionInfos
 	module.incomingTransitionInfos = nil
-	module.incomingTransitionInfoHashes = nil
 
 	splitsVariations := make([]string, 0, len(mutatorSplits))
 	for _, splitTransitionInfo := range mutatorSplits {
