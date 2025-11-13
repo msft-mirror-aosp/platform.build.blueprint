@@ -285,6 +285,7 @@ type BinaryInfo struct {
 
 var BinaryProvider = blueprint.NewProvider[*BinaryInfo]()
 
+// @auto-generate: gob
 type DocsPackageInfo struct {
 	PkgPath string
 	Srcs    []string
@@ -779,6 +780,7 @@ func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
 
 var PrimaryBuilderProvider = blueprint.NewMutatorProvider[PrimaryBuilderInfo]("bootstrap_deps")
 
+// @auto-generate: gob
 type PrimaryBuilderInfo struct{}
 
 type singleton struct {
