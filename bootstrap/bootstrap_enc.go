@@ -5,12 +5,15 @@ package bootstrap
 import (
 	"bytes"
 	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/proptools"
 )
 
 // begin of bootstrap.go
 func init() {
 	PackageInfoGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(PackageInfo) })
 	BinaryInfoGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(BinaryInfo) })
+	DocsPackageInfoGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(DocsPackageInfo) })
+	PrimaryBuilderInfoGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(PrimaryBuilderInfo) })
 }
 
 func (r PackageInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
@@ -51,6 +54,40 @@ func (r PackageInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		return err
 	}
 	return err
+}
+
+func (r PackageInfo) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":bootstrap.PackageInfo")
+	hasher.WriteInt(6)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.PkgPath)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.PkgRoot)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.PackageTarget)
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r.TestTargets))
+	for val1 := 0; val1 < len(r.TestTargets); val1++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r.TestTargets[val1])
+	}
+	val3 := func(hasher *proptools.Hasher, val2 string) error {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val2)
+		return nil
+	}
+	if err := r.TransitivePkgRoot.Hash(hasher, "string", val3); err != nil {
+		return err
+	}
+	val5 := func(hasher *proptools.Hasher, val4 string) error {
+		hasher.WriteString(":.string")
+		hasher.WriteString(val4)
+		return nil
+	}
+	if err := r.TransitivePackageTarget.Hash(hasher, "string", val5); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *PackageInfo) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
@@ -131,6 +168,22 @@ func (r BinaryInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	return err
 }
 
+func (r BinaryInfo) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":bootstrap.BinaryInfo")
+	hasher.WriteInt(3)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.IntermediatePath)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.InstallPath)
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r.TestTargets))
+	for val1 := 0; val1 < len(r.TestTargets); val1++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r.TestTargets[val1])
+	}
+	return nil
+}
+
 func (r *BinaryInfo) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
@@ -166,6 +219,99 @@ var BinaryInfoGobRegId int16
 
 func (r BinaryInfo) GetTypeId() int16 {
 	return BinaryInfoGobRegId
+}
+
+func (r DocsPackageInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+
+	if err = gobtools.EncodeString(buf, r.PkgPath); err != nil {
+		return err
+	}
+
+	if r.Srcs == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r.Srcs)); err != nil {
+			return err
+		}
+		for val1 := 0; val1 < len(r.Srcs); val1++ {
+			if err = gobtools.EncodeString(buf, r.Srcs[val1]); err != nil {
+				return err
+			}
+		}
+	}
+	return err
+}
+
+func (r DocsPackageInfo) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":bootstrap.DocsPackageInfo")
+	hasher.WriteInt(2)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.PkgPath)
+	hasher.WriteString(":.[]string")
+	hasher.WriteInt(len(r.Srcs))
+	for val1 := 0; val1 < len(r.Srcs); val1++ {
+		hasher.WriteString(":.string")
+		hasher.WriteString(r.Srcs[val1])
+	}
+	return nil
+}
+
+func (r *DocsPackageInfo) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	err = gobtools.DecodeString(buf, &r.PkgPath)
+	if err != nil {
+		return err
+	}
+
+	var val3 int
+	err = gobtools.DecodeInt(buf, &val3)
+	if err != nil {
+		return err
+	}
+	if val3 != -1 {
+		r.Srcs = make([]string, val3)
+		for val4 := 0; val4 < int(val3); val4++ {
+			err = gobtools.DecodeString(buf, &r.Srcs[val4])
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return err
+}
+
+var DocsPackageInfoGobRegId int16
+
+func (r DocsPackageInfo) GetTypeId() int16 {
+	return DocsPackageInfoGobRegId
+}
+
+func (r PrimaryBuilderInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+	var err error
+	return err
+}
+
+func (r PrimaryBuilderInfo) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":bootstrap.PrimaryBuilderInfo")
+	hasher.WriteInt(0)
+	return nil
+}
+
+func (r *PrimaryBuilderInfo) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+	var err error
+
+	return err
+}
+
+var PrimaryBuilderInfoGobRegId int16
+
+func (r PrimaryBuilderInfo) GetTypeId() int16 {
+	return PrimaryBuilderInfoGobRegId
 }
 
 // end of bootstrap.go

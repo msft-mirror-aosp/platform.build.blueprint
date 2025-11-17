@@ -11,7 +11,7 @@ import (
 
 func mustHash(t *testing.T, data interface{}) Hash {
 	t.Helper()
-	result, err := CalculateHash(data)
+	result, err := CalculateHashReflection(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestHashingNonSerializableTypesFails(t *testing.T) {
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := CalculateHash(testCase)
+			_, err := CalculateHashReflection(testCase)
 			if err == nil {
 				t.Fatal("Expected hashing error but didn't get one")
 			}
@@ -242,11 +242,11 @@ func TestHashingDuplicatePointers(t *testing.T) {
 		f1: &str1,
 		f2: &str2,
 	}
-	hash1, err := CalculateHash(data1)
+	hash1, err := CalculateHashReflection(data1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash2, err := CalculateHash(data2)
+	hash2, err := CalculateHashReflection(data2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,11 +280,11 @@ func TestHashOfDifferentTypesIsDifferent(t *testing.T) {
 	s1 := t1{"foo"}
 	s2 := t2{"foo"}
 
-	h1, err := CalculateHash(s1)
+	h1, err := CalculateHashReflection(s1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2, err := CalculateHash(s2)
+	h2, err := CalculateHashReflection(s2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,11 +308,11 @@ func TestHashOfDifferentTypesInInterfaceIsDifferent(t *testing.T) {
 	s1 := i{t1{"foo"}}
 	s2 := i{t2{"foo"}}
 
-	h1, err := CalculateHash(s1)
+	h1, err := CalculateHashReflection(s1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h2, err := CalculateHash(s2)
+	h2, err := CalculateHashReflection(s2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,12 +322,12 @@ func TestHashOfDifferentTypesInInterfaceIsDifferent(t *testing.T) {
 	}
 }
 
-func BenchmarkCalculateHash(b *testing.B) {
+func BenchmarkCalculateHashReflection(b *testing.B) {
 	for _, testCase := range hashTestCases {
 		b.Run(testCase.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				_, err := CalculateHash(testCase.data)
+				_, err := CalculateHashReflection(testCase.data)
 				if err != nil {
 					panic(err)
 				}
@@ -350,8 +350,8 @@ func TestHashCalculationExcludePosition(t *testing.T) {
 		Value: "-Wall",
 	}
 
-	hash1, _ := CalculateHash(instance1)
-	hash2, _ := CalculateHash(instance2)
+	hash1, _ := CalculateHashReflection(instance1)
+	hash2, _ := CalculateHashReflection(instance2)
 	if hash1 != hash2 {
 		t.Fatalf("Expect hash values to be equal: %d %d", hash1, hash2)
 	}

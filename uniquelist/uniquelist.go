@@ -24,6 +24,7 @@ import (
 	"time"
 	"weak"
 
+	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/syncmap"
 )
 
@@ -99,6 +100,25 @@ func (s UniqueList[T]) AppendTo(slice []T) []T {
 	}
 	slice = append(slice, *s.p...)
 	return slice
+}
+
+func (s UniqueList[T]) Hash(hasher *proptools.Hasher, typeName string, hashT func(*proptools.Hasher, T) error) error {
+	if s.p == nil {
+		hasher.WriteByte(0)
+		return nil
+	}
+	hash := func(hasher *proptools.Hasher) error {
+		hasher.WriteString("[]" + typeName)
+		items := s.ToSlice()
+		hasher.WriteInt(len(items))
+		for i := 0; i < len(items); i++ {
+			if err := hashT(hasher, items[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return proptools.HashReference(hasher, s, hash)
 }
 
 // Make returns a UniqueList for the given slice.  Two calls to UniqueList with the same slice contents

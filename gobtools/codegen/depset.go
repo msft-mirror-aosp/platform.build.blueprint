@@ -31,6 +31,18 @@ func (g *gobGen) encodeDepSet(encodeBody *strings.Builder, pkgName string, t *as
 	}
 }
 
+func (g *gobGen) hashDepSet(hashBody *strings.Builder, pkgName string, t *ast.IndexExpr, fieldName string) {
+	typeRef := g.findTypeReference(t.Index, pkgName)
+	g.maybeAddImport(typeRef)
+	typeName := typeRef.fullName()
+	hashFuncBody := &strings.Builder{}
+	varName := g.nextVar()
+	g.generateHashForType(hashFuncBody, pkgName, t.Index, varName)
+	hashFunc := g.nextVar()
+	hashBody.WriteString(fmt.Sprintf("\t%s := func(hasher *proptools.Hasher, %s %s) error { %s return nil }\n", hashFunc, varName, typeName, hashFuncBody.String()))
+	hashBody.WriteString(fmt.Sprintf("\tif err := %s.Hash(hasher, \"%s\", %s); err != nil { return err }\n", fieldName, typeName, hashFunc))
+}
+
 func (g *gobGen) decodeDepSet(decodeBody *strings.Builder, pkgName string, t *ast.IndexExpr, fieldName string) {
 	typeRef := g.findTypeReference(t.Index, pkgName)
 	if typeRef.typeName == "string" {

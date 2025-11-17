@@ -5,6 +5,7 @@ package test
 import (
 	"bytes"
 	"github.com/google/blueprint/gobtools"
+	"github.com/google/blueprint/proptools"
 )
 
 // begin of test_package.go
@@ -19,6 +20,14 @@ func (r TypeStruct) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 		return err
 	}
 	return err
+}
+
+func (r TypeStruct) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":test.TypeStruct")
+	hasher.WriteInt(1)
+	hasher.WriteString(":.string")
+	hasher.WriteString(r.Name)
+	return nil
 }
 
 func (r *TypeStruct) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {

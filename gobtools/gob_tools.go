@@ -97,7 +97,7 @@ func (c *ReferencesEncoder) EncodeReference(value any, buf *bytes.Buffer, typ st
 	if encStruct, ok = c.encodedReferences.Load(value); !ok {
 		// If the value is encountered for the first time:
 		// Calculate a unique hash for the value using the type's specific hash seed.
-		ref, err := proptools.CalculateHash(valueHashConfig{
+		ref, err := proptools.CalculateHashReflection(valueHashConfig{
 			typ:   typ,
 			value: value,
 		})

@@ -222,7 +222,7 @@ func (c *Context) setProviderInternal(info *providerInfo, provider *providerKey,
 	if info.providerInitialValueHashes == nil {
 		info.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
 	}
-	hash, err := proptools.CalculateHash(value)
+	hash, err := proptools.CalculateHashReflection(value)
 	if err != nil {
 		panic(fmt.Sprintf("Can't set value of provider %s: %s", provider.typ, err.Error()))
 	}

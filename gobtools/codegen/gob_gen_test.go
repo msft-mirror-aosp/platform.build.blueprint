@@ -32,6 +32,7 @@ import (
 func TestEncDec(t *testing.T) {
 	strValue := "string value for test"
 	defaultEcho := TestEcho{"111111111"}
+	newEcho := TestEcho{"111111111"}
 	transString := depset.New(depset.PREORDER, []string{"111111111"}, nil)
 	depsetString := depset.New(depset.PREORDER, []string{"222222222"}, []depset.DepSet[string]{transString})
 	transTestEcho := depset.New(depset.PREORDER, []TestEcho{defaultEcho}, nil)
@@ -96,7 +97,9 @@ func TestEncDec(t *testing.T) {
 				f18: &TestEcho{"aaaa"},
 				f19: testStrings{"bbbb", "cccc", "dddd"},
 				f20: uniquelist.Make([]TestEcho{defaultEcho}),
-				f21: uniquelist.Make([]TestEchoInterface{&defaultEcho}),
+				// Use newEcho for now before we generate hash code for uniquelist, otherwise
+				// the hash for the decoded will be different from the origin.
+				f21: uniquelist.Make([]TestEchoInterface{&newEcho}),
 				f22: test.TypeStruct{Name: "aaaaaaaaa"},
 				f23: []test.TypeAlias{
 					{
@@ -130,8 +133,8 @@ func TestEncDec(t *testing.T) {
 				TestEmbedPtr: &TestEmbedPtr{f37: "mmmmmmmm"},
 				f38:          test.TypeBasic(1),
 				f39:          [2]uint64{1, 2},
-				f40: map[[1]string]map[int][]*bool{
-					{"llllllll"}: {
+				f40: map[string]map[int][]*bool{
+					"llllllll": {
 						1: {boolPtr(true)},
 					},
 				},
@@ -187,11 +190,11 @@ func TestEncDec(t *testing.T) {
 				t.Errorf("the decoded data is different from the origin: expected:\n  %#v\n got:\n  %#v", tc.origin, tc.decoded)
 			}
 
-			originalHash, err := proptools.CalculateHash(tc.origin)
+			originalHash, err := proptools.CalculateHash(tc.origin.(proptools.CustomHash))
 			if err != nil {
 				t.Fatal(err)
 			}
-			decodedHash, err := proptools.CalculateHash(tc.decoded)
+			decodedHash, err := proptools.CalculateHash(tc.decoded.(proptools.CustomHash))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -236,6 +239,308 @@ func TestGenerate(t *testing.T) {
 	if !bytes.Equal(generatedBytes, expectedBytes) {
 		t.Errorf("Generated code from %s does not match expected output in %s.\nexpected:\n%s\ngot:\n%s",
 			sourceFile, expectedOutputFile, expectedBytes, generatedBytes)
+	}
+}
+
+func TestCustomHash(t *testing.T) {
+	// Helper variables for pointer/value tests
+	intVal1 := 10
+	intVal2 := 10 // Same value, different address
+	intVal3 := 20
+	strVal1 := "hello"
+	strVal2 := "hello" // Same value, different address
+	zero := 0
+	ptrStr1 := "this is a hash test for pointers"
+	ptrStr2 := "this is a hash test for pointers"
+
+	testCases := []struct {
+		name          string
+		data1         proptools.CustomHash
+		data2         proptools.CustomHash
+		shouldBeEqual bool // true = hashes must match, false = hashes must NOT match
+	}{
+		// --- Primitives (HashStruct) ---
+		{
+			name:          "Primitives: Identical default values",
+			data1:         HashStruct{},
+			data2:         HashStruct{},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Primitives: Identical non-default values",
+			data1:         HashStruct{I: 1, S: "a", B: true, F64: 123},
+			data2:         HashStruct{I: 1, S: "a", B: true, F64: 123},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Primitives: Different int",
+			data1:         HashStruct{I: 1},
+			data2:         HashStruct{I: 2},
+			shouldBeEqual: false,
+		},
+		{
+			name:          "Primitives: Different string",
+			data1:         HashStruct{S: "a"},
+			data2:         HashStruct{S: "b"},
+			shouldBeEqual: false,
+		},
+		{
+			name:          "Primitives: Different bool",
+			data1:         HashStruct{B: true},
+			data2:         HashStruct{B: false},
+			shouldBeEqual: false,
+		},
+
+		// --- Pointers ---
+		{
+			name:          "Pointers: Identical nil",
+			data1:         Pointers{A: nil, S: nil},
+			data2:         Pointers{A: nil, S: nil},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Pointers: Different pointers, same value (CRITICAL TEST)",
+			data1:         Pointers{A: &intVal1},
+			data2:         Pointers{A: &intVal2},
+			shouldBeEqual: true, // Should hash the value, not the pointer address
+		},
+		{
+			name:          "Pointers: Nil vs. Non-nil",
+			data1:         Pointers{A: nil},
+			data2:         Pointers{A: &intVal1},
+			shouldBeEqual: false,
+		},
+		{
+			name:          "Pointers: Different values",
+			data1:         Pointers{A: &intVal1},
+			data2:         Pointers{A: &intVal3},
+			shouldBeEqual: false,
+		},
+		{
+			name:          "Pointers: Nil vs. Zero-value pointer",
+			data1:         Pointers{A: nil},
+			data2:         Pointers{A: &zero},
+			shouldBeEqual: false,
+		},
+
+		// --- Slices ---
+		{
+			name:          "Slices: Identical nil",
+			data1:         Slices{A: nil},
+			data2:         Slices{A: nil},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Slices: Identical empty",
+			data1:         Slices{A: []int{}},
+			data2:         Slices{A: []int{}},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Slices: Nil vs. Empty (Semantic equality)",
+			data1:         Slices{A: nil},
+			data2:         Slices{A: []int{}},
+			shouldBeEqual: true, // A robust hash should treat nil and empty slices as equal
+		},
+		{
+			name:          "Slices: Different instances, same content",
+			data1:         Slices{A: []int{1, 2, 3}},
+			data2:         Slices{A: []int{1, 2, 3}},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Slices: Different order",
+			data1:         Slices{A: []int{1, 2, 3}},
+			data2:         Slices{A: []int{3, 2, 1}},
+			shouldBeEqual: false,
+		},
+		{
+			name:          "Slices: Different length",
+			data1:         Slices{A: []int{1, 2, 3}},
+			data2:         Slices{A: []int{1, 2}},
+			shouldBeEqual: false,
+		},
+
+		// --- Maps (CRITICAL: requires key sorting) ---
+		{
+			name:          "Maps: Identical nil",
+			data1:         Maps{M: nil},
+			data2:         Maps{M: nil},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Maps: Nil vs. Empty (Semantic equality)",
+			data1:         Maps{M: nil},
+			data2:         Maps{M: map[string]int{}},
+			shouldBeEqual: true, // Robust hash should treat nil and empty maps as equal
+		},
+		{
+			name:          "Maps: Different instances, same content (Tests key sorting)",
+			data1:         Maps{M: map[string]int{"a": 1, "b": 2}},
+			data2:         Maps{M: map[string]int{"b": 2, "a": 1}},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Maps: Different value",
+			data1:         Maps{M: map[string]int{"a": 1}},
+			data2:         Maps{M: map[string]int{"a": 2}},
+			shouldBeEqual: false,
+		},
+		{
+			name:          "Maps: Different key",
+			data1:         Maps{M: map[string]int{"a": 1}},
+			data2:         Maps{M: map[string]int{"b": 1}},
+			shouldBeEqual: false,
+		},
+
+		// --- Embedded Structs ---
+		{
+			name:          "Embedded: Identical",
+			data1:         Embedded{Inner: Inner{Val: "hi"}, F: 1.0},
+			data2:         Embedded{Inner: Inner{Val: "hi"}, F: 1.0},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Embedded: Different embedded value",
+			data1:         Embedded{Inner: Inner{Val: "hi"}, F: 1.0},
+			data2:         Embedded{Inner: Inner{Val: "bye"}, F: 1.0},
+			shouldBeEqual: false,
+		},
+		{
+			name:          "Embedded: Different outer field",
+			data1:         Embedded{Inner: Inner{Val: "hi"}, F: 1.0},
+			data2:         Embedded{Inner: Inner{Val: "hi"}, F: 2.0},
+			shouldBeEqual: false,
+		},
+
+		// --- Nested Structs ---
+		{
+			name:          "Nested: Identical",
+			data1:         Nested{A: Inner{Val: "a"}, B: &Inner{Val: "b"}},
+			data2:         Nested{A: Inner{Val: "a"}, B: &Inner{Val: "b"}},
+			shouldBeEqual: true, // This may fail if you don't hash pointer values
+		},
+		{
+			name:          "Nested: Different pointer values, same content",
+			data1:         Nested{B: &Inner{Val: strVal1}},
+			data2:         Nested{B: &Inner{Val: strVal2}},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Nested: Different nested value",
+			data1:         Nested{A: Inner{Val: "a"}},
+			data2:         Nested{A: Inner{Val: "b"}},
+			shouldBeEqual: false,
+		},
+
+		// --- Interfaces ---
+		{
+			name:          "Interface: Identical nil",
+			data1:         InterfaceHolder{I: nil},
+			data2:         InterfaceHolder{I: nil},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Interface: Nil vs. Non-nil",
+			data1:         InterfaceHolder{I: nil},
+			data2:         InterfaceHolder{I: InterfaceImpl1{"a"}},
+			shouldBeEqual: false,
+		},
+		{
+			name:          "Interface: Identical concrete value",
+			data1:         InterfaceHolder{I: InterfaceImpl1{"a"}},
+			data2:         InterfaceHolder{I: InterfaceImpl1{"a"}},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Interface: Different concrete value, same type",
+			data1:         InterfaceHolder{I: InterfaceImpl1{"a"}},
+			data2:         InterfaceHolder{I: InterfaceImpl1{"b"}},
+			shouldBeEqual: false,
+		},
+		{
+			name:          "Interface: Different concrete type, same value (CRITICAL TEST)",
+			data1:         InterfaceHolder{I: InterfaceImpl1{"a"}},
+			data2:         InterfaceHolder{I: InterfaceImpl2{"a"}},
+			shouldBeEqual: false, // Hash must include the concrete type's info
+		},
+
+		// --- Unexported Fields (May require unsafe) ---
+		{
+			name:          "Unexported: Identical",
+			data1:         Unexported{Exported: "a", unexported: "b"},
+			data2:         Unexported{Exported: "a", unexported: "b"},
+			shouldBeEqual: true,
+		},
+		{
+			name:          "Unexported: Different exported",
+			data1:         Unexported{Exported: "a", unexported: "b"},
+			data2:         Unexported{Exported: "X", unexported: "b"},
+			shouldBeEqual: false,
+		},
+		{
+			name:          "Unexported: Different unexported (Tests unsafe access)",
+			data1:         Unexported{Exported: "a", unexported: "b"},
+			data2:         Unexported{Exported: "a", unexported: "X"},
+			shouldBeEqual: false, // This will FAIL if you don't hash unexported fields
+		},
+		{
+			name: "Pointers: Pointers to same string vs pointers to identical strings",
+			data1: PointerDuplication{
+				F1: &ptrStr1,
+				F2: &ptrStr1, // Both F1 and F2 point to the *same* string
+			},
+			data2: PointerDuplication{
+				F1: &ptrStr1,
+				F2: &ptrStr2, // F1 and F2 point to *different* strings with identical content
+			},
+			shouldBeEqual: true, // Hashes should be equal (hashing the value, not the address)
+		},
+		{
+			name:          "Types: Different struct types, same fields and content",
+			data1:         Type1{S: "foo"},
+			data2:         Type2{S: "foo"},
+			shouldBeEqual: false, // Hashes should be different (hash includes type info)
+		},
+		{
+			name: "Interfaces: Different concrete types in interface, same content",
+			data1: InterfaceWrapper{
+				V: Type1{S: "foo"},
+			},
+			data2: InterfaceWrapper{
+				V: Type2{S: "foo"},
+			},
+			shouldBeEqual: false, // Hashes should be different (hash includes concrete type info)
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Hash data1
+			hasher1 := proptools.NewHasher()
+			err1 := tc.data1.CustomHash(hasher1)
+			if err1 != nil {
+				t.Fatalf("data1 hash failed: %v", err1)
+			}
+			hash1 := proptools.Hash{hasher1.Sum64()}
+
+			// Hash data2
+			hasher2 := proptools.NewHasher()
+			err2 := tc.data2.CustomHash(hasher2)
+			if err2 != nil {
+				t.Fatalf("data2 hash failed: %v", err2)
+			}
+			hash2 := proptools.Hash{hasher2.Sum64()}
+
+			// Compare results against our expectation
+			if (hash1 == hash2) != tc.shouldBeEqual {
+				if tc.shouldBeEqual {
+					t.Errorf("hashes should be EQUAL but were different.\nhash1: %v\nhash2: %v\ndata1: %#v\ndata2: %#v", hash1, hash2, tc.data1, tc.data2)
+				} else {
+					t.Errorf("hashes should be DIFFERENT but were equal.\nhash: %v\ndata1: %#v\ndata2: %#v", hash1, tc.data1, tc.data2)
+				}
+			}
+		})
 	}
 }
 

@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/parser"
+	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/uniquelist"
 )
 
@@ -92,6 +93,12 @@ func (r *IncrementalTestInfo) Decode(ctx gobtools.EncContext, buf *bytes.Reader)
 	}
 
 	return err
+}
+
+func (r IncrementalTestInfo) CustomHash(hasher *proptools.Hasher) error {
+	hasher.HashType(reflect.TypeOf(r))
+	hasher.WriteString(r.Value)
+	return nil
 }
 
 var IncrementalTestProviderGobRegId int16
@@ -764,7 +771,7 @@ func Test_findVariant(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := NewContext()
-			got, _, errs := ctx.findVariant(nil, module, nil, tt.possibleDeps, tt.variations, tt.far, tt.reverse)
+			got, _, errs := ctx.findVariant(nil, module, nil, tt.possibleDeps, tt.variations, tt.far, tt.reverse, -1)
 			if errs != nil {
 				t.Fatal(errs)
 			}

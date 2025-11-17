@@ -169,15 +169,20 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 			Value: barInfo.Name(),
 		},
 	} {
-		hash, err := proptools.CalculateHash(v)
+		hash, err := proptools.CalculateHashReflection(v)
 		if err != nil {
 			panic("Can't hash value of providers")
 		}
 		providerHashes[k.id] = hash
 	}
-	cacheKey, hash := calculateHashKey(incInfo, [][]proptools.Hash{providerHashes})
+	hash, err := proptools.CalculateHash(hashList(providerHashes))
+	if err != nil {
+		panic(err)
+	}
+
+	cacheKey, hash := calculateHashKey(incInfo, []proptools.Hash{hash})
 	var providerValue any = IncrementalTestInfo{Value: "MyIncrementalModule"}
-	providerHash, _ := proptools.CalculateHash(providerValue)
+	providerHash, _ := proptools.CalculateHashReflection(providerValue)
 	ctx.buildActionsCache.writeModuleBuildAction(ctx.EncContext, &cacheKey, &ModuleActionCachedData{
 		InputHash: hash,
 		ProviderHashes: []ProviderHash{{
@@ -201,14 +206,14 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 	return providerValue
 }
 
-func calculateHashKey(m *moduleInfo, providerHashes [][]proptools.Hash) (BuildActionCacheKey, proptools.Hash) {
-	hash, err := proptools.CalculateHash(m.properties)
+func calculateHashKey(m *moduleInfo, providerHashes []proptools.Hash) (BuildActionCacheKey, proptools.Hash) {
+	hash, err := proptools.CalculateHashReflection(m.properties)
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate properties hash"))
 	}
 	cacheInput := new(ModuleBuildActionCacheInput)
 	cacheInput.PropertiesHash = hash
-	cacheInput.ProvidersHash = providerHashes
+	cacheInput.DepProviderHashes = providerHashes
 	hash, err = proptools.CalculateHash(cacheInput)
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate cache input hash"))
@@ -219,8 +224,8 @@ func calculateHashKey(m *moduleInfo, providerHashes [][]proptools.Hash) (BuildAc
 }
 
 func calculateGlobCache() []globResultCache {
-	globHash1, _ := proptools.CalculateHash([]string{"file2.cc"})
-	globHash2, _ := proptools.CalculateHash([]string{"file2.cpp"})
+	globHash1, _ := proptools.CalculateHash(stringList{"file2.cc"})
+	globHash2, _ := proptools.CalculateHash(stringList{"file2.cpp"})
 
 	return []globResultCache{
 		{
@@ -258,7 +263,7 @@ func TestCacheBuildActions(t *testing.T) {
 
 	ctx.buildActionsCache.flush()
 
-	cacheKey, hash := calculateHashKey(incInfo, [][]proptools.Hash{barInfo.providerInitialValueHashes})
+	cacheKey, hash := calculateHashKey(incInfo, []proptools.Hash{barInfo.providersHash})
 	cache, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, &cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
@@ -267,7 +272,7 @@ func TestCacheBuildActions(t *testing.T) {
 		t.Errorf("failed to find cached build actions for the incremental module")
 	}
 	var providerValue any = IncrementalTestInfo{Value: "MyIncrementalModule"}
-	providerHash, _ := proptools.CalculateHash(providerValue)
+	providerHash, _ := proptools.CalculateHashReflection(providerValue)
 	expectedCache := ModuleActionCachedData{
 		InputHash: hash,
 		ProviderHashes: []ProviderHash{{
@@ -668,7 +673,7 @@ func verifyOrderOnlyStringsCache(t *testing.T, ctx *Context, incInfo, barInfo *m
 
 	// Verify that the dedup-* order only strings used by MyIncrementalModule is
 	// cached along with its other cached values
-	cacheKey, _ := calculateHashKey(incInfo, [][]proptools.Hash{barInfo.providerInitialValueHashes})
+	cacheKey, _ := calculateHashKey(incInfo, []proptools.Hash{barInfo.providersHash})
 	cache, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, &cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)

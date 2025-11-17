@@ -16,11 +16,13 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"unique"
 
 	"github.com/google/blueprint/depset"
 	"github.com/google/blueprint/gobtools"
 	"github.com/google/blueprint/gobtools/test"
+	"github.com/google/blueprint/proptools"
 	"github.com/google/blueprint/uniquelist"
 )
 
@@ -71,7 +73,7 @@ type TestStruct struct {
 	*TestEmbedPtr
 	f38 test.TypeBasic
 	f39 [2]uint64
-	f40 map[[1]string]map[int][]*bool
+	f40 map[string]map[int][]*bool
 	f41 unique.Handle[TestEcho]
 	f42 testEchoHandle
 }
@@ -82,6 +84,10 @@ type testStrings []string
 // @auto-generate: gob
 type TestEcho struct {
 	EchoStr string
+}
+
+func (t TestEcho) Compare(other TestEcho) int {
+	return cmp.Compare(t.EchoStr, other.EchoStr)
 }
 
 func (t TestEcho) EchoTest(string) string {
@@ -104,6 +110,10 @@ func (t *TestGeneric[T]) GetTypeId() int16 {
 	return -1
 }
 
+func (t *TestGeneric[T]) Hash(hasher *proptools.Hasher) error {
+	return nil
+}
+
 // @auto-generate: gob
 type testEchos []TestEchoInterface
 
@@ -122,4 +132,95 @@ type TestEmbedPtr struct {
 type TestPtrs struct {
 	f1 *TestEcho
 	f2 *TestEcho
+}
+
+// @auto-generate: gob
+type HashStruct struct {
+	I   int
+	S   string
+	B   bool
+	F64 int64
+}
+
+// @auto-generate: gob
+type Pointers struct {
+	A *int
+	S *string
+}
+
+// @auto-generate: gob
+type Slices struct {
+	A []int
+	B []string
+}
+
+// @auto-generate: gob
+type Maps struct {
+	M map[string]int
+}
+
+// @auto-generate: gob
+type Inner struct {
+	Val string
+}
+
+// @auto-generate: gob
+type Embedded struct {
+	Inner // Embedded field
+	F     int32
+}
+
+// @auto-generate: gob
+type Nested struct {
+	A Inner
+	B *Inner
+}
+
+type MyInterface interface {
+	GetValue() string
+}
+
+// @auto-generate: gob
+type InterfaceImpl1 struct{ V string }
+
+func (i InterfaceImpl1) GetValue() string { return i.V }
+
+// @auto-generate: gob
+type InterfaceImpl2 struct{ V string }
+
+func (i InterfaceImpl2) GetValue() string { return i.V }
+
+// @auto-generate: gob
+type InterfaceHolder struct {
+	I MyInterface
+}
+
+// @auto-generate: gob
+type Unexported struct {
+	Exported   string
+	unexported string // This tests if your hash handles unexported fields
+}
+
+// @auto-generate: gob
+type Complex struct {
+	MapOfSlices    map[string][]int
+	SliceOfPtrs    []*Inner
+	InterfaceField MyInterface
+}
+
+// @auto-generate: gob
+type PointerDuplication struct {
+	F1 *string
+	F2 *string
+}
+
+// @auto-generate: gob
+type Type1 struct{ S string }
+
+// @auto-generate: gob
+type Type2 struct{ S string }
+
+// @auto-generate: gob
+type InterfaceWrapper struct {
+	V any
 }
