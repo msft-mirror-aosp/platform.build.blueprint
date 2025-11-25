@@ -881,7 +881,6 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 			Rule:    blueprint.Phony,
 			Outputs: []string{"blueprint_tools"},
 			Inputs:  blueprintTools,
-			Default: true,
 		})
 	}
 
@@ -890,7 +889,6 @@ func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
 		Rule:    blueprint.Phony,
 		Outputs: []string{"blueprint_tests"},
 		Inputs:  blueprintTests,
-		Default: true,
 	})
 
 	// Add a phony target for running go tests
