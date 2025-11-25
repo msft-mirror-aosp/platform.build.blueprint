@@ -602,7 +602,6 @@ type moduleIncrementalInfo struct {
 	buildActionInputHash proptools.Hash
 	orderOnlyStrings     []string
 	incrementalDebugInfo []byte
-	globCache            []globResultCache
 
 	// providersHash is the hash of the providers set by this module
 	providersHash proptools.Hash
@@ -619,6 +618,7 @@ type commonIncrementalInfo struct {
 	hasUnrestoredProvider []bool
 	providerRestoreLock   sync.Mutex
 	buildActionCacheKey   *BuildActionCacheKey
+	globCache             []globResultCache
 	providerInfo
 }
 
@@ -3915,6 +3915,7 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 				&SingletonActionCachedData{
 					ProviderHashes:           providerHashes,
 					DependencyProviderHashes: cache,
+					GlobCache:                info.globCache,
 				}); err != nil {
 				panic(err)
 			}
@@ -3964,7 +3965,6 @@ func (c *Context) restoreSingleton(info *singletonInfo) {
 	// This logic here assumes a singleton's behavior is a pure function of its providers.
 	// Conditional access to certain providers must also be based on other provider
 	// values, ensuring that any behavioral change is captured by the input providers hashes.
-	incrementalRestored := true
 	for k, v := range data.DependencyProviderHashes {
 		var hash proptools.Hash
 		if providerRegistry[k].mutator == singletonTag {
@@ -3973,18 +3973,31 @@ func (c *Context) restoreSingleton(info *singletonInfo) {
 			hash = c.providerValueHashes[k]
 		}
 		if hash != v {
-			incrementalRestored = false
-			break
+			return
 		}
 	}
-	if incrementalRestored {
-		info.incrementalRestored = true
-		info.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
-		info.hasUnrestoredProvider = make([]bool, len(providerRegistry))
-		for _, provider := range data.ProviderHashes {
-			info.hasUnrestoredProvider[provider.Id.id] = true
-			info.providerInitialValueHashes[provider.Id.id] = provider.Hash
+
+	for _, glob := range data.GlobCache {
+		result, err := c.glob(glob.Pattern, glob.Excludes)
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to glob for cached singleton: %s %s %v", info.name, glob.Pattern, glob.Excludes))
 		}
+		hash, err := proptools.CalculateHash(stringList(result))
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate hash for cached glob result: %s", info.name))
+		}
+		if hash != glob.Result {
+			// Don't restore, a glob result has changed.
+			return
+		}
+	}
+
+	info.incrementalRestored = true
+	info.providerInitialValueHashes = make([]proptools.Hash, len(providerRegistry))
+	info.hasUnrestoredProvider = make([]bool, len(providerRegistry))
+	for _, provider := range data.ProviderHashes {
+		info.hasUnrestoredProvider[provider.Id.id] = true
+		info.providerInitialValueHashes[provider.Id.id] = provider.Hash
 	}
 }
 
