@@ -1461,6 +1461,8 @@ loop:
 		}
 	}
 
+	sort.Strings(hookDeps)
+
 	deps = append(deps, hookDeps...)
 	return deps, errs
 }
