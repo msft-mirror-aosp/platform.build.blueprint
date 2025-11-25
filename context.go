@@ -786,6 +786,7 @@ type singletonInfo struct {
 
 	// set during PrepareBuildActions
 	actionDefs                   localBuildActions
+	subninjas                    []string
 	startedGenerateBuildActions  bool
 	finishedGenerateBuildActions bool
 	commonIncrementalInfo
@@ -3926,6 +3927,7 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 	}
 
 	deps = append(deps, sctx.ninjaFileDeps...)
+	info.subninjas = append(info.subninjas, sctx.subninjas...)
 
 	newErrs := c.processLocalBuildActions(&info.actionDefs,
 		&sctx.actionDefs, liveGlobals)
@@ -4970,7 +4972,7 @@ func (c *Context) WriteBuildFile(w StringWriterWriter, shardNinja bool, ninjaFil
 			return
 		}
 
-		if err = c.writeSubninjas(nw); err != nil {
+		if err = c.writeSubninjas(nw, c.subninjas); err != nil {
 			return
 		}
 
@@ -5078,8 +5080,8 @@ func (c *Context) writeNinjaRequiredVersion(nw *ninjaWriter) error {
 	return nw.BlankLine()
 }
 
-func (c *Context) writeSubninjas(nw *ninjaWriter) error {
-	for _, subninja := range c.subninjas {
+func (c *Context) writeSubninjas(nw *ninjaWriter, subninjas []string) error {
+	for _, subninja := range subninjas {
 		err := nw.Subninja(subninja)
 		if err != nil {
 			return err
@@ -5564,7 +5566,7 @@ func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 				return err
 			}
 		} else {
-			if len(info.actionDefs.variables)+len(info.actionDefs.rules)+len(info.actionDefs.buildDefs) == 0 {
+			if len(info.actionDefs.variables)+len(info.actionDefs.rules)+len(info.actionDefs.buildDefs)+len(info.subninjas) == 0 {
 				continue
 			}
 
@@ -5599,6 +5601,8 @@ func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 			if err != nil {
 				return err
 			}
+
+			err = c.writeSubninjas(sWriter, info.subninjas)
 
 			err = sWriter.BlankLine()
 			if err != nil {

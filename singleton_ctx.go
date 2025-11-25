@@ -233,6 +233,7 @@ type singletonContext struct {
 	scope     *localScope
 	globals   *liveTracker
 
+	subninjas     []string
 	ninjaFileDeps []string
 	errs          []error
 
@@ -394,7 +395,7 @@ func (s *singletonContext) SetOutDir(pctx PackageContext, value string) {
 }
 
 func (s *singletonContext) AddSubninja(file string) {
-	s.context.subninjas = append(s.context.subninjas, file)
+	s.subninjas = append(s.subninjas, file)
 }
 
 func (s *singletonContext) VisitAllModules(visit func(Module)) {
