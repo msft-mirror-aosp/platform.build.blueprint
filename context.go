@@ -667,7 +667,7 @@ func (module *moduleInfo) moduleCacheKey() string {
 		variant = "none"
 	}
 	return calculateFileNameHash(fmt.Sprintf("%s-%s-%s-%s",
-		filepath.Dir(module.relBlueprintsFile), module.Name(), variant, module.typeName))
+		filepath.Dir(module.relBlueprintsFile), module.cachedUniqueName, variant, module.typeName))
 }
 
 // @auto-generate: gob
@@ -3699,8 +3699,8 @@ func (c *Context) generateModuleBuildActions(config interface{},
 
 	visitErrs := parallelVisit(c.iterateAllVariants(), bottomUpVisitor, parallelVisitLimit,
 		func(module *moduleInfo, pause pauseFunc) bool {
-			uniqueName := c.nameInterface.UniqueName(newNamespaceContext(module), module.group.name)
-			sanitizedName := toNinjaName(uniqueName)
+			module.cachedUniqueName = c.nameInterface.UniqueName(newNamespaceContext(module), module.group.name)
+			sanitizedName := toNinjaName(module.cachedUniqueName)
 			sanitizedVariant := toNinjaName(module.variant.name)
 
 			prefix := moduleNamespacePrefix(sanitizedName + "_" + sanitizedVariant)
@@ -3782,8 +3782,6 @@ func (c *Context) generateModuleBuildActions(config interface{},
 					module.propertyPos = nil
 				}
 			}
-
-			module.cachedUniqueName = uniqueName
 
 			newErrs := c.processLocalBuildActions(&module.actionDefs,
 				&mctx.actionDefs, liveGlobals)

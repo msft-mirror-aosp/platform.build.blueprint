@@ -180,7 +180,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 		panic(err)
 	}
 
-	cacheKey, hash := calculateHashKey(incInfo, []proptools.Hash{hash})
+	cacheKey, hash := calculateHashKey(ctx, incInfo, []proptools.Hash{hash})
 	var providerValue any = IncrementalTestInfo{Value: "MyIncrementalModule"}
 	providerHash, _ := proptools.CalculateHashReflection(providerValue)
 	ctx.buildActionsCache.writeModuleBuildAction(ctx.EncContext, &cacheKey, &ModuleActionCachedData{
@@ -206,7 +206,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 	return providerValue
 }
 
-func calculateHashKey(m *moduleInfo, providerHashes []proptools.Hash) (BuildActionCacheKey, proptools.Hash) {
+func calculateHashKey(ctx *Context, m *moduleInfo, providerHashes []proptools.Hash) (BuildActionCacheKey, proptools.Hash) {
 	hash, err := proptools.CalculateHashReflection(m.properties)
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate properties hash"))
@@ -218,6 +218,7 @@ func calculateHashKey(m *moduleInfo, providerHashes []proptools.Hash) (BuildActi
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate cache input hash"))
 	}
+	m.cachedUniqueName = ctx.nameInterface.UniqueName(newNamespaceContext(m), m.group.name)
 	return BuildActionCacheKey{
 		Id: m.moduleCacheKey(),
 	}, hash
@@ -263,7 +264,7 @@ func TestCacheBuildActions(t *testing.T) {
 
 	ctx.buildActionsCache.flush()
 
-	cacheKey, hash := calculateHashKey(incInfo, []proptools.Hash{barInfo.providersHash})
+	cacheKey, hash := calculateHashKey(ctx, incInfo, []proptools.Hash{barInfo.providersHash})
 	cache, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, &cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
@@ -673,7 +674,7 @@ func verifyOrderOnlyStringsCache(t *testing.T, ctx *Context, incInfo, barInfo *m
 
 	// Verify that the dedup-* order only strings used by MyIncrementalModule is
 	// cached along with its other cached values
-	cacheKey, _ := calculateHashKey(incInfo, []proptools.Hash{barInfo.providersHash})
+	cacheKey, _ := calculateHashKey(ctx, incInfo, []proptools.Hash{barInfo.providersHash})
 	cache, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, &cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
