@@ -92,6 +92,7 @@ type ModuleActionCachedData struct {
 type SingletonActionCachedData struct {
 	ProviderHashes           []ProviderHash
 	DependencyProviderHashes map[int]proptools.Hash
+	GlobCache                []globResultCache
 }
 
 // A dbWriteRequest is passed to providerDbWriter() through writerCh to write a key-value pair to a database.

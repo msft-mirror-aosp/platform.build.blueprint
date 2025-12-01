@@ -596,12 +596,27 @@ func (r SingletonActionCachedData) Encode(ctx gobtools.EncContext, buf *bytes.Bu
 			}
 		}
 	}
+
+	if r.GlobCache == nil {
+		if err = gobtools.EncodeInt(buf, -1); err != nil {
+			return err
+		}
+	} else {
+		if err = gobtools.EncodeInt(buf, len(r.GlobCache)); err != nil {
+			return err
+		}
+		for val5 := 0; val5 < len(r.GlobCache); val5++ {
+			if err = r.GlobCache[val5].Encode(ctx, buf); err != nil {
+				return err
+			}
+		}
+	}
 	return err
 }
 
 func (r SingletonActionCachedData) CustomHash(hasher *proptools.Hasher) error {
 	hasher.WriteString(":blueprint.SingletonActionCachedData")
-	hasher.WriteInt(2)
+	hasher.WriteInt(3)
 	hasher.WriteString(":.[]ProviderHash")
 	hasher.WriteInt(len(r.ProviderHashes))
 	for val1 := 0; val1 < len(r.ProviderHashes); val1++ {
@@ -625,6 +640,13 @@ func (r SingletonActionCachedData) CustomHash(hasher *proptools.Hasher) error {
 		for val5 := 0; val5 < len(r.DependencyProviderHashes[val3]); val5++ {
 			hasher.WriteString(":.uint64")
 			hasher.WriteUint64(uint64(r.DependencyProviderHashes[val3][val5]))
+		}
+	}
+	hasher.WriteString(":.[]globResultCache")
+	hasher.WriteInt(len(r.GlobCache))
+	for val6 := 0; val6 < len(r.GlobCache); val6++ {
+		if err := r.GlobCache[val6].CustomHash(hasher); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -668,6 +690,20 @@ func (r *SingletonActionCachedData) Decode(ctx gobtools.EncContext, buf *bytes.R
 				}
 			}
 			r.DependencyProviderHashes[val7] = val8
+		}
+	}
+
+	var val15 int
+	err = gobtools.DecodeInt(buf, &val15)
+	if err != nil {
+		return err
+	}
+	if val15 != -1 {
+		r.GlobCache = make([]globResultCache, val15)
+		for val16 := 0; val16 < int(val15); val16++ {
+			if err = r.GlobCache[val16].Decode(ctx, buf); err != nil {
+				return err
+			}
 		}
 	}
 
