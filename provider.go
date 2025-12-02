@@ -329,6 +329,9 @@ func validateSingletonProvider(s *singletonInfo, provider *providerKey) {
 }
 
 func (c *Context) mutatorFinishedForModule(mutator *mutatorInfo, m *moduleInfo) bool {
+	if m.createdOnDemand {
+		return m.finishedMutator >= mutator.index
+	}
 	if c.finishedMutators[mutator.index] {
 		// mutator pass finished for all modules
 		return true
