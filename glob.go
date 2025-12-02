@@ -15,10 +15,14 @@
 package blueprint
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
+	"os"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/blueprint/pathtools"
 )
@@ -82,25 +86,31 @@ func (c *Context) glob(pattern string, excludes []string) ([]string, error) {
 	return slices.Clone(result.Matches), nil
 }
 
-func (c *Context) Globs() pathtools.MultipleGlobResults {
-	keys := make([]globKey, 0, len(c.globs))
-	for k := range c.globs {
-		keys = append(keys, k)
-	}
-
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].pattern != keys[j].pattern {
-			return keys[i].pattern < keys[j].pattern
-		}
-		return keys[i].excludes < keys[j].excludes
+// WriteGlobFile writes the list of globs and a timestamp to files next to finalOutFile.
+func (c *Context) WriteGlobFile(finalOutFile string, startTime time.Time) error {
+	globKeys := slices.Collect(maps.Keys(c.globs))
+	slices.SortFunc(globKeys, func(a, b globKey) int {
+		return cmp.Or(cmp.Compare(a.pattern, b.pattern), cmp.Compare(a.excludes, b.excludes))
 	})
-
-	globs := make(pathtools.MultipleGlobResults, len(keys))
-	for i, key := range keys {
-		globs[i] = c.globs[key]
+	globs := make([]pathtools.GlobResult, 0, len(globKeys))
+	for _, key := range globKeys {
+		globs = append(globs, c.globs[key])
 	}
 
-	return globs
+	globsFile, err := os.Create(finalOutFile + ".globs")
+	if err != nil {
+		return err
+	}
+	defer globsFile.Close()
+	if err := pathtools.WriteGlobFile(globsFile, globs); err != nil {
+		return err
+	}
+
+	return os.WriteFile(
+		finalOutFile+".globs_time",
+		[]byte(fmt.Sprintf("%d\n", startTime.UnixMicro())),
+		0666,
+	)
 }
 
 // globKey combines a pattern and a list of excludes into a hashable struct to be used as a key in

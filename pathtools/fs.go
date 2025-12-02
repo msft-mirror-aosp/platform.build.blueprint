@@ -118,7 +118,7 @@ type FileSystem interface {
 	// Lstat returns info on a file without following symlinks.
 	Lstat(name string) (os.FileInfo, error)
 
-	// Lstat returns info on a file.
+	// Stat returns info on a file.
 	Stat(name string) (os.FileInfo, error)
 
 	// ListDirsRecursive returns a list of all the directories in a path, following symlinks if requested.
@@ -262,7 +262,7 @@ func (fs *osFs) IsSymlink(name string) (bool, error) {
 }
 
 func (fs *osFs) Glob(pattern string, excludes []string, follow ShouldFollowSymlinks) (GlobResult, error) {
-	return startGlob(fs, pattern, excludes, follow)
+	return glob(fs, pattern, excludes, follow)
 }
 
 func (fs *osFs) glob(pattern string) ([]string, error) {
@@ -508,7 +508,7 @@ func (m *mockFs) IsSymlink(name string) (bool, error) {
 }
 
 func (m *mockFs) Glob(pattern string, excludes []string, follow ShouldFollowSymlinks) (GlobResult, error) {
-	return startGlob(m, pattern, excludes, follow)
+	return glob(m, pattern, excludes, follow)
 }
 
 func unescapeGlob(s string) string {

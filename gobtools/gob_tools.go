@@ -237,12 +237,11 @@ type CustomDec interface {
 
 // Encode a string value.
 func EncodeString(buf *bytes.Buffer, s string) error {
-	b := unsafe.Slice(unsafe.StringData(s), len(s))
-	err := EncodeInt(buf, len(b))
+	err := EncodeInt(buf, len(s))
 	if err != nil {
 		return err
 	}
-	_, err = buf.Write(b)
+	_, err = buf.WriteString(s)
 	return err
 }
 
