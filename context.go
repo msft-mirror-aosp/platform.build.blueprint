@@ -6116,6 +6116,35 @@ func (this *Context) InitializeModuleDebugInfoCollection(filename string) func()
 	}
 }
 
+// getModule returns a module with the given name and variations, from the root namespace.
+// It will panic if the module doesn't exist, intentionally, to discourage use of this
+// function to detect if modules exist or not.
+func (c *Context) getModule(moduleName string, variations []Variation) *moduleInfo {
+	possibleDeps := c.moduleGroupFromName(
+		moduleName,
+		// Search in the root namespace, but soong's nameInterface implementation will allow
+		// using the //path:module syntax to specify other namespaces.
+		c.nameInterface.GetNamespace(newNamespaceContextFromFilename(".")),
+	)
+	if possibleDeps == nil {
+		panic(fmt.Sprintf("Unknown module %s", moduleName))
+	}
+
+	var variant variationMap
+	for _, variation := range variations {
+		variant.set(variation.Mutator, variation.Variation)
+	}
+	for _, module := range possibleDeps.modules {
+		if module.variant.variations.equal(variant) {
+			return module
+		}
+	}
+	panic(fmt.Errorf("getModule(%s) missing variant:\n  %s\navailable variants:\n  %s",
+		moduleName,
+		c.prettyPrintVariant(variant),
+		c.prettyPrintGroupVariants(possibleDeps)))
+}
+
 var fileHeaderTemplate = `******************************************************************************
 ***            This file is generated and should not be edited             ***
 ******************************************************************************

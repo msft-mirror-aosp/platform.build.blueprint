@@ -212,6 +212,11 @@ type SingletonContext interface {
 
 	// OtherModuleNamespace returns the namespace of the module.
 	OtherModuleNamespace(module ModuleOrProxy) Namespace
+
+	// GetModuleProxy returns a module with the given name and variations, from the root namespace.
+	// It will panic if the module doesn't exist, intentionally, to discourage use of this
+	// function to detect if modules exist or not.
+	GetModuleProxy(moduleName string, variations []Variation) ModuleProxy
 }
 
 type SingletonProxy struct {
@@ -575,4 +580,8 @@ func (s *singletonContext) GetIncrementalEnabled() bool {
 
 func (s *singletonContext) OtherModuleNamespace(module ModuleOrProxy) Namespace {
 	return s.context.nameInterface.GetNamespace(newNamespaceContext(module.info()))
+}
+
+func (s *singletonContext) GetModuleProxy(moduleName string, variations []Variation) ModuleProxy {
+	return ModuleProxy{s.context.getModule(moduleName, variations)}
 }
