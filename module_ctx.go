@@ -590,10 +590,11 @@ func (d *baseModuleContext) storeCoreModuleInfo() {
 	// TODO (b/448182009): Add more properties if needed.
 	newLogicModule, newProperties := d.context.cloneLogicModule(d.module)
 	newModule := moduleInfo{
-		logicModule: newLogicModule,
-		properties:  newProperties,
-		directDeps:  slices.Clone(d.module.directDeps),
-		factory:     d.module.factory,
+		logicModule:       newLogicModule,
+		properties:        newProperties,
+		directDeps:        slices.Clone(d.module.directDeps),
+		factory:           d.module.factory,
+		relBlueprintsFile: d.module.relBlueprintsFile,
 	}
 	d.module.group.coreModuleInfo = newModule
 }
@@ -689,7 +690,7 @@ func (m *baseModuleContext) OtherModuleDependencyVariantExists(variations []Vari
 	if possibleDeps == nil {
 		return false
 	}
-	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, variations, false, false, -1)
+	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, variations, false, false, m.module.startedMutator)
 	if errs != nil {
 		panic(errors.Join(errs...))
 	}
@@ -701,7 +702,7 @@ func (m *baseModuleContext) OtherModuleFarDependencyVariantExists(variations []V
 	if possibleDeps == nil {
 		return false
 	}
-	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, variations, true, false, -1)
+	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, variations, true, false, m.module.startedMutator)
 	if errs != nil {
 		panic(errors.Join(errs...))
 	}
@@ -713,7 +714,7 @@ func (m *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 	if possibleDeps == nil {
 		return false
 	}
-	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, nil, false, true, -1)
+	found, _, errs := m.context.findVariant(m.config, m.module, nil, possibleDeps, nil, false, true, m.module.startedMutator)
 	if errs != nil {
 		panic(errors.Join(errs...))
 	}
