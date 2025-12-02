@@ -519,8 +519,9 @@ type moduleInfo struct {
 	properties  []interface{}
 
 	// set during ResolveDependencies
-	missingDeps   []string
-	newDirectDeps []*moduleInfo
+	missingDeps    []string
+	newDirectDeps  []*moduleInfo
+	newReverseDeps []*moduleInfo
 
 	// set during updateDependencies
 	reverseDeps []*moduleInfo
@@ -3617,12 +3618,22 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	}
 
 	for _, module := range onDemandModules {
+		// Set forward and reverse deps for correct traversal order in future mutators.
+		for _, rdep := range module.newReverseDeps {
+			rdep.forwardDeps = append(rdep.forwardDeps, module)
+			module.reverseDeps = append(module.reverseDeps, rdep)
+		}
+		for _, fd := range module.newDirectDeps {
+			fd.reverseDeps = append(fd.reverseDeps, module)
+		}
 		module.group.modules = append(module.group.modules, module)
 		// The module has been created and mutated.
 		// For future mutators, this variant is the same as normal variants.
 		// Set this flag to false so that we do not try to call `rerunMutatorsOnVariantOnDemand` again.
 		module.createdOnDemand = false
 		module.createdOnDemandReplaceWith = nil
+		module.newDirectDeps = nil
+		module.newReverseDeps = nil
 	}
 
 	return deps, errs
