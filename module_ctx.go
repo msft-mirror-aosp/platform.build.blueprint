@@ -432,6 +432,9 @@ type BaseModuleContext interface {
 	RegisterConfigurableEvaluator(evaluator proptools.ConfigurableEvaluator)
 
 	base() *baseModuleContext
+
+	// Returns true if the module should be saved in the context object used by Android tests.
+	CaptureModuleForTests() bool
 }
 
 type DynamicDependerModuleContext BottomUpMutatorContext
@@ -962,6 +965,14 @@ func (m *baseModuleContext) EarlyGetMissingDependencies() []string {
 
 func (m *baseModuleContext) RegisterConfigurableEvaluator(evaluator proptools.ConfigurableEvaluator) {
 	m.evaluator = evaluator
+}
+
+// Do not capture on-demand variants when the mutators are being
+// run on the variant till the mutator at which it was requested.
+// This ensures that there are no dups.
+// The final stage of GenerateBuildActions will add it to the context.
+func (m *baseModuleContext) CaptureModuleForTests() bool {
+	return !m.module.createdOnDemand
 }
 
 //
