@@ -171,6 +171,8 @@ type Context struct {
 	globs    map[globKey]pathtools.GlobResult
 	globLock sync.Mutex
 
+	restoredGlobsFromCache map[globKey]pathtools.GlobResult
+
 	srcDir           string
 	incrementalDBDir string
 	fs               pathtools.FileSystem

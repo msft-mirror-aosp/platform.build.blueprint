@@ -234,6 +234,23 @@ func WriteGlobFile(w io.Writer, globs []GlobResult) (err error) {
 	return encoder.encode(globs)
 }
 
+// checkIfGlobDepsChanged returns true if any of the Deps of the cachedGlob have a timestamp newer than
+// globsTimeMicros, do not exist, or have a parent that is not a directory.
+func checkIfGlobDepsChanged(fs FileSystem, cachedGlob GlobResult, globsTimeMicros int64) (bool, error) {
+	for _, dep := range cachedGlob.Deps {
+		info, err := fs.Stat(dep)
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			return true, nil
+		} else if err != nil {
+			return true, err
+		}
+		if info.ModTime().UnixMicro() > globsTimeMicros {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // checkIfGlobChanged checks if a glob result has changed from the cached value, first by checking
 // the previously recursed directories against a global timestamp to see if they have changed, then
 // by rerunning the glob if necessary.  Returns true and a helpful error message if the glob has
@@ -241,21 +258,9 @@ func WriteGlobFile(w io.Writer, globs []GlobResult) (err error) {
 func checkIfGlobChanged(fs FileSystem, cachedGlob GlobResult, globsTimeMicros int64) (bool, error) {
 	// First, check if any of the deps are newer than the last time globs were checked.
 	// If not, we don't need to rerun the glob.
-	hasNewDep := false
-	for _, dep := range cachedGlob.Deps {
-		info, err := fs.Stat(dep)
-		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-			hasNewDep = true
-			break
-		} else if err != nil {
-			return true, err
-		}
-		if info.ModTime().UnixMicro() > globsTimeMicros {
-			hasNewDep = true
-			break
-		}
-	}
-	if !hasNewDep {
+	if hasNewDep, err := checkIfGlobDepsChanged(fs, cachedGlob, globsTimeMicros); err != nil {
+		return true, err
+	} else if !hasNewDep {
 		return false, nil
 	}
 
@@ -343,4 +348,74 @@ func CheckForChangedGlobs(fs FileSystem, r io.Reader, globsTimeMicros int64) (bo
 	}
 
 	return false, nil
+}
+
+// RestoreGlobsFromCache returns a list of globs loaded from the glob cache whose dependencies are unchanged.
+func RestoreGlobsFromCache(fs FileSystem, r io.Reader, globsTimeMicros int64) ([]GlobResult, error) {
+	globsFileDecoder, err := newGlobFileDecoder(bufio.NewReaderSize(r, 16*1024*1024))
+	if err != nil {
+		if errors.Is(err, errBadMagic) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to create glob file decoder: %w", err)
+	}
+
+	cachedGlobsChan := make(chan GlobResult)
+	restoredGlobsChan := make(chan GlobResult)
+	errChan := make(chan error)
+
+	var errFromCheckGlob error
+
+	wg := sync.WaitGroup{}
+
+	for i := 0; i < runtime.NumCPU()*2; i++ {
+		wg.Add(1)
+		go func() {
+			for cachedGlob := range cachedGlobsChan {
+				changed, err := checkIfGlobDepsChanged(fs, cachedGlob, globsTimeMicros)
+				if err != nil {
+					errChan <- err
+				} else if !changed {
+					restoredGlobsChan <- cachedGlob
+				}
+			}
+			wg.Done()
+		}()
+	}
+
+	var restoredGlobs []GlobResult
+	doneCh := make(chan bool)
+	go func() {
+		for {
+			select {
+			case err := <-errChan:
+				if errFromCheckGlob == nil {
+					errFromCheckGlob = err
+				}
+			case restoredGlob := <-restoredGlobsChan:
+				restoredGlobs = append(restoredGlobs, restoredGlob)
+			case <-doneCh:
+				return
+			}
+		}
+	}()
+
+	globsFileIter, errFromDecoder := globsFileDecoder.iter()
+	for globs := range globsFileIter {
+		cachedGlobsChan <- globs
+	}
+	close(cachedGlobsChan)
+
+	wg.Wait()
+	close(doneCh)
+
+	if errFromCheckGlob != nil {
+		return nil, errFromCheckGlob
+	}
+
+	if errFromDecoder() != nil {
+		return nil, fmt.Errorf("failed to decode glob file: %w", errFromCheckGlob)
+	}
+
+	return restoredGlobs, nil
 }

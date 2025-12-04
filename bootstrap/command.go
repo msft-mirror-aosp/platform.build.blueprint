@@ -116,6 +116,13 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 		RegisterGoModuleTypes(ctx)
 	}
 
+	if ctx.GetIncrementalAnalysis() {
+		err := ctx.RestoreGlobsFromCache(blueprint.JoinPath(ctx.SrcDir(), args.OutFile))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to restore globs from cache, continuing: %s", err)
+		}
+	}
+
 	ctx.BeginEvent("parse_bp")
 	if blueprintFiles, errs := ctx.ParseFileList(".", filesToParse, config); len(errs) > 0 {
 		return nil, colorizeErrs(errs)
