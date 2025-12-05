@@ -224,6 +224,9 @@ type Context struct {
 	moduleDebugDataChannel chan []byte
 
 	captureBuildParams bool
+
+	// index of the last mutator which uses `CreateModule`.
+	mutatorIndexAfterLastCreateModule int
 }
 
 type orderOnlyStringsInfo struct {
@@ -448,6 +451,7 @@ func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants var
 		group:                    group,
 		createdOnDemand:          true,
 		requestedOnDemandVariant: onDemandVariants,
+		relBlueprintsFile:        group.coreModuleInfo.relBlueprintsFile,
 	}
 	newmodule.createdOnDemandReplaceWith = &newmodule
 	newlogicmodule.setInfo(&newmodule)
@@ -457,7 +461,7 @@ func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants var
 
 // Initialize the properties of the on demand variant and
 // re-run the completed mutators on this newly created module.
-func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMutatorIndex, tillMutatorIndex int, p pauseFunc) {
+func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMutatorIndex, tillMutatorIndex int, p pauseFunc, config interface{}) {
 	pause := func(dep *moduleInfo) {
 		if dep.createdOnDemand {
 			// Transitive variant on demand.
@@ -470,10 +474,12 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMuta
 		}
 	}
 	// initialize the properties from coreModuleInfo.
-	newlogicmodule, newproperties := c.cloneLogicModule(&newmodule.group.coreModuleInfo)
-	newlogicmodule.setInfo(newmodule)
-	newmodule.logicModule = newlogicmodule
-	newmodule.properties = newproperties
+	if fromMutatorIndex == c.mutatorIndexAfterLastCreateModule {
+		newlogicmodule, newproperties := c.cloneLogicModule(&newmodule.group.coreModuleInfo)
+		newlogicmodule.setInfo(newmodule)
+		newmodule.logicModule = newlogicmodule
+		newmodule.properties = newproperties
+	}
 
 	for index, mi := range c.mutatorInfo {
 		if index < fromMutatorIndex {
@@ -482,6 +488,7 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMuta
 		mctx := &mutatorContext{
 			baseModuleContext: baseModuleContext{
 				context: c,
+				config:  config,
 				module:  newmodule,
 			},
 			mutator:   mi,
@@ -521,8 +528,9 @@ type moduleInfo struct {
 	properties  []interface{}
 
 	// set during ResolveDependencies
-	missingDeps   []string
-	newDirectDeps []*moduleInfo
+	missingDeps    []string
+	newDirectDeps  []*moduleInfo
+	newReverseDeps []*moduleInfo
 
 	// set during updateDependencies
 	reverseDeps []*moduleInfo
@@ -2250,8 +2258,8 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 func (c *Context) applyTransitions(config any, module *moduleInfo, depTag DependencyTag, group *moduleGroup, variant variationMap,
 	requestedVariations []Variation, far bool, onDemand bool) (variationMap, []error) {
 	// Initialize some variables that will be used to manage IncomingTransition context of on demand variants.
-	onDemandFromMutatorIndex := 0
 	var onDemandMatchingVariant *moduleInfo
+	onDemandFromMutatorIndex := c.mutatorIndexAfterLastCreateModule
 
 	for _, transitionMutator := range c.transitionMutators[:c.completedTransitionMutators] {
 		explicitlyRequested := slices.ContainsFunc(requestedVariations, func(variation Variation) bool {
@@ -2302,7 +2310,7 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, depTag Depend
 			if onDemandFromMutatorIndex == 0 {
 				onDemandMatchingVariant = c.createVariantOnDemand(group, variant) // initialize
 			}
-			c.rerunMutatorsOnVariantOnDemand(onDemandMatchingVariant, onDemandFromMutatorIndex, transitionMutator.mutatorIndex, nil)
+			c.rerunMutatorsOnVariantOnDemand(onDemandMatchingVariant, onDemandFromMutatorIndex, transitionMutator.mutatorIndex, nil, config)
 			matchingInputVariant = onDemandMatchingVariant
 			onDemandFromMutatorIndex = transitionMutator.mutatorIndex + 1
 		}
@@ -3285,15 +3293,16 @@ func (c *Context) runMutators(ctx context.Context, config interface{}, mutatorGr
 	c.finishedMutators = make([]bool, len(c.mutatorInfo))
 
 	pprof.Do(ctx, pprof.Labels("blueprint", "runMutators"), func(ctx context.Context) {
-		lastCreateModuleMutatorIndex := 0
+		mutatorIndexAfterLastCreateModule := -1
 		for i := len(mutatorGroups) - 1; i >= 0; i-- {
 			if mutatorGroups[i][0].usesCreateModule {
-				lastCreateModuleMutatorIndex = i
+				mutatorIndexAfterLastCreateModule = mutatorGroups[i][0].index
 				break
 			}
 		}
+		c.mutatorIndexAfterLastCreateModule = mutatorIndexAfterLastCreateModule + 1
 
-		for i, mutatorGroup := range mutatorGroups {
+		for _, mutatorGroup := range mutatorGroups {
 			name := mutatorGroup[0].name
 			if len(mutatorGroup) > 1 {
 				name += "_plus_" + strconv.Itoa(len(mutatorGroup)-1)
@@ -3303,9 +3312,9 @@ func (c *Context) runMutators(ctx context.Context, config interface{}, mutatorGr
 				defer c.EndEvent(name)
 				var newDeps []string
 				if mutatorGroup[0].transitionPropagateMutator != nil {
-					newDeps, errs = c.runMutator(config, mutatorGroup, topDownMutator, i == lastCreateModuleMutatorIndex)
+					newDeps, errs = c.runMutator(config, mutatorGroup, topDownMutator)
 				} else if mutatorGroup[0].bottomUpMutator != nil {
-					newDeps, errs = c.runMutator(config, mutatorGroup, bottomUpMutator, i == lastCreateModuleMutatorIndex)
+					newDeps, errs = c.runMutator(config, mutatorGroup, bottomUpMutator)
 				} else {
 					panic("no mutator set on " + mutatorGroup[0].name)
 				}
@@ -3382,7 +3391,7 @@ type reverseDep struct {
 var mutatorContextPool = pool.New[mutatorContext]()
 
 func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
-	direction mutatorDirection, storeCoreModuleInfo bool) (deps []string, errs []error) {
+	direction mutatorDirection) (deps []string, errs []error) {
 
 	type globalStateChange struct {
 		reverse         []reverseDep
@@ -3427,7 +3436,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			}
 			moduleReplaceWith := <-moduleReplaceWithCh
 			if module == moduleReplaceWith {
-				c.rerunMutatorsOnVariantOnDemand(module, 0, mutatorGroup[len(mutatorGroup)-1].index, pause) // Mutate till the current mutator.
+				c.rerunMutatorsOnVariantOnDemand(module, c.mutatorIndexAfterLastCreateModule, mutatorGroup[len(mutatorGroup)-1].index, pause, config) // Mutate till the current mutator.
 				globalStateCh <- globalStateChange{
 					onDemandModules: []*moduleInfo{module},
 				}
@@ -3481,7 +3490,10 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 				}
 			}
 		}
-		if storeCoreModuleInfo {
+		if module.startedMutator == c.mutatorIndexAfterLastCreateModule {
+			// Store core module info after the final CreateModule mutator.
+			// This ensures that storeCoreModuleInfo is called on modules
+			// created using CreateModule.
 			mctx.storeCoreModuleInfo()
 		}
 
@@ -3626,12 +3638,22 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	}
 
 	for _, module := range onDemandModules {
+		// Set forward and reverse deps for correct traversal order in future mutators.
+		for _, rdep := range module.newReverseDeps {
+			rdep.forwardDeps = append(rdep.forwardDeps, module)
+			module.reverseDeps = append(module.reverseDeps, rdep)
+		}
+		for _, fd := range module.newDirectDeps {
+			fd.reverseDeps = append(fd.reverseDeps, module)
+		}
 		module.group.modules = append(module.group.modules, module)
 		// The module has been created and mutated.
 		// For future mutators, this variant is the same as normal variants.
 		// Set this flag to false so that we do not try to call `rerunMutatorsOnVariantOnDemand` again.
 		module.createdOnDemand = false
 		module.createdOnDemandReplaceWith = nil
+		module.newDirectDeps = nil
+		module.newReverseDeps = nil
 	}
 
 	return deps, errs
