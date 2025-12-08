@@ -167,9 +167,9 @@ type valueHashConfig struct {
 }
 
 func hashToBytes(value proptools.Hash) []byte {
-	ret := make([]byte, proptools.HashSize)
-	value.PutBigEndian(ret)
-	return ret
+	var ret [proptools.HashSize]byte
+	value.PutBigEndian(ret[:])
+	return ret[:]
 }
 
 func EncodeReference[T comparable](c ReferenceEnc, value T, buf *bytes.Buffer, encode func(v T, buf *bytes.Buffer) error) error {
@@ -237,19 +237,18 @@ type CustomDec interface {
 
 // Encode a string value.
 func EncodeString(buf *bytes.Buffer, s string) error {
-	b := []byte(s)
-	err := binary.Write(buf, binary.BigEndian, int32(len(b)))
+	err := EncodeInt(buf, len(s))
 	if err != nil {
 		return err
 	}
-	_, err = buf.Write(b)
+	_, err = buf.WriteString(s)
 	return err
 }
 
 // Decode a string value.
 func DecodeString(buf *bytes.Reader, s *string) error {
-	var length int32
-	err := binary.Read(buf, binary.BigEndian, &length)
+	var length int
+	err := DecodeInt(buf, &length)
 	if err != nil {
 		return err
 	}

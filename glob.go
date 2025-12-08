@@ -15,10 +15,16 @@
 package blueprint
 
 import (
+	"cmp"
+	"errors"
 	"fmt"
+	"maps"
+	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/blueprint/pathtools"
 )
@@ -58,10 +64,17 @@ func (c *Context) glob(pattern string, excludes []string) ([]string, error) {
 		return slices.Clone(g.Matches), nil
 	}
 
-	// Get a globbed file list
-	result, err := c.fs.Glob(pattern, excludes, pathtools.FollowSymlinks)
-	if err != nil {
-		return nil, err
+	// Check if the glob was restored from the cache
+	var result pathtools.GlobResult
+	if cachedGlob, exists := c.restoredGlobsFromCache[key]; exists {
+		result = cachedGlob
+	} else {
+		// Get a globbed file list
+		g, err := c.fs.Glob(pattern, excludes, pathtools.FollowSymlinks)
+		if err != nil {
+			return nil, err
+		}
+		result = g
 	}
 
 	// Store the results
@@ -82,25 +95,71 @@ func (c *Context) glob(pattern string, excludes []string) ([]string, error) {
 	return slices.Clone(result.Matches), nil
 }
 
-func (c *Context) Globs() pathtools.MultipleGlobResults {
-	keys := make([]globKey, 0, len(c.globs))
-	for k := range c.globs {
-		keys = append(keys, k)
-	}
-
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].pattern != keys[j].pattern {
-			return keys[i].pattern < keys[j].pattern
-		}
-		return keys[i].excludes < keys[j].excludes
+// WriteGlobFile writes the list of globs and a timestamp to files next to finalOutFile.
+func (c *Context) WriteGlobFile(finalOutFile string, startTime time.Time) error {
+	globKeys := slices.Collect(maps.Keys(c.globs))
+	slices.SortFunc(globKeys, func(a, b globKey) int {
+		return cmp.Or(cmp.Compare(a.pattern, b.pattern), cmp.Compare(a.excludes, b.excludes))
 	})
-
-	globs := make(pathtools.MultipleGlobResults, len(keys))
-	for i, key := range keys {
-		globs[i] = c.globs[key]
+	globs := make([]pathtools.GlobResult, 0, len(globKeys))
+	for _, key := range globKeys {
+		globs = append(globs, c.globs[key])
 	}
 
-	return globs
+	globsFile, err := os.Create(finalOutFile + ".globs")
+	if err != nil {
+		return err
+	}
+	defer globsFile.Close()
+	if err := pathtools.WriteGlobFile(globsFile, globs); err != nil {
+		return err
+	}
+
+	return os.WriteFile(
+		finalOutFile+".globs_time",
+		[]byte(fmt.Sprintf("%d\n", startTime.UnixMicro())),
+		0666,
+	)
+}
+
+// RestoreGlobsFromCache reads the list of globs that was written by WriteGlobFile during a
+// previous run and returns any whose dependencies have not changed to avoid redoing all the
+// glob traversals during incremental analysis.
+func (c *Context) RestoreGlobsFromCache(finalOutFile string) error {
+	c.EventHandler.Begin("restore_globs")
+	defer c.EventHandler.End("restore_globs")
+
+	globsFile, err := os.Open(finalOutFile + ".globs")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	defer globsFile.Close()
+
+	globsTimeBytes, err := os.ReadFile(finalOutFile + ".globs_time")
+	if errors.Is(err, os.ErrNotExist) {
+		globsTimeBytes = []byte("0")
+	} else if err != nil {
+		return err
+	}
+
+	globsTimeMicros, err := strconv.ParseInt(strings.TrimSpace(string(globsTimeBytes)), 10, 64)
+	if err != nil {
+		return err
+	}
+
+	globs, err := pathtools.RestoreGlobsFromCache(c.fs, globsFile, globsTimeMicros)
+	if err != nil {
+		return err
+	}
+
+	c.restoredGlobsFromCache = make(map[globKey]pathtools.GlobResult, len(globs))
+	for _, glob := range globs {
+		c.restoredGlobsFromCache[globToKey(glob.Pattern, glob.Excludes)] = glob
+	}
+
+	return nil
 }
 
 // globKey combines a pattern and a list of excludes into a hashable struct to be used as a key in

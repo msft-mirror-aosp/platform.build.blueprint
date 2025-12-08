@@ -5,13 +5,15 @@ bootstrap_go_package {
         "blueprint-deptools",
     ],
     srcs: [
-        "lists.go",
         "fs.go",
         "glob.go",
+        "glob_cache.go",
+        "lists.go",
     ],
     testSrcs: [
         "fs_test.go",
         "glob_test.go",
+        "glob_cache_test.go",
         "lists_test.go",
     ],
     visibility: [

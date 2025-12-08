@@ -137,7 +137,6 @@ func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
 	}
 
 	m.orderOnlyStrings = data.OrderOnlyStrings
-	m.globCache = data.GlobCache
 	for _, str := range data.OrderOnlyStrings {
 		if !strings.HasPrefix(str, "dedup-") {
 			continue

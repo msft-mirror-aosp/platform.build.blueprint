@@ -15,13 +15,11 @@
 package pathtools
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 )
 
@@ -30,6 +28,7 @@ var GlobLastRecursiveErr = errors.New("pattern has '**' as last path element")
 var GlobInvalidRecursiveErr = errors.New("pattern contains other characters between '**' and path separator")
 
 // GlobResult is a container holding the results of a call to Glob.
+// LINT.IfChange
 type GlobResult struct {
 	// Pattern is the pattern that was passed to Glob.
 	Pattern string
@@ -43,46 +42,14 @@ type GlobResult struct {
 	Deps []string
 }
 
+// LINT.ThenChange(glob_cache.go)
+
 // FileList returns the list of files matched by a glob for writing to an output file.
 func (result GlobResult) FileList() []byte {
 	return []byte(strings.Join(result.Matches, "\n") + "\n")
 }
 
-func (result GlobResult) Clone() GlobResult {
-	return GlobResult{
-		Pattern:  result.Pattern,
-		Excludes: slices.Clone(result.Excludes),
-		Matches:  slices.Clone(result.Matches),
-		Deps:     slices.Clone(result.Deps),
-	}
-}
-
-// MultipleGlobResults is a list of GlobResult structs.
-type MultipleGlobResults []GlobResult
-
-// FileList returns the list of files matched by a list of multiple globs for writing to an output file.
-func (results MultipleGlobResults) FileList() []byte {
-	multipleMatches := make([][]string, len(results))
-	for i, result := range results {
-		multipleMatches[i] = result.Matches
-	}
-	buf, err := json.Marshal(multipleMatches)
-	if err != nil {
-		panic(fmt.Errorf("failed to marshal glob results to json: %w", err))
-	}
-	return buf
-}
-
-// Deps returns the deps from all of the GlobResults.
-func (results MultipleGlobResults) Deps() []string {
-	var deps []string
-	for _, result := range results {
-		deps = append(deps, result.Deps...)
-	}
-	return deps
-}
-
-// Glob returns the list of files and directories that match the given pattern
+// glob returns the list of files and directories that match the given pattern
 // but do not match the given exclude patterns, along with the list of
 // directories and other dependencies that were searched to construct the file
 // list.  The supported glob and exclude patterns are equivalent to
@@ -93,18 +60,14 @@ func (results MultipleGlobResults) Deps() []string {
 // In general ModuleContext.GlobWithDeps or SingletonContext.GlobWithDeps
 // should be used instead, as they will automatically set up dependencies
 // to rerun the primary builder when the list of matching files changes.
-func Glob(pattern string, excludes []string, follow ShouldFollowSymlinks) (GlobResult, error) {
-	return startGlob(OsFs, pattern, excludes, follow)
-}
-
-func startGlob(fs FileSystem, pattern string, excludes []string,
+func glob(fs FileSystem, pattern string, excludes []string,
 	follow ShouldFollowSymlinks) (GlobResult, error) {
 
 	if filepath.Base(pattern) == "**" {
 		return GlobResult{}, GlobLastRecursiveErr
 	}
 
-	matches, deps, err := glob(fs, pattern, false, follow)
+	matches, deps, err := recurseGlob(fs, pattern, false, follow)
 
 	if err != nil {
 		return GlobResult{}, err
@@ -156,9 +119,9 @@ func startGlob(fs FileSystem, pattern string, excludes []string,
 	}, nil
 }
 
-// glob is a recursive helper function to handle globbing each level of the pattern individually,
+// recurseGlob is a recursive helper function to handle globbing each level of the pattern individually,
 // allowing searched directories to be tracked.  Also handles the recursive glob pattern, **.
-func glob(fs FileSystem, pattern string, hasRecursive bool,
+func recurseGlob(fs FileSystem, pattern string, hasRecursive bool,
 	follow ShouldFollowSymlinks) (matches, dirs []string, err error) {
 
 	if !isWild(pattern) {
@@ -197,7 +160,7 @@ func glob(fs FileSystem, pattern string, hasRecursive bool,
 		return matches, dirs, GlobInvalidRecursiveErr
 	}
 
-	dirMatches, dirs, err := glob(fs, dir, hasRecursive, follow)
+	dirMatches, dirs, err := recurseGlob(fs, dir, hasRecursive, follow)
 	if err != nil {
 		return nil, nil, err
 	}

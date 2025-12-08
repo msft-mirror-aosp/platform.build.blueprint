@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/google/blueprint/pathtools"
+	"github.com/google/blueprint/proptools"
 )
 
 type Singleton interface {
@@ -211,6 +212,10 @@ type SingletonContext interface {
 
 	// OtherModuleNamespace returns the namespace of the module.
 	OtherModuleNamespace(module ModuleOrProxy) Namespace
+
+	// GetModuleProxy returns a module with the given name and variations, from the root namespace.
+	// It may return a nil ModuleProxy if the module doesn't exist.
+	GetModuleProxy(moduleName string, variant []Variation) ModuleProxy
 }
 
 type SingletonProxy struct {
@@ -233,6 +238,7 @@ type singletonContext struct {
 	scope     *localScope
 	globals   *liveTracker
 
+	subninjas     []string
 	ninjaFileDeps []string
 	errs          []error
 
@@ -394,7 +400,7 @@ func (s *singletonContext) SetOutDir(pctx PackageContext, value string) {
 }
 
 func (s *singletonContext) AddSubninja(file string) {
-	s.context.subninjas = append(s.context.subninjas, file)
+	s.subninjas = append(s.subninjas, file)
 }
 
 func (s *singletonContext) VisitAllModules(visit func(Module)) {
@@ -513,9 +519,20 @@ func (s *singletonContext) AddNinjaFileDeps(deps ...string) {
 	s.ninjaFileDeps = append(s.ninjaFileDeps, deps...)
 }
 
-func (s *singletonContext) GlobWithDeps(pattern string,
-	excludes []string) ([]string, error) {
-	return s.context.glob(pattern, excludes)
+func (s *singletonContext) GlobWithDeps(pattern string, excludes []string) ([]string, error) {
+	result, err := s.context.glob(pattern, excludes)
+	if err == nil && s.context.incrementalEnabled && s.singleton.incrementalSupported {
+		hash, err := proptools.CalculateHash(stringList(result))
+		if err != nil {
+			panic(newPanicErrorf(err, "failed to calculate hash for glob result: %s", s.singleton.name))
+		}
+		s.singleton.globCache = append(s.singleton.globCache, globResultCache{
+			Pattern:  pattern,
+			Excludes: excludes,
+			Result:   hash,
+		})
+	}
+	return result, err
 }
 
 func (s *singletonContext) Fs() pathtools.FileSystem {
@@ -562,4 +579,8 @@ func (s *singletonContext) GetIncrementalEnabled() bool {
 
 func (s *singletonContext) OtherModuleNamespace(module ModuleOrProxy) Namespace {
 	return s.context.nameInterface.GetNamespace(newNamespaceContext(module.info()))
+}
+
+func (s *singletonContext) GetModuleProxy(moduleName string, variant []Variation) ModuleProxy {
+	return ModuleProxy{s.context.getModule(moduleName, variant)}
 }
