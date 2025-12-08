@@ -1105,7 +1105,13 @@ func (mctx *mutatorContext) AddDependency(module Module, tag DependencyTag, deps
 		}
 		if di != nil && di.createdOnDemand {
 			modInfo.directDeps = append(modInfo.directDeps, depInfo{di.createdOnDemandReplaceWith, tag})
-			di.createdOnDemandReplaceWith.newReverseDeps = append(di.createdOnDemandReplaceWith.newReverseDeps, modInfo)
+			modInfo.newOnDemandReverseDeps = append(modInfo.newOnDemandReverseDeps, reverseDep{
+				module: modInfo,
+				dep: depInfo{
+					di.createdOnDemandReplaceWith,
+					tag,
+				},
+			})
 		}
 		depInfos = append(depInfos, ModuleProxy{di})
 	}
@@ -1189,7 +1195,13 @@ func (mctx *mutatorContext) AddVariationDependencies(variations []Variation, tag
 		}
 		if di != nil && di.createdOnDemand {
 			mctx.module.directDeps = append(mctx.module.directDeps, depInfo{di.createdOnDemandReplaceWith, tag})
-			di.createdOnDemandReplaceWith.newReverseDeps = append(di.createdOnDemandReplaceWith.newReverseDeps, mctx.module)
+			mctx.module.newOnDemandReverseDeps = append(mctx.module.newOnDemandReverseDeps, reverseDep{
+				module: mctx.module,
+				dep: depInfo{
+					di.createdOnDemandReplaceWith,
+					tag,
+				},
+			})
 		}
 		depInfos = append(depInfos, ModuleProxy{di})
 	}
@@ -1211,7 +1223,13 @@ func (mctx *mutatorContext) AddFarVariationDependencies(variations []Variation, 
 		}
 		if di != nil && di.createdOnDemand {
 			mctx.module.directDeps = append(mctx.module.directDeps, depInfo{di.createdOnDemandReplaceWith, tag})
-			di.createdOnDemandReplaceWith.newReverseDeps = append(di.createdOnDemandReplaceWith.newReverseDeps, mctx.module)
+			mctx.module.newOnDemandReverseDeps = append(mctx.module.newOnDemandReverseDeps, reverseDep{
+				module: mctx.module,
+				dep: depInfo{
+					di.createdOnDemandReplaceWith,
+					tag,
+				},
+			})
 		}
 		depInfos = append(depInfos, ModuleProxy{di})
 	}
