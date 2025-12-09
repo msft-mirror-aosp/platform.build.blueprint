@@ -350,14 +350,20 @@ func CheckForChangedGlobs(fs FileSystem, r io.Reader, globsTimeMicros int64) (bo
 	return false, nil
 }
 
+type RestoredGlobsMetrics struct {
+	CachedGlobs   uint64
+	RestoredGlobs uint64
+}
+
 // RestoreGlobsFromCache returns a list of globs loaded from the glob cache whose dependencies are unchanged.
-func RestoreGlobsFromCache(fs FileSystem, r io.Reader, globsTimeMicros int64) ([]GlobResult, error) {
+func RestoreGlobsFromCache(fs FileSystem, r io.Reader, globsTimeMicros int64) ([]GlobResult, RestoredGlobsMetrics, error) {
+	metrics := RestoredGlobsMetrics{}
 	globsFileDecoder, err := newGlobFileDecoder(bufio.NewReaderSize(r, 16*1024*1024))
 	if err != nil {
 		if errors.Is(err, errBadMagic) {
-			return nil, nil
+			return nil, metrics, nil
 		}
-		return nil, fmt.Errorf("failed to create glob file decoder: %w", err)
+		return nil, metrics, fmt.Errorf("failed to create glob file decoder: %w", err)
 	}
 
 	cachedGlobsChan := make(chan GlobResult)
@@ -402,6 +408,7 @@ func RestoreGlobsFromCache(fs FileSystem, r io.Reader, globsTimeMicros int64) ([
 
 	globsFileIter, errFromDecoder := globsFileDecoder.iter()
 	for globs := range globsFileIter {
+		metrics.CachedGlobs++
 		cachedGlobsChan <- globs
 	}
 	close(cachedGlobsChan)
@@ -410,12 +417,14 @@ func RestoreGlobsFromCache(fs FileSystem, r io.Reader, globsTimeMicros int64) ([
 	close(doneCh)
 
 	if errFromCheckGlob != nil {
-		return nil, errFromCheckGlob
+		return nil, metrics, errFromCheckGlob
 	}
 
 	if errFromDecoder() != nil {
-		return nil, fmt.Errorf("failed to decode glob file: %w", errFromCheckGlob)
+		return nil, metrics, fmt.Errorf("failed to decode glob file: %w", errFromCheckGlob)
 	}
 
-	return restoredGlobs, nil
+	metrics.RestoredGlobs = uint64(len(restoredGlobs))
+
+	return restoredGlobs, metrics, nil
 }
