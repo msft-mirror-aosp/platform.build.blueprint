@@ -3461,7 +3461,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	}
 
 	reverseDeps := make(map[*moduleInfo][]depInfo)
-	onDemandReverseDeps := make(map[*moduleInfo][]depInfo)
+	onDemandReverseDeps := make(map[*moduleInfo]map[*moduleInfo]bool)
 	var rename []rename
 	var replace []replace
 	var newModules []*moduleInfo
@@ -3576,7 +3576,10 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 					reverseDeps[r.module] = append(reverseDeps[r.module], r.dep)
 				}
 				for _, r := range globalStateChange.onDemandReverseDeps {
-					onDemandReverseDeps[r.module] = append(onDemandReverseDeps[r.module], r.dep)
+					if _, exists := onDemandReverseDeps[r.module]; !exists {
+						onDemandReverseDeps[r.module] = make(map[*moduleInfo]bool)
+					}
+					onDemandReverseDeps[r.module][r.dep.module] = true
 				}
 				replace = append(replace, globalStateChange.replace...)
 				rename = append(rename, globalStateChange.rename...)
@@ -3674,11 +3677,14 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 
 	// Set forward/reverseDeps of on-demand variants.
 	// Sort the deps to ensure deterministic orderding.
-	for module, deps := range onDemandReverseDeps {
-		sort.Sort(depSorter{deps, c.nameInterface})
+	for module, depsAsKeys := range onDemandReverseDeps {
+		deps := slices.Collect(maps.Keys(depsAsKeys))
+		slices.SortFunc(deps, func(a, b *moduleInfo) int {
+			return cmp.Compare(a.variant.name, b.variant.name)
+		})
 		for _, dep := range deps {
-			module.forwardDeps = append(module.forwardDeps, dep.module)
-			dep.module.reverseDeps = append(dep.module.reverseDeps, module)
+			module.forwardDeps = append(module.forwardDeps, dep)
+			dep.reverseDeps = append(dep.reverseDeps, module)
 		}
 		module.newOnDemandReverseDeps = nil
 	}
