@@ -5699,7 +5699,9 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 	defer c.EndEvent("deduplicate_order_only_deps")
 
 	var phonys []*buildDef
-	c.orderOnlyStringsCache = make(OrderOnlyStringsCache)
+	if c.orderOnlyStringsCache == nil {
+		c.orderOnlyStringsCache = make(OrderOnlyStringsCache)
+	}
 	c.orderOnlyStrings.Range(func(key uniquelist.UniqueList[string], info *orderOnlyStringsInfo) bool {
 		if info.dedup {
 			dedup := fmt.Sprintf("dedup-%x", keyForPhonyCandidate(key.ToSlice()))
