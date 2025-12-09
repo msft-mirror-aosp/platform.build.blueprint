@@ -3192,9 +3192,10 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 			if c.buildActionsCache == nil {
 				c.buildActionsCache = &BuildActionCache{}
 				dbPath := filepath.Join(c.SrcDir(), c.IncrementalDBDir())
-				// Remove all the cached data from the key-value store for a full build.
+				// Remove gob files and all the cached data from the key-value store for a full build.
 				if !c.GetIncrementalAnalysis() {
-					if err := c.buildActionsCache.reset(c, dbPath); err != nil {
+					err := errors.Join(c.buildActionsCache.reset(c, dbPath), c.fs.Remove(filepath.Join(dbPath, OrderOnlyStringsCacheFile)))
+					if err != nil {
 						panic(fmt.Errorf("error resetting incremental db: %w", err))
 					}
 				}
