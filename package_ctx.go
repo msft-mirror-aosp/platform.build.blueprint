@@ -68,6 +68,8 @@ type PackageContext interface {
 	StaticRule(name string, params RuleParams, argNames ...string) Rule
 	RuleFunc(name string, f func(interface{}) (RuleParams, error), argNames ...string) Rule
 
+	HostToolFunc(f func(config interface{}) (HostToolParams, error)) HostTool
+
 	AddNinjaFileDeps(deps ...string)
 
 	getScope() *basicScope
@@ -771,7 +773,7 @@ func (r *ruleFunc) def(config interface{}) (*ruleDef, error) {
 		sboxConfig.ActionSandboxMetrics().updateSandboxMetrics(params.SandboxDisabled)
 	}
 
-	def, err := parseRuleParams(r.scope(), &params)
+	def, err := parseRuleParams(config, r.scope(), &params)
 	if err != nil {
 		panic(fmt.Errorf("error parsing RuleParams for %s: %s", r, err))
 	}
@@ -843,6 +845,15 @@ func (r *builtinRule) String() string {
 func NewBuiltinRule(name string) Rule {
 	return &builtinRule{
 		name_: name,
+	}
+}
+
+func (p *packageContext) HostToolFunc(f func(config interface{}) (HostToolParams, error)) HostTool {
+	checkCalledFromInit()
+	return HostTool{
+		inner: &hostToolInner{
+			f: f,
+		},
 	}
 }
 
