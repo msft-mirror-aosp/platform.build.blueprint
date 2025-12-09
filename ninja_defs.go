@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/google/blueprint/uniquelist"
 )
@@ -58,21 +59,103 @@ type PoolParams struct {
 // definition.
 type RuleParams struct {
 	// These fields correspond to a Ninja variable of the same name.
-	Command         string // The command that Ninja will run for the rule.
-	Depfile         string // The dependency file name.
-	Deps            Deps   // The format of the dependency file.
-	Description     string // The description that Ninja will print for the rule.
-	Generator       bool   // Whether the rule generates the Ninja manifest file.
-	Pool            Pool   // The Ninja pool to which the rule belongs.
-	Restat          bool   // Whether Ninja should re-stat the rule's outputs.
-	Rspfile         string // The response file.
-	RspfileContent  string // The response file content.
-	SandboxDisabled bool   // Whether to disable sandboxing for this rule
+	Command2        Command // The command that Ninja will run for the rule.
+	Command         string  // The command that Ninja will run for the rule.
+	Depfile         string  // The dependency file name.
+	Deps            Deps    // The format of the dependency file.
+	Description     string  // The description that Ninja will print for the rule.
+	Generator       bool    // Whether the rule generates the Ninja manifest file.
+	Pool            Pool    // The Ninja pool to which the rule belongs.
+	Restat          bool    // Whether Ninja should re-stat the rule's outputs.
+	Rspfile         string  // The response file.
+	RspfileContent  string  // The response file content.
+	SandboxDisabled bool    // Whether to disable sandboxing for this rule
 
 	// These fields are used internally in Blueprint
 	CommandDeps      []string // Command-specific implicit dependencies to prepend to builds
 	CommandOrderOnly []string // Command-specific order-only dependencies to prepend to builds
 	Comment          string   // The comment that will appear above the definition.
+}
+
+// A command that ninja will run. It's an interpolation of strings and references to host tools,
+// created with the NewCommand() function.
+type Command struct {
+	command []any
+}
+
+func (c *Command) IsEmpty() bool {
+	return len(c.command) == 0
+}
+
+func (c *Command) getCommandAndDeps(config any) (string, []string, error) {
+	var result strings.Builder
+	var deps []string
+	for _, part := range c.command {
+		switch p := part.(type) {
+		case string:
+			result.WriteString(p)
+		case HostTool:
+			cmd, newDeps, err := p.getValueAndDeps(config)
+			if err != nil {
+				return "", nil, err
+			}
+			result.WriteString(cmd)
+			deps = append(deps, newDeps...)
+		default:
+			panic(fmt.Sprintf("unexpected type in Command: %v", p))
+		}
+	}
+	return result.String(), deps, nil
+}
+
+// A host tool that may be used an a RuleParam's Command2.
+// The value is the value to put in the command line, and deps are values to put in CommandDeps.
+// The tool must be listed in Deps even if it is simply the Value, as some tools like toybox
+// may supply default arguments in Value as well, in which case Value couldn't be directly used
+// as a dep.
+type HostTool struct {
+	// The inner pointer is so that the HostTool can be passed by value to NewCommand().
+	// If the contents of inner were inlined here, the HostTool would be copied when passing
+	// to NewCommand(), causing the once to not have an affect and the callback function to be
+	// recalculated many times.
+	inner *hostToolInner
+}
+
+type hostToolInner struct {
+	once  sync.Once
+	f     func(config any) (HostToolParams, error)
+	value string
+	deps  []string
+	err   error
+}
+
+func (h *HostTool) getValueAndDeps(config any) (string, []string, error) {
+	h.inner.once.Do(func() {
+		params, err := h.inner.f(config)
+		h.inner.value = params.Value
+		h.inner.deps = params.Deps
+		h.inner.err = err
+	})
+	return h.inner.value, h.inner.deps, h.inner.err
+}
+
+type HostToolParams struct {
+	Value string
+	Deps  []string
+}
+
+func NewCommand(args ...any) Command {
+	for _, arg := range args {
+		switch arg.(type) {
+		case string:
+		case HostTool:
+		default:
+			panic(fmt.Sprintf("unexpected type in NewCommand: %v", arg))
+		}
+	}
+	return Command{
+		args,
+	}
 }
 
 // A BuildParams object contains the set of parameters that make up a Ninja
@@ -140,8 +223,7 @@ type ruleDef struct {
 	Variables        map[string]*ninjaString
 }
 
-func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
-	error) {
+func parseRuleParams(config any, scope scope, params *RuleParams) (*ruleDef, error) {
 
 	r := &ruleDef{
 		Comment:   params.Comment,
@@ -149,9 +231,21 @@ func parseRuleParams(scope scope, params *RuleParams) (*ruleDef,
 		Variables: make(map[string]*ninjaString),
 	}
 
-	if params.Command == "" {
+	if params.Command == "" && params.Command2.IsEmpty() {
 		return nil, fmt.Errorf("encountered rule params with no command " +
 			"specified")
+	} else if params.Command != "" && !params.Command2.IsEmpty() {
+		cmd2, _, _ := params.Command2.getCommandAndDeps(config)
+		return nil, fmt.Errorf("cannot set both Command and Command2 in rule params: %q, %q", params.Command, cmd2)
+	}
+
+	if !params.Command2.IsEmpty() {
+		cmd, deps, err := params.Command2.getCommandAndDeps(config)
+		if err != nil {
+			return nil, err
+		}
+		params.Command = cmd
+		params.CommandDeps = append(params.CommandDeps, deps...)
 	}
 
 	if r.Pool != nil && !scope.IsPoolVisible(r.Pool) {
