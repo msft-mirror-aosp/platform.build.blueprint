@@ -172,6 +172,7 @@ type Context struct {
 	globLock sync.Mutex
 
 	restoredGlobsFromCache map[globKey]pathtools.GlobResult
+	restoredGlobMetrics    pathtools.RestoredGlobsMetrics
 
 	srcDir           string
 	incrementalDBDir string
@@ -5684,6 +5685,10 @@ func (c *Context) EndEvent(name string) {
 
 func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
 	c.BeforePrepareBuildActionsHook = hookFn
+}
+
+func (c *Context) RestoredGlobMetrics() pathtools.RestoredGlobsMetrics {
+	return c.restoredGlobMetrics
 }
 
 // keyForPhonyCandidate gives a unique identifier for a set of deps.
