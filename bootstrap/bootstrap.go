@@ -443,16 +443,17 @@ func collectGoDeps(ctx blueprint.ModuleContext) (incFlags, incFlagsDeps, linkFla
 	return
 }
 
-func buildVerifySerializers(ctx blueprint.ModuleContext, outputFile string, srcs []string) {
+func buildVerifySerializers(ctx blueprint.ModuleContext, outputFile string, srcs []string, archiveFile string) {
 	var srcPaths []string
 	for _, src := range srcs {
 		srcPaths = append(srcPaths, filepath.Join(moduleSrcDir(ctx), src))
 	}
 
 	ctx.Build(pctx, blueprint.BuildParams{
-		Rule:    verifySerializers,
-		Inputs:  srcPaths,
-		Outputs: []string{outputFile},
+		Rule:      verifySerializers,
+		Inputs:    srcPaths,
+		Implicits: []string{archiveFile},
+		Outputs:   []string{outputFile},
 	})
 }
 
@@ -681,7 +682,7 @@ func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
 
 	if ctx.Config().(BootstrapConfig).IsBootstrap() {
 		verifySerializers := archiveFile + ".verify_serializers"
-		buildVerifySerializers(ctx, verifySerializers, srcs)
+		buildVerifySerializers(ctx, verifySerializers, srcs, archiveFile)
 		validations = append(validations, verifySerializers)
 	}
 
