@@ -149,10 +149,12 @@ func (c *Context) RestoreGlobsFromCache(finalOutFile string) error {
 		return err
 	}
 
-	globs, err := pathtools.RestoreGlobsFromCache(c.fs, globsFile, globsTimeMicros)
+	globs, globMetrics, err := pathtools.RestoreGlobsFromCache(c.fs, globsFile, globsTimeMicros)
 	if err != nil {
 		return err
 	}
+
+	c.restoredGlobMetrics = globMetrics
 
 	c.restoredGlobsFromCache = make(map[globKey]pathtools.GlobResult, len(globs))
 	for _, glob := range globs {

@@ -307,7 +307,7 @@ func (s *localScope) AddLocalVariable(name, value string) (*localVariable,
 	return v, nil
 }
 
-func (s *localScope) AddLocalRule(name string, params *RuleParams,
+func (s *localScope) AddLocalRule(config any, name string, params *RuleParams,
 	argNames ...string) (*localRule, error) {
 
 	err := validateNinjaName(name)
@@ -327,7 +327,7 @@ func (s *localScope) AddLocalRule(name string, params *RuleParams,
 
 	ruleScope := makeRuleScope(s.scope, argNamesSet)
 
-	def, err := parseRuleParams(ruleScope, params)
+	def, err := parseRuleParams(config, ruleScope, params)
 	if err != nil {
 		return nil, err
 	}

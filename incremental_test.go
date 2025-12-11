@@ -601,9 +601,6 @@ func TestCachedModuleRemoved(t *testing.T) {
 	if strings.Count(buf.String(), expected) != 0 {
 		t.Errorf("Phony target should not be present in ninja file: %s", buf.String())
 	}
-	if len(ctx.orderOnlyStringsCache) != 0 {
-		t.Errorf("Phony target should not be cached: %s", buf.String())
-	}
 }
 
 // This tests the scenario where one restored module and two non-restored modules

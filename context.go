@@ -172,6 +172,7 @@ type Context struct {
 	globLock sync.Mutex
 
 	restoredGlobsFromCache map[globKey]pathtools.GlobResult
+	restoredGlobMetrics    pathtools.RestoredGlobsMetrics
 
 	srcDir           string
 	incrementalDBDir string
@@ -3192,9 +3193,10 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 			if c.buildActionsCache == nil {
 				c.buildActionsCache = &BuildActionCache{}
 				dbPath := filepath.Join(c.SrcDir(), c.IncrementalDBDir())
-				// Remove all the cached data from the key-value store for a full build.
+				// Remove gob files and all the cached data from the key-value store for a full build.
 				if !c.GetIncrementalAnalysis() {
-					if err := c.buildActionsCache.reset(c, dbPath); err != nil {
+					err := errors.Join(c.buildActionsCache.reset(c, dbPath), c.fs.Remove(filepath.Join(dbPath, OrderOnlyStringsCacheFile)))
+					if err != nil {
 						panic(fmt.Errorf("error resetting incremental db: %w", err))
 					}
 				}
@@ -5686,6 +5688,10 @@ func (c *Context) SetBeforePrepareBuildActionsHook(hookFn func() error) {
 	c.BeforePrepareBuildActionsHook = hookFn
 }
 
+func (c *Context) RestoredGlobMetrics() pathtools.RestoredGlobsMetrics {
+	return c.restoredGlobMetrics
+}
+
 // keyForPhonyCandidate gives a unique identifier for a set of deps.
 func keyForPhonyCandidate(stringDeps []string) uint64 {
 	hasher := fnv.New64a()
@@ -5712,7 +5718,9 @@ func (c *Context) deduplicateOrderOnlyDeps(modules []*moduleInfo) *localBuildAct
 	defer c.EndEvent("deduplicate_order_only_deps")
 
 	var phonys []*buildDef
-	c.orderOnlyStringsCache = make(OrderOnlyStringsCache)
+	if c.orderOnlyStringsCache == nil {
+		c.orderOnlyStringsCache = make(OrderOnlyStringsCache)
+	}
 	c.orderOnlyStrings.Range(func(key uniquelist.UniqueList[string], info *orderOnlyStringsInfo) bool {
 		if info.dedup {
 			dedup := fmt.Sprintf("dedup-%x", keyForPhonyCandidate(key.ToSlice()))
