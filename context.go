@@ -2211,7 +2211,7 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 		}
 
 		c.BeginEvent("clone_modules")
-		if !c.SkipCloneModulesAfterMutators {
+		if !c.SkipCloneModulesAfterMutators && !c.incrementalAnalysis {
 			c.cloneModules()
 		}
 		defer c.EndEvent("clone_modules")
