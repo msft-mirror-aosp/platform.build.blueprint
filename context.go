@@ -1010,8 +1010,7 @@ func cacheEncData(ctx *Context, soongOutDir string, fileName string, data gobtoo
 }
 
 func writeToCache(ctx *Context, soongOutDir string, fileName string, buf *bytes.Buffer) error {
-	file, err := ctx.fs.OpenFile(filepath.Join(ctx.SrcDir(), soongOutDir, fileName),
-		os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+	file, err := pathtools.OpenWithTruncateOnClose(ctx.fs, filepath.Join(ctx.SrcDir(), soongOutDir, fileName))
 	if err != nil {
 		return err
 	}
@@ -5355,7 +5354,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			wg.Add(1)
 			go func(file string, batchModules []*moduleInfo) {
 				defer wg.Done()
-				f, err := c.fs.OpenFile(JoinPath(c.SrcDir(), file), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+				f, err := pathtools.OpenWithTruncateOnClose(c.fs, JoinPath(c.SrcDir(), file))
 				if err != nil {
 					errorCh <- fmt.Errorf("error opening Ninja file shard: %s", err)
 					return

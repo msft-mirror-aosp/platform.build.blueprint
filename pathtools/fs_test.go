@@ -15,6 +15,8 @@
 package pathtools
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -709,6 +711,77 @@ func TestMockFs_Remove(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFsTruncate(t *testing.T) {
+	type testCase struct {
+		name     string
+		content  string
+		size     int64
+		expected string
+		err      error
+	}
+	testCases := []testCase{
+		{"grow", "abc", 6, "abc\x00\x00\x00", nil},
+		{"shrink", "abc", 2, "ab", nil},
+		{"same size", "abc", 3, "abc", nil},
+		{"zero", "abc", 0, "", nil},
+		{"from zero", "", 0, "", nil},
+		{"negative", "", -1, "", os.ErrInvalid},
+	}
+
+	run := func(t *testing.T, fs FileSystem, test testCase) {
+		path := "TestFsTruncate_" + test.name
+		f, err := fs.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0666)
+		if err != nil {
+			t.Fatalf("fs.OpenFile: %v", err)
+		}
+		defer f.Close()
+		_, err = f.Write([]byte(test.content))
+		if err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+
+		err = f.Truncate(test.size)
+		checkErr(t, test.err, err)
+		if err != nil {
+			return
+		}
+		f.Close()
+
+		got, err := readFile(fs, path)
+		if err != nil {
+			t.Fatalf("readFile: %v", err)
+		}
+
+		if got != test.expected {
+			t.Errorf("expected %q got %q", test.expected, got)
+		}
+	}
+
+	for _, test := range testCases {
+		t.Run(test.name, func(t *testing.T) {
+			t.Run("mock", func(t *testing.T) {
+				run(t, MockFs(nil), test)
+			})
+			t.Run("os", func(t *testing.T) {
+				run(t, NewOsFs(os.TempDir()), test)
+			})
+		})
+	}
+}
+
+func readFile(fs FileSystem, path string) (string, error) {
+	r, err := fs.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("fs.Open: %w", err)
+	}
+	defer r.Close()
+	content, err := io.ReadAll(r)
+	if err != nil {
+		return "", fmt.Errorf("io.ReadAll: %w", err)
+	}
+	return string(content), nil
 }
 
 func syscallError(err error) error {

@@ -90,13 +90,18 @@ type ReaderAtSeekerCloser interface {
 	io.Closer
 }
 
+type WriteTruncateCloser interface {
+	io.WriteCloser
+	Truncate(size int64) error
+}
+
 type FileSystem interface {
 	// Open opens a file for reading. Follows symlinks.
 	Open(name string) (ReaderAtSeekerCloser, error)
 
 	// OpenFile opens a file for read/write, if the file does not exist, and the
 	// O_CREATE flag is passed, it is created with mode perm (before umask).
-	OpenFile(name string, flag int, perm fs.FileMode) (io.WriteCloser, error)
+	OpenFile(name string, flag int, perm fs.FileMode) (WriteTruncateCloser, error)
 
 	// Remove removes a file or a directory.
 	Remove(path string) error
@@ -198,9 +203,13 @@ type OsFile struct {
 
 // Close closes file and releases the open file descriptor semaphore
 func (f *OsFile) Close() error {
-	err := f.File.Close()
-	f.fs.release()
-	return err
+	if f.File != nil {
+		err := f.File.Close()
+		f.fs.release()
+		f.File = nil
+		return err
+	}
+	return nil
 }
 
 func (fs *osFs) Open(name string) (ReaderAtSeekerCloser, error) {
@@ -212,7 +221,7 @@ func (fs *osFs) Open(name string) (ReaderAtSeekerCloser, error) {
 	return &OsFile{f, fs}, nil
 }
 
-func (fs *osFs) OpenFile(name string, flag int, perm fs.FileMode) (io.WriteCloser, error) {
+func (fs *osFs) OpenFile(name string, flag int, perm fs.FileMode) (WriteTruncateCloser, error) {
 	fs.acquire()
 	f, err := os.OpenFile(fs.toAbs(name), flag, perm)
 	if err != nil {
@@ -222,7 +231,7 @@ func (fs *osFs) OpenFile(name string, flag int, perm fs.FileMode) (io.WriteClose
 }
 
 func (fs *osFs) Remove(path string) error {
-	_, err := os.Stat(path)
+	_, err := os.Stat(fs.toAbs(path))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil // Directory doesn't exist, so nothing to remove.
@@ -231,7 +240,7 @@ func (fs *osFs) Remove(path string) error {
 		return fmt.Errorf("failed to check status of directory '%s': %w", path, err)
 	}
 
-	return os.RemoveAll(path)
+	return os.RemoveAll(fs.toAbs(path))
 }
 
 func (fs *osFs) Exists(name string) (bool, bool, error) {
@@ -372,9 +381,30 @@ func (b *MockFileWriter) Write(p []byte) (n int, err error) {
 	b.fs.lock.Lock()
 	defer b.fs.lock.Unlock()
 	b.fs.files[b.name] = append(b.fs.files[b.name], p...)
-	return n, nil
+	return len(p), nil
 }
-func (m *mockFs) OpenFile(name string, flag int, perm fs.FileMode) (io.WriteCloser, error) {
+
+func (b *MockFileWriter) Truncate(size int64) error {
+	if size < 0 {
+		return os.ErrInvalid
+	}
+	b.fs.lock.Lock()
+	defer b.fs.lock.Unlock()
+	f := b.fs.files[b.name]
+	if int(size) < len(f) {
+		f = f[:size]
+	} else {
+		f = append(f, make([]byte, int(size)-len(f))...)
+	}
+	b.fs.files[b.name] = f
+	return nil
+}
+
+func (b *MockFileWriter) Close() error {
+	return nil
+}
+
+func (m *mockFs) OpenFile(name string, flag int, perm fs.FileMode) (WriteTruncateCloser, error) {
 	// For mockFs we simplify the logic here by just either creating a new file or
 	// truncating an existing one.
 	m.lock.Lock()
@@ -382,15 +412,9 @@ func (m *mockFs) OpenFile(name string, flag int, perm fs.FileMode) (io.WriteClos
 	name = filepath.Clean(name)
 	name = m.followSymlinks(name)
 	m.files[name] = []byte{}
-	return struct {
-		io.Closer
-		io.Writer
-	}{
-		ioutil.NopCloser(nil),
-		&MockFileWriter{
-			name: name,
-			fs:   m,
-		},
+	return &MockFileWriter{
+		name: name,
+		fs:   m,
 	}, nil
 }
 
