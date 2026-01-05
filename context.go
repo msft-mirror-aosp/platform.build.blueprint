@@ -2209,12 +2209,6 @@ func (c *Context) resolveDependencies(ctx context.Context, config interface{}) (
 			return
 		}
 
-		c.BeginEvent("clone_modules")
-		if !c.SkipCloneModulesAfterMutators {
-			c.cloneModules()
-		}
-		defer c.EndEvent("clone_modules")
-
 		c.dependenciesReady = true
 	})
 
@@ -3673,21 +3667,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	return deps, errs
 }
 
-// Replaces every build logic module with a clone of itself.  Prevents introducing problems where
-// a mutator sets a non-property member variable on a module, which works until a later mutator
-// creates variants of that module.
-func (c *Context) cloneModules() {
-	errs := parallelVisit(c.iterateAllVariants(), unorderedVisitorImpl{}, parallelVisitLimit,
-		func(m *moduleInfo, pause pauseFunc) bool {
-			m.logicModule, m.properties = c.cloneLogicModule(m)
-			m.logicModule.setInfo(m)
-			return false
-		})
-	if len(errs) > 0 {
-		panic(errs)
-	}
-}
-
 // Removes modules[i] from the list and inserts newModules... where it was located, returning
 // the new slice and the index of the last inserted element
 func spliceModules(modules moduleList, i int, newModules moduleList) (moduleList, int) {
@@ -3786,6 +3765,14 @@ func (c *Context) generateModuleBuildActions(config interface{},
 					}
 				}()
 				if !module.restoreModuleBuildActions(c) || c.incrementalProviderTest {
+					if !c.SkipCloneModulesAfterMutators {
+						// Replaces every build logic module with a clone of itself.  Prevents introducing problems where
+						// a mutator sets a non-property member variable on a module, which works until a later mutator
+						// creates variants of that module.
+						module.logicModule, module.properties = c.cloneLogicModule(module)
+						module.logicModule.setInfo(module)
+					}
+
 					module.logicModule.GenerateBuildActions(mctx)
 				}
 				module.calculateProviderHash()
