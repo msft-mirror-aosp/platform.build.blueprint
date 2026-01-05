@@ -214,7 +214,7 @@ type Context struct {
 
 	incrementalProviderTest bool
 
-	buildActionsCache       *BuildActionCache
+	keyValueStoreCache      *KeyValueStoreCache
 	buildActionsToCacheLock sync.Mutex
 	orderOnlyStringsCache   OrderOnlyStringsCache
 	orderOnlyStrings        syncmap.SyncMap[uniquelist.UniqueList[string], *orderOnlyStringsInfo]
@@ -628,7 +628,7 @@ type commonIncrementalInfo struct {
 	// restored.
 	hasUnrestoredProvider []bool
 	providerRestoreLock   sync.Mutex
-	buildActionCacheKey   *BuildActionCacheKey
+	buildActionCacheKey   *DataCacheKey
 	globCache             []globResultCache
 	providerInfo
 }
@@ -995,7 +995,7 @@ func (c *Context) CacheAllBuildActions(soongOutDir string) (err error) {
 		return err
 	}
 	defer func() {
-		err = errors.Join(err, c.buildActionsCache.close())
+		err = errors.Join(err, c.keyValueStoreCache.close())
 	}()
 	err = c.EncContext.EncodeReferences()
 	return err
@@ -3183,20 +3183,20 @@ func (c *Context) PrepareBuildActions(config interface{}) (deps []string, errs [
 		// TODO(b/356414070): Revisit this logic once we have a clearer picture about
 		// how the incremental build pieces fit together.
 		if c.GetIncrementalEnabled() {
-			if c.buildActionsCache == nil {
-				c.buildActionsCache = &BuildActionCache{}
+			if c.keyValueStoreCache == nil {
+				c.keyValueStoreCache = &KeyValueStoreCache{}
 				dbPath := filepath.Join(c.SrcDir(), c.IncrementalDBDir())
 				// Remove gob files and all the cached data from the key-value store for a full build.
 				if !c.GetIncrementalAnalysis() {
-					err := errors.Join(c.buildActionsCache.reset(c, dbPath), c.fs.Remove(filepath.Join(dbPath, OrderOnlyStringsCacheFile)))
+					err := errors.Join(c.keyValueStoreCache.reset(c, dbPath), c.fs.Remove(filepath.Join(dbPath, OrderOnlyStringsCacheFile)))
 					if err != nil {
 						panic(fmt.Errorf("error resetting incremental db: %w", err))
 					}
 				}
-				if err := c.buildActionsCache.open(dbPath); err != nil {
+				if err := c.keyValueStoreCache.open(dbPath); err != nil {
 					panic(fmt.Errorf("error opening incremental db: %w", err))
 				}
-				c.EncContext = gobtools.NewEncContext(c.buildActionsCache.referencesDb)
+				c.EncContext = gobtools.NewEncContext(c.keyValueStoreCache.referencesDb)
 			}
 
 			for _, p := range packageContexts {
@@ -3920,7 +3920,7 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 				if p == nil {
 					continue
 				}
-				err := c.buildActionsCache.writeProvider(c.EncContext, info.providerInitialValueHashes[i], CachedProvider{
+				err := c.keyValueStoreCache.writeProvider(c.EncContext, info.providerInitialValueHashes[i], CachedProvider{
 					Id:    providerRegistry[i],
 					Value: p,
 				})
@@ -3934,7 +3934,7 @@ func (c *Context) generateOneSingletonBuildActions(config interface{},
 					})
 			}
 
-			if err := c.buildActionsCache.writeSingletonBuildAction(c.EncContext, info.buildActionCacheKey,
+			if err := c.keyValueStoreCache.writeSingletonBuildAction(c.EncContext, info.buildActionCacheKey,
 				&SingletonActionCachedData{
 					ProviderHashes:           providerHashes,
 					DependencyProviderHashes: cache,
@@ -3967,7 +3967,7 @@ func (c *Context) restoreSingleton(info *singletonInfo) {
 		return
 	}
 
-	info.buildActionCacheKey = &BuildActionCacheKey{
+	info.buildActionCacheKey = &DataCacheKey{
 		Id: info.name,
 	}
 
@@ -3977,7 +3977,7 @@ func (c *Context) restoreSingleton(info *singletonInfo) {
 		return
 	}
 
-	data, err := c.buildActionsCache.readSingletonBuildAction(c.EncContext, info.buildActionCacheKey)
+	data, err := c.keyValueStoreCache.readSingletonBuildAction(c.EncContext, info.buildActionCacheKey)
 	if err != nil {
 		panic(err)
 	}
@@ -5375,7 +5375,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 				parallelVisitSimple(slices.Values(modules), parallelVisitLimit,
 					func(m *moduleInfo, _ int) []error {
 						if !m.incrementalRestored {
-							m.cacheModuleBuildActions(c.EncContext, c.buildActionsCache)
+							m.cacheModuleBuildActions(c.EncContext, c.keyValueStoreCache)
 						}
 						return nil
 					})
@@ -5466,7 +5466,7 @@ func (c *Context) writeIncrementalModules(modules []*moduleInfo, baseWriter *nin
 
 		if m.incrementalRestored && !c.incrementalProviderTest {
 			// Read from the cache if the module is restored.
-			moduleBytes, err = c.buildActionsCache.readNinjaStatements(m.buildActionCacheKey)
+			moduleBytes, err = c.keyValueStoreCache.readNinjaStatements(m.buildActionCacheKey)
 		} else {
 			// Generate statements for dirty modules.
 			inMemoryWriter := bufferPool.Get().(*bytes.Buffer)
@@ -5484,7 +5484,7 @@ func (c *Context) writeIncrementalModules(modules []*moduleInfo, baseWriter *nin
 				moduleBytes = slices.Clone(inMemoryWriter.Bytes())
 				// Write the newly generated statements back to the cache for incremental module.
 				if m.buildActionCacheKey != nil {
-					err = c.buildActionsCache.writeNinjaStatements(m.buildActionCacheKey, moduleBytes)
+					err = c.keyValueStoreCache.writeNinjaStatements(m.buildActionCacheKey, moduleBytes)
 				}
 			}
 		}
@@ -5581,7 +5581,7 @@ func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 	for _, info := range c.singletonInfo {
 		if info.incrementalRestored && !c.incrementalProviderTest {
 			// Read from the cache if the singleton is restored.
-			ninjaBytes, err = c.buildActionsCache.readNinjaStatements(info.buildActionCacheKey)
+			ninjaBytes, err = c.keyValueStoreCache.readNinjaStatements(info.buildActionCacheKey)
 			if err != nil {
 				return err
 			}
@@ -5631,7 +5631,7 @@ func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 			ninjaBytes = inMemoryWriter.Bytes()
 
 			if info.incrementalSupported {
-				c.buildActionsCache.writeNinjaStatements(info.buildActionCacheKey, ninjaBytes)
+				c.keyValueStoreCache.writeNinjaStatements(info.buildActionCacheKey, ninjaBytes)
 			}
 		}
 		nw.writer.Write(ninjaBytes)

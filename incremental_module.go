@@ -83,7 +83,7 @@ func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
 	}
 
 	// Store the cache key and hash for use when writing this module to the cache.
-	m.buildActionCacheKey = &BuildActionCacheKey{
+	m.buildActionCacheKey = &DataCacheKey{
 		Id: m.moduleCacheKey(),
 	}
 	m.buildActionInputHash = hash
@@ -100,7 +100,7 @@ func (m *moduleInfo) restoreModuleBuildActions(ctx *Context) bool {
 	}
 
 	// Read the module metadata from the cache.
-	data, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, m.buildActionCacheKey)
+	data, err := ctx.keyValueStoreCache.readModuleBuildAction(ctx.EncContext, m.buildActionCacheKey)
 	if err != nil {
 		panic(err)
 	}
@@ -195,7 +195,7 @@ func (m *moduleInfo) calculateProviderHash() {
 	}
 }
 
-func (m *moduleInfo) cacheModuleBuildActions(ctx gobtools.EncContext, buildActionsCache *BuildActionCache) {
+func (m *moduleInfo) cacheModuleBuildActions(ctx gobtools.EncContext, buildActionsCache *KeyValueStoreCache) {
 	var providerHashes []ProviderHash
 
 	for i, p := range m.providers {

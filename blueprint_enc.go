@@ -191,7 +191,7 @@ func (r Variation) GetTypeId() int16 {
 
 // begin of incremental.go
 func init() {
-	BuildActionCacheKeyGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(BuildActionCacheKey) })
+	DataCacheKeyGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(DataCacheKey) })
 	CachedProviderGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(CachedProvider) })
 	ProviderHashGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(ProviderHash) })
 	ModuleActionCachedDataGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(ModuleActionCachedData) })
@@ -199,7 +199,7 @@ func init() {
 	OrderOnlyStringsCacheGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(OrderOnlyStringsCache) })
 }
 
-func (r BuildActionCacheKey) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
+func (r DataCacheKey) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	var err error
 
 	if err = gobtools.EncodeString(buf, r.Id); err != nil {
@@ -208,15 +208,15 @@ func (r BuildActionCacheKey) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) 
 	return err
 }
 
-func (r BuildActionCacheKey) CustomHash(hasher *proptools.Hasher) error {
-	hasher.WriteString(":blueprint.BuildActionCacheKey")
+func (r DataCacheKey) CustomHash(hasher *proptools.Hasher) error {
+	hasher.WriteString(":blueprint.DataCacheKey")
 	hasher.WriteInt(1)
 	hasher.WriteString(":.string")
 	hasher.WriteString(r.Id)
 	return nil
 }
 
-func (r *BuildActionCacheKey) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
+func (r *DataCacheKey) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
 	err = gobtools.DecodeString(buf, &r.Id)
@@ -227,10 +227,10 @@ func (r *BuildActionCacheKey) Decode(ctx gobtools.EncContext, buf *bytes.Reader)
 	return err
 }
 
-var BuildActionCacheKeyGobRegId int16
+var DataCacheKeyGobRegId int16
 
-func (r BuildActionCacheKey) GetTypeId() int16 {
-	return BuildActionCacheKeyGobRegId
+func (r DataCacheKey) GetTypeId() int16 {
+	return DataCacheKeyGobRegId
 }
 
 func (r CachedProvider) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
