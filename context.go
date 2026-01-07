@@ -72,26 +72,47 @@ type sandboxConfig interface {
 	ActionSandboxMetrics() *SandboxMetrics
 }
 
+type SandboxedAction struct {
+	Name      string
+	Sandboxed bool
+}
+
 // SandboxMetrics tracks the total number of rules and action sandboxing disabled
 // (i.e. opted-out) rules in action sandboxed builds
 type SandboxMetrics struct {
+	deduper       sync.Map
 	totalRules    int64
 	disabledRules int64
+	actions       []SandboxedAction
 }
 
-func (s *SandboxMetrics) updateSandboxMetrics(isSandboxDisabled bool) {
-	atomic.AddInt64(&s.totalRules, 1)
-	if isSandboxDisabled {
-		atomic.AddInt64(&s.disabledRules, 1)
+func (s *SandboxMetrics) updateSandboxMetrics(name string, source string, isSandboxDisabled bool) {
+	if source != "" {
+		if _, ok := s.deduper.LoadOrStore(source, true); ok {
+			return
+		}
+		name = source
 	}
+	s.totalRules += 1
+	if isSandboxDisabled {
+		s.disabledRules += 1
+	}
+	s.actions = append(s.actions, SandboxedAction{
+		Name:      name,
+		Sandboxed: !isSandboxDisabled,
+	})
 }
 
 func (s *SandboxMetrics) TotalRules() int64 {
-	return atomic.LoadInt64(&s.totalRules)
+	return s.totalRules
 }
 
 func (s *SandboxMetrics) DisabledRules() int64 {
-	return atomic.LoadInt64(&s.disabledRules)
+	return s.disabledRules
+}
+
+func (s *SandboxMetrics) Actions() []SandboxedAction {
+	return s.actions
 }
 
 // A Context contains all the state needed to parse a set of Blueprints files
@@ -6165,6 +6186,40 @@ func (c *Context) getModule(moduleName string, variant []Variation) *moduleInfo 
 		}
 	}
 	return nil
+}
+
+// RecordSandboxMetrics visits all the rules and records their sandboxing state in the metrics.
+func (c *Context) RecordSandboxMetrics(config any) {
+	sbConfig := config.(sandboxConfig)
+	metrics := sbConfig.ActionSandboxMetrics()
+
+	if !sbConfig.IsActionSandboxedBuild() || metrics == nil {
+		return
+	}
+	// We would get incorrect results if we recorded these metrics on an incremental analysis,
+	// as we wouldn't process all rules
+	if c.GetIncrementalAnalysis() {
+		return
+	}
+
+	for rule, def := range c.globalRules {
+		name := c.nameTracker.Rule(rule)
+		metrics.updateSandboxMetrics(name, def.Source, def.SandboxDisabled)
+	}
+
+	for module := range c.iterateAllVariants() {
+		for _, r := range module.actionDefs.rules {
+			name := r.fullName(nil)
+			metrics.updateSandboxMetrics(name, r.def_.Source, r.def_.SandboxDisabled)
+		}
+	}
+
+	for _, info := range c.singletonInfo {
+		for _, r := range info.actionDefs.rules {
+			name := r.fullName(nil)
+			metrics.updateSandboxMetrics(name, r.def_.Source, r.def_.SandboxDisabled)
+		}
+	}
 }
 
 var fileHeaderTemplate = template.Must(template.New("fileHeader").Parse(

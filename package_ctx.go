@@ -763,16 +763,6 @@ func (r *ruleFunc) def(config interface{}) (*ruleDef, error) {
 		return nil, err
 	}
 
-	sboxConfig, ok := config.(sandboxConfig)
-	if ok && !sboxConfig.IsActionSandboxedBuild() {
-		// sandbox_disabled variable should be written to the ninja file only when
-		// action sandboxing is enabled, to account for the executors that do not
-		// support this variable and to decrease the ninja file size.
-		params.SandboxDisabled = false
-	} else if ok && sboxConfig.IsActionSandboxedBuild() && sboxConfig.ActionSandboxMetrics() != nil {
-		sboxConfig.ActionSandboxMetrics().updateSandboxMetrics(params.SandboxDisabled)
-	}
-
 	def, err := parseRuleParams(config, r.scope(), &params)
 	if err != nil {
 		panic(fmt.Errorf("error parsing RuleParams for %s: %s", r, err))
