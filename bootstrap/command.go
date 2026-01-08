@@ -176,6 +176,8 @@ func RunBlueprint(args Args, stopBefore StopBefore, ctx *blueprint.Context, conf
 		providersValidationChan <- ctx.VerifyProvidersWereUnchanged()
 	}()
 
+	ctx.RecordSandboxMetrics(config)
+
 	var out blueprint.StringWriterWriter
 	var buf *bufio.Writer
 
