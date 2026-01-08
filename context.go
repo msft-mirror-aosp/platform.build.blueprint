@@ -1010,8 +1010,7 @@ func cacheEncData(ctx *Context, soongOutDir string, fileName string, data gobtoo
 }
 
 func writeToCache(ctx *Context, soongOutDir string, fileName string, buf *bytes.Buffer) error {
-	file, err := ctx.fs.OpenFile(filepath.Join(ctx.SrcDir(), soongOutDir, fileName),
-		os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+	file, err := pathtools.OpenWithTruncateOnClose(ctx.fs, filepath.Join(ctx.SrcDir(), soongOutDir, fileName))
 	if err != nil {
 		return err
 	}
@@ -5082,13 +5081,6 @@ func (s *pkgAssociationSorter) Swap(i, j int) {
 }
 
 func (c *Context) writeBuildFileHeader(nw *ninjaWriter) error {
-	headerTemplate := template.New("fileHeader")
-	_, err := headerTemplate.Parse(fileHeaderTemplate)
-	if err != nil {
-		// This is a programming error.
-		panic(err)
-	}
-
 	var pkgs []pkgAssociation
 	maxNameLen := 0
 	for pkg, name := range c.nameTracker.pkgNames {
@@ -5112,7 +5104,7 @@ func (c *Context) writeBuildFileHeader(nw *ninjaWriter) error {
 	}
 
 	buf := bytes.NewBuffer(nil)
-	err = headerTemplate.Execute(buf, params)
+	err := fileHeaderTemplate.Execute(buf, params)
 	if err != nil {
 		return err
 	}
@@ -5352,12 +5344,6 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 		return err
 	}
 
-	headerTemplate := template.New("moduleHeader")
-	if _, err := headerTemplate.Parse(moduleHeaderTemplate); err != nil {
-		// This is a programming error.
-		panic(err)
-	}
-
 	if shardNinja {
 		var wg sync.WaitGroup
 		errorCh := make(chan error)
@@ -5368,7 +5354,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 			wg.Add(1)
 			go func(file string, batchModules []*moduleInfo) {
 				defer wg.Done()
-				f, err := c.fs.OpenFile(JoinPath(c.SrcDir(), file), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, OutFilePermissions)
+				f, err := pathtools.OpenWithTruncateOnClose(c.fs, JoinPath(c.SrcDir(), file))
 				if err != nil {
 					errorCh <- fmt.Errorf("error opening Ninja file shard: %s", err)
 					return
@@ -5387,7 +5373,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 					}
 				}()
 				writer := newNinjaWriter(buf)
-				err = c.writeIncrementalModules(batchModules, writer, headerTemplate)
+				err = c.writeIncrementalModules(batchModules, writer)
 				if err != nil {
 					errorCh <- err
 				}
@@ -5427,7 +5413,7 @@ func (c *Context) writeAllModuleActions(nw *ninjaWriter, shardNinja bool, ninjaF
 		}
 		return nil
 	} else {
-		return c.writeModuleAction(modules, nw, headerTemplate)
+		return c.writeModuleAction(modules, nw)
 	}
 }
 
@@ -5472,7 +5458,7 @@ func parallelVisitSimple(moduleIter iter.Seq[*moduleInfo], limit int, visit func
 	}
 	return errors
 }
-func (c *Context) writeIncrementalModules(modules []*moduleInfo, baseWriter *ninjaWriter, headerTemplate *template.Template) error {
+func (c *Context) writeIncrementalModules(modules []*moduleInfo, baseWriter *ninjaWriter) error {
 	// Use a sync.Pool to reuse buffers and reduce memory allocations.
 	bufferPool := sync.Pool{
 		New: func() any {
@@ -5505,7 +5491,7 @@ func (c *Context) writeIncrementalModules(modules []*moduleInfo, baseWriter *nin
 			defer headerBufPool.Put(headerBuf)
 
 			mWriter := newNinjaWriter(inMemoryWriter)
-			err = c.writeOneModuleAction(m, mWriter, headerTemplate, headerBuf)
+			err = c.writeOneModuleAction(m, mWriter, headerBuf)
 			if err == nil {
 				// Make a copy of the bytes, as the buffer will be reused.
 				moduleBytes = slices.Clone(inMemoryWriter.Bytes())
@@ -5540,17 +5526,17 @@ func (c *Context) writeIncrementalModules(modules []*moduleInfo, baseWriter *nin
 	return nil
 }
 
-func (c *Context) writeModuleAction(modules []*moduleInfo, nw *ninjaWriter, headerTemplate *template.Template) error {
+func (c *Context) writeModuleAction(modules []*moduleInfo, nw *ninjaWriter) error {
 	buf := bytes.NewBuffer(nil)
 	for _, module := range modules {
-		if err := c.writeOneModuleAction(module, nw, headerTemplate, buf); err != nil {
+		if err := c.writeOneModuleAction(module, nw, buf); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c *Context) writeOneModuleAction(module *moduleInfo, nw *ninjaWriter, headerTemplate *template.Template, buf *bytes.Buffer) error {
+func (c *Context) writeOneModuleAction(module *moduleInfo, nw *ninjaWriter, buf *bytes.Buffer) error {
 	if len(module.actionDefs.variables)+len(module.actionDefs.rules)+len(module.actionDefs.buildDefs) == 0 {
 		return nil
 	}
@@ -5573,7 +5559,7 @@ func (c *Context) writeOneModuleAction(module *moduleInfo, nw *ninjaWriter, head
 		"pos":       relPos,
 		"variant":   module.variant.name,
 	}
-	if err := headerTemplate.Execute(buf, infoMap); err != nil {
+	if err := moduleHeaderTemplate.Execute(buf, infoMap); err != nil {
 		return err
 	}
 
@@ -5599,15 +5585,10 @@ func (c *Context) writeOneModuleAction(module *moduleInfo, nw *ninjaWriter, head
 func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 	c.BeginEvent("singletons")
 	defer c.EndEvent("singletons")
-	headerTemplate := template.New("singletonHeader")
-	_, err := headerTemplate.Parse(singletonHeaderTemplate)
-	if err != nil {
-		// This is a programming error.
-		panic(err)
-	}
 
 	buf := bytes.NewBuffer(nil)
 	var ninjaBytes []byte
+	var err error
 	inMemoryWriter := bytes.NewBuffer(nil)
 
 	for _, info := range c.singletonInfo {
@@ -5634,7 +5615,7 @@ func (c *Context) writeAllSingletonActions(nw *ninjaWriter) error {
 				"name":      info.name,
 				"goFactory": factoryName,
 			}
-			err = headerTemplate.Execute(buf, infoMap)
+			err = singletonHeaderTemplate.Execute(buf, infoMap)
 			if err != nil {
 				return err
 			}
@@ -6186,7 +6167,8 @@ func (c *Context) getModule(moduleName string, variant []Variation) *moduleInfo 
 	return nil
 }
 
-var fileHeaderTemplate = `******************************************************************************
+var fileHeaderTemplate = template.Must(template.New("fileHeader").Parse(
+	`******************************************************************************
 ***            This file is generated and should not be edited             ***
 ******************************************************************************
 {{if .Pkgs}}
@@ -6195,20 +6177,22 @@ they were generated by the following Go packages:
 {{range .Pkgs}}
     {{.PkgName}} [from Go package {{.PkgPath}}]{{end}}{{end}}
 
-`
+`))
 
-var moduleHeaderTemplate = `# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+var moduleHeaderTemplate = template.Must(template.New("moduleHeader").Parse(
+	`# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 Module:  {{.name}}
 Variant: {{.variant}}
 Type:    {{.typeName}}
 Factory: {{.goFactory}}
 Defined: {{.pos}}
-`
+`))
 
-var singletonHeaderTemplate = `# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
+var singletonHeaderTemplate = template.Must(template.New("singletonHeader").Parse(
+	`# # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # # #
 Singleton: {{.name}}
 Factory:   {{.goFactory}}
-`
+`))
 
 func JoinPath(base, path string) string {
 	if filepath.IsAbs(path) {
