@@ -285,7 +285,7 @@ func maybeRestoreProviders(c *Context, m *commonIncrementalInfo, provider *provi
 			m.providerRestoreLock.Lock()
 			defer m.providerRestoreLock.Unlock()
 			if m.hasUnrestoredProvider[provider.id] {
-				p, err := c.buildActionsCache.readProvider(c.EncContext, m.providerInitialValueHashes[provider.id], provider)
+				p, err := c.keyValueStoreCache.readProvider(c.EncContext, m.providerInitialValueHashes[provider.id], provider)
 				if err != nil {
 					panic(err)
 				}

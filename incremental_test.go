@@ -147,12 +147,12 @@ func incrementalSetup(t *testing.T) *Context {
 
 	ctx := bpSetup(t, bp)
 
-	cache := &BuildActionCache{}
+	cache := &KeyValueStoreCache{}
 	err := cache.openForTests()
 	if err != nil {
 		t.Fatalf("failed to open cache: %s", err)
 	}
-	ctx.buildActionsCache = cache
+	ctx.keyValueStoreCache = cache
 
 	return ctx
 }
@@ -183,7 +183,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 	cacheKey, hash := calculateHashKey(ctx, incInfo, []proptools.Hash{hash})
 	var providerValue any = IncrementalTestInfo{Value: "MyIncrementalModule"}
 	providerHash, _ := proptools.CalculateHashReflection(providerValue)
-	ctx.buildActionsCache.writeModuleBuildAction(ctx.EncContext, &cacheKey, &ModuleActionCachedData{
+	ctx.keyValueStoreCache.writeModuleBuildAction(ctx.EncContext, &cacheKey, &ModuleActionCachedData{
 		InputHash: hash,
 		ProviderHashes: []ProviderHash{{
 			Id:   &IncrementalTestProviderKey.providerKey,
@@ -192,13 +192,13 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 		OrderOnlyStrings: orderOnlyStrings,
 		GlobCache:        calculateGlobCache(),
 	})
-	ctx.buildActionsCache.writeProvider(ctx.EncContext, providerHash, CachedProvider{
+	ctx.keyValueStoreCache.writeProvider(ctx.EncContext, providerHash, CachedProvider{
 		Id:    &IncrementalTestProviderKey.providerKey,
 		Value: providerValue,
 	})
-	ctx.buildActionsCache.writeNinjaStatements(&cacheKey, []byte(incrementalModuleNinja))
+	ctx.keyValueStoreCache.writeNinjaStatements(&cacheKey, []byte(incrementalModuleNinja))
 
-	ctx.buildActionsCache.flush()
+	ctx.keyValueStoreCache.flush()
 
 	ctx.SetIncrementalEnabled(true)
 	ctx.SetIncrementalAnalysis(true)
@@ -206,7 +206,7 @@ func incrementalSetupForRestore(ctx *Context, orderOnlyStrings []string) any {
 	return providerValue
 }
 
-func calculateHashKey(ctx *Context, m *moduleInfo, providerHashes []proptools.Hash) (BuildActionCacheKey, proptools.Hash) {
+func calculateHashKey(ctx *Context, m *moduleInfo, providerHashes []proptools.Hash) (DataCacheKey, proptools.Hash) {
 	hash, err := proptools.CalculateHashReflection(m.properties)
 	if err != nil {
 		panic(newPanicErrorf(err, "failed to calculate properties hash"))
@@ -219,7 +219,7 @@ func calculateHashKey(ctx *Context, m *moduleInfo, providerHashes []proptools.Ha
 		panic(newPanicErrorf(err, "failed to calculate cache input hash"))
 	}
 	m.cachedUniqueName = ctx.nameInterface.UniqueName(newNamespaceContext(m), m.group.name)
-	return BuildActionCacheKey{
+	return DataCacheKey{
 		Id: m.moduleCacheKey(),
 	}, hash
 }
@@ -262,10 +262,10 @@ func TestCacheBuildActions(t *testing.T) {
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	barInfo := ctx.moduleGroupFromName("MyBarModule", nil).modules.firstModule()
 
-	ctx.buildActionsCache.flush()
+	ctx.keyValueStoreCache.flush()
 
 	cacheKey, hash := calculateHashKey(ctx, incInfo, []proptools.Hash{barInfo.providersHash})
-	cache, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, &cacheKey)
+	cache, err := ctx.keyValueStoreCache.readModuleBuildAction(ctx.EncContext, &cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}
@@ -287,7 +287,7 @@ func TestCacheBuildActions(t *testing.T) {
 		t.Errorf("expected: %v actual %v", expectedCache, *cache)
 	}
 
-	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, providerHash, &IncrementalTestProviderKey.providerKey)
+	provider, err := ctx.keyValueStoreCache.readProvider(ctx.EncContext, providerHash, &IncrementalTestProviderKey.providerKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}
@@ -298,7 +298,7 @@ func TestCacheBuildActions(t *testing.T) {
 		t.Errorf("expected: %v actual %v", providerValue, provider.Value)
 	}
 
-	ninja, err := ctx.buildActionsCache.readNinjaStatements(&cacheKey)
+	ninja, err := ctx.keyValueStoreCache.readNinjaStatements(&cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}
@@ -459,7 +459,7 @@ func TestOrderOnlyStringsCaching(t *testing.T) {
 	w := newNinjaWriter(buf)
 	ctx.writeAllModuleActions(w, true, "test.ninja")
 
-	ctx.buildActionsCache.flush()
+	ctx.keyValueStoreCache.flush()
 
 	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
 
@@ -492,7 +492,7 @@ func TestOrderOnlyStringsRestoring(t *testing.T) {
 	w := newNinjaWriter(buf)
 	ctx.writeAllModuleActions(w, true, "test.ninja")
 
-	ctx.buildActionsCache.flush()
+	ctx.keyValueStoreCache.flush()
 
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
@@ -526,12 +526,12 @@ func TestOrderOnlyStringsValidWhenOnlyRestoredModuleUseIt(t *testing.T) {
 		`
 
 	ctx := bpSetup(t, bp)
-	cache := &BuildActionCache{}
+	cache := &KeyValueStoreCache{}
 	err := cache.openForTests()
 	if err != nil {
 		t.Fatalf("failed to open cache: %s", err)
 	}
-	ctx.buildActionsCache = cache
+	ctx.keyValueStoreCache = cache
 	incrementalSetupForRestore(ctx, orderOnlyStrings)
 	ctx.orderOnlyStringsCache = make(OrderOnlyStringsCache)
 	ctx.orderOnlyStringsCache[phony] = []string{"test.lib"}
@@ -550,7 +550,7 @@ func TestOrderOnlyStringsValidWhenOnlyRestoredModuleUseIt(t *testing.T) {
 	w := newNinjaWriter(buf)
 	ctx.writeAllModuleActions(w, true, "test.ninja")
 
-	ctx.buildActionsCache.flush()
+	ctx.keyValueStoreCache.flush()
 
 	incInfo := ctx.moduleGroupFromName("MyIncrementalModule", nil).modules.firstModule()
 	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
@@ -631,7 +631,7 @@ func TestSharedOrderOnlyStringsRestoringNoDuplicates(t *testing.T) {
 	w := newNinjaWriter(buf)
 	ctx.writeAllModuleActions(w, true, "test.ninja")
 
-	ctx.buildActionsCache.flush()
+	ctx.keyValueStoreCache.flush()
 
 	verifyOrderOnlyStringsCache(t, ctx, incInfo, barInfo)
 	verifyBuildDefsShouldContain(t, fooInfo, phony)
@@ -672,7 +672,7 @@ func verifyOrderOnlyStringsCache(t *testing.T, ctx *Context, incInfo, barInfo *m
 	// Verify that the dedup-* order only strings used by MyIncrementalModule is
 	// cached along with its other cached values
 	cacheKey, _ := calculateHashKey(ctx, incInfo, []proptools.Hash{barInfo.providersHash})
-	cache, err := ctx.buildActionsCache.readModuleBuildAction(ctx.EncContext, &cacheKey)
+	cache, err := ctx.keyValueStoreCache.readModuleBuildAction(ctx.EncContext, &cacheKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}
@@ -792,11 +792,11 @@ func singletonCacheSetup(t *testing.T, modifiers ...func(bp string) string) *Con
 	ctx.RegisterSingletonType(noProviderParallelSingletonName, noProviderParallelSingletonFactory, true)
 	ctx.RegisterSingletonType(sequentialSingletonName, sequentialSingletonFactory, false)
 
-	cache := &BuildActionCache{}
+	cache := &KeyValueStoreCache{}
 	if err := cache.openForTests(); err != nil {
 		t.Fatalf("failed to open cache: %s", err)
 	}
-	ctx.buildActionsCache = cache
+	ctx.keyValueStoreCache = cache
 
 	ctx.SetIncrementalEnabled(true)
 	ctx.SetIncrementalAnalysis(true)
@@ -817,11 +817,11 @@ func TestSingletonCache(t *testing.T) {
 		t.Errorf("expected GenerateBuildActions to be called once, got %d", sequentialSingleton{}.GenerateBuildActionsCalled)
 	}
 
-	ctx.buildActionsCache.flush()
+	ctx.keyValueStoreCache.flush()
 
 	// 2. Verify cache entry was written
-	seqCacheKey := &BuildActionCacheKey{Id: sequentialSingletonName}
-	data, err := ctx.buildActionsCache.readSingletonBuildAction(ctx.EncContext, seqCacheKey)
+	seqCacheKey := &DataCacheKey{Id: sequentialSingletonName}
+	data, err := ctx.keyValueStoreCache.readSingletonBuildAction(ctx.EncContext, seqCacheKey)
 	if err != nil {
 		t.Fatalf("failed to read cache: %v", err)
 	}
@@ -832,7 +832,7 @@ func TestSingletonCache(t *testing.T) {
 	// 3. Verify providers were cached
 	seqSingletonProviderHash := ctx.singletonByName(sequentialSingletonName).providerInitialValueHashes[singletonTestInfoProvider.providerKey.id]
 
-	provider, err := ctx.buildActionsCache.readProvider(ctx.EncContext, seqSingletonProviderHash, &singletonTestInfoProvider.providerKey)
+	provider, err := ctx.keyValueStoreCache.readProvider(ctx.EncContext, seqSingletonProviderHash, &singletonTestInfoProvider.providerKey)
 	if err != nil {
 		t.Fatalf("read failed with an error: %s", err)
 	}
@@ -850,7 +850,7 @@ func TestSingletonCache(t *testing.T) {
 	if err := ctx.writeAllSingletonActions(w); err != nil {
 		t.Fatalf("failed to write all singleton actions: %v", err)
 	}
-	ninja, err := ctx.buildActionsCache.readNinjaStatements(seqCacheKey)
+	ninja, err := ctx.keyValueStoreCache.readNinjaStatements(seqCacheKey)
 	if err != nil {
 		t.Fatalf("failed to read cache: %v", err)
 	}
@@ -876,12 +876,12 @@ func TestSingletonRestore(t *testing.T) {
 		t.Fatalf("failed to write all singleton actions: %v", err)
 	}
 
-	ctx.buildActionsCache.flush()
+	ctx.keyValueStoreCache.flush()
 
 	// Now simulate an incremental build
-	oldCache := ctx.buildActionsCache
+	oldCache := ctx.keyValueStoreCache
 	ctx = singletonCacheSetup(t)
-	ctx.buildActionsCache = oldCache
+	ctx.keyValueStoreCache = oldCache
 
 	_, errs = ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
@@ -957,12 +957,12 @@ func TestSingletonNotRestoreForSingletonChange(t *testing.T) {
 		t.Fatalf("failed to write all singleton actions: %v", err)
 	}
 
-	ctx.buildActionsCache.flush()
+	ctx.keyValueStoreCache.flush()
 
 	// Now simulate an incremental build
-	oldCache := ctx.buildActionsCache
+	oldCache := ctx.keyValueStoreCache
 	ctx = singletonCacheSetup(t, changeModuleName("MyFooModule", "changed"))
-	ctx.buildActionsCache = oldCache
+	ctx.keyValueStoreCache = oldCache
 
 	_, errs = ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
@@ -1018,12 +1018,12 @@ func TestIncrementalTransitiveDependencies(t *testing.T) {
 
 	ctx := bpSetup(t, bp)
 
-	cache := &BuildActionCache{}
+	cache := &KeyValueStoreCache{}
 	err := cache.openForTests()
 	if err != nil {
 		t.Fatalf("failed to open cache: %s", err)
 	}
-	ctx.buildActionsCache = cache
+	ctx.keyValueStoreCache = cache
 
 	ctx.SetIncrementalEnabled(true)
 
@@ -1057,7 +1057,7 @@ func TestIncrementalTransitiveDependencies(t *testing.T) {
 	ctx = bpSetup(t, bp)
 	ctx.SetIncrementalEnabled(true)
 	ctx.SetIncrementalAnalysis(true)
-	ctx.buildActionsCache = cache
+	ctx.keyValueStoreCache = cache
 
 	_, errs = ctx.PrepareBuildActions(nil)
 	if len(errs) > 0 {
