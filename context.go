@@ -228,6 +228,9 @@ type Context struct {
 
 	// index of the last mutator which uses `CreateModule`.
 	mutatorIndexAfterLastCreateModule int
+
+	// If splitAllVariants is true, all variants will be created upfront rather than on-demand.
+	splitAllVariants bool
 }
 
 type orderOnlyStringsInfo struct {
@@ -997,6 +1000,14 @@ func (c *Context) GetIncrementalEnabled() bool {
 
 func (c *Context) SetIncrementalDebugFile(file string) {
 	c.incrementalDebugFile = file
+}
+
+func (c *Context) GetSplitAllVariants() bool {
+	return c.splitAllVariants
+}
+
+func (c *Context) SetSplitAllVariants(s bool) {
+	c.splitAllVariants = s
 }
 
 func (c *Context) CacheAllBuildActions(soongOutDir string) (err error) {
