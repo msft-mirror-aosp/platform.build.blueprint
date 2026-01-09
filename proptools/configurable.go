@@ -651,18 +651,33 @@ func (c *Configurable[T]) AddPostProcessor(p ConfigurablePostProcessor[T]) {
 // Get returns the final value for the configurable property.
 // A configurable property may be unset, in which case Get will return nil.
 func (c *Configurable[T]) Get(evaluator ConfigurableEvaluator) ConfigurableOptional[T] {
-	result := c.evaluate(c.propertyName, evaluator)
-	return configuredValuePtrToOptional(result)
+	result, err := c.GetOrErr(evaluator)
+	if err != nil {
+		evaluator.PropertyErrorf(c.propertyName, "%s", err.Error())
+	}
+	return result
 }
 
 // GetOrDefault is the same as Get, but will return the provided default value if the property was unset.
 func (c *Configurable[T]) GetOrDefault(evaluator ConfigurableEvaluator, defaultValue T) T {
-	result := c.evaluate(c.propertyName, evaluator)
+	result, err := c.evaluate(c.propertyName, evaluator)
+	if err != nil {
+		evaluator.PropertyErrorf(c.propertyName, "%s", err.Error())
+		result = nil
+	}
 	if result != nil {
 		// Copy the result so that it can't be changed from soong
 		return copyConfiguredValue(*result)
 	}
 	return defaultValue
+}
+
+func (c *Configurable[T]) GetOrErr(evaluator ConfigurableEvaluator) (ConfigurableOptional[T], error) {
+	result, err := c.evaluate(c.propertyName, evaluator)
+	if err != nil {
+		result = nil
+	}
+	return configuredValuePtrToOptional(result), err
 }
 
 type valueAndIndices[T ConfigurableElements] struct {
@@ -677,9 +692,9 @@ type valueAndIndices[T ConfigurableElements] struct {
 	end   int
 }
 
-func (c *Configurable[T]) evaluate(propertyName string, evaluator ConfigurableEvaluator) *T {
+func (c *Configurable[T]) evaluate(propertyName string, evaluator ConfigurableEvaluator) (*T, error) {
 	if c.inner == nil {
-		return nil
+		return nil, nil
 	}
 
 	if len(*c.postProcessors) == 0 {
@@ -721,7 +736,10 @@ func (c *Configurable[T]) evaluate(propertyName string, evaluator ConfigurableEv
 
 	var currentValues []valueAndIndices[T]
 	for curr, i := c.inner, 0; curr != nil; curr, i = curr.next, i+1 {
-		value := curr.single.evaluateNonTransitive(propertyName, evaluator)
+		value, err := curr.single.evaluateNonTransitive(propertyName, evaluator)
+		if err != nil {
+			return nil, err
+		}
 		currentValues = append(currentValues, valueAndIndices[T]{
 			value:   value,
 			replace: curr.replace,
@@ -731,7 +749,7 @@ func (c *Configurable[T]) evaluate(propertyName string, evaluator ConfigurableEv
 	}
 
 	if c.postProcessors == nil || len(*c.postProcessors) == 0 {
-		return mergeValues(currentValues).value
+		return mergeValues(currentValues).value, nil
 	}
 
 	foundPostProcessor := true
@@ -766,7 +784,7 @@ func (c *Configurable[T]) evaluate(propertyName string, evaluator ConfigurableEv
 		currentValues = newValues
 	}
 
-	return mergeValues(currentValues).value
+	return mergeValues(currentValues).value, nil
 }
 
 func mergeValues[T ConfigurableElements](values []valueAndIndices[T]) valueAndIndices[T] {
@@ -786,46 +804,45 @@ func mergeValues[T ConfigurableElements](values []valueAndIndices[T]) valueAndIn
 	return result
 }
 
-func (c *configurableInner[T]) evaluate(propertyName string, evaluator ConfigurableEvaluator) *T {
+func (c *configurableInner[T]) evaluate(propertyName string, evaluator ConfigurableEvaluator) (*T, error) {
 	if c == nil {
-		return nil
+		return nil, nil
 	}
 	if c.next == nil {
 		return c.single.evaluateNonTransitive(propertyName, evaluator)
 	}
+	v1, err := c.single.evaluateNonTransitive(propertyName, evaluator)
+	if err != nil {
+		return nil, err
+	}
+	v2, err := c.next.evaluate(propertyName, evaluator)
+	if err != nil {
+		return nil, err
+	}
 	if c.replace {
-		return replaceConfiguredValues(
-			c.single.evaluateNonTransitive(propertyName, evaluator),
-			c.next.evaluate(propertyName, evaluator),
-		)
+		return replaceConfiguredValues(v1, v2), nil
 	} else {
-		return appendConfiguredValues(
-			c.single.evaluateNonTransitive(propertyName, evaluator),
-			c.next.evaluate(propertyName, evaluator),
-		)
+		return appendConfiguredValues(v1, v2), nil
 	}
 }
 
-func (c *singleConfigurable[T]) evaluateNonTransitive(propertyName string, evaluator ConfigurableEvaluator) *T {
+func (c *singleConfigurable[T]) evaluateNonTransitive(propertyName string, evaluator ConfigurableEvaluator) (*T, error) {
 	for i, case_ := range c.cases {
 		if len(c.conditions) != len(case_.patterns) {
-			evaluator.PropertyErrorf(propertyName, "Expected each case to have as many patterns as conditions. conditions: %d, len(cases[%d].patterns): %d", len(c.conditions), i, len(case_.patterns))
-			return nil
+			return nil, fmt.Errorf("Expected each case to have as many patterns as conditions. conditions: %d, len(cases[%d].patterns): %d", len(c.conditions), i, len(case_.patterns))
 		}
 	}
 	if len(c.conditions) == 0 {
 		if len(c.cases) == 0 {
-			return nil
+			return nil, nil
 		} else if len(c.cases) == 1 {
 			if result, err := expressionToConfiguredValue[T](c.cases[0].value, c.scope); err != nil {
-				evaluator.PropertyErrorf(propertyName, "%s", err.Error())
-				return nil
+				return nil, err
 			} else {
-				return result
+				return result, nil
 			}
 		} else {
-			evaluator.PropertyErrorf(propertyName, "Expected 0 or 1 branches in an unconfigured select, found %d", len(c.cases))
-			return nil
+			return nil, fmt.Errorf("Expected 0 or 1 branches in an unconfigured select, found %d", len(c.cases))
 		}
 	}
 	values := make([]ConfigurableValue, len(c.conditions))
@@ -839,8 +856,7 @@ func (c *singleConfigurable[T]) evaluateNonTransitive(propertyName string, evalu
 		allMatch := true
 		for i, pat := range case_.patterns {
 			if !pat.matchesValueType(values[i]) {
-				evaluator.PropertyErrorf(propertyName, "Expected all branches of a select on condition %s to have type %s, found %s", c.conditions[i].String(), values[i].typ.String(), pat.typ.String())
-				return nil
+				return nil, fmt.Errorf("Expected all branches of a select on condition %s to have type %s, found %s", c.conditions[i].String(), values[i].typ.String(), pat.typ.String())
 			}
 			if !pat.matchesValue(values[i]) {
 				allMatch = false
@@ -851,8 +867,7 @@ func (c *singleConfigurable[T]) evaluateNonTransitive(propertyName string, evalu
 		if allMatch && !foundMatch {
 			newScope := createScopeWithBindings(c.scope, case_.patterns, values)
 			if r, err := expressionToConfiguredValue[T](case_.value, newScope); err != nil {
-				evaluator.PropertyErrorf(propertyName, "%s", err.Error())
-				return nil
+				return nil, err
 			} else {
 				result = r
 			}
@@ -860,11 +875,10 @@ func (c *singleConfigurable[T]) evaluateNonTransitive(propertyName string, evalu
 		}
 	}
 	if foundMatch {
-		return result
+		return result, nil
 	}
 
-	evaluator.PropertyErrorf(propertyName, "%s had value %s, which was not handled by the select statement", c.conditions[nonMatchingIndex].String(), values[nonMatchingIndex].String())
-	return nil
+	return nil, fmt.Errorf("%s had value %s, which was not handled by the select statement", c.conditions[nonMatchingIndex].String(), values[nonMatchingIndex].String())
 }
 
 func createScopeWithBindings(parent *parser.Scope, patterns []ConfigurablePattern, values []ConfigurableValue) *parser.Scope {
