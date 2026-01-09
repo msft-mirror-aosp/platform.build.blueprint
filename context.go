@@ -414,6 +414,9 @@ func (group *moduleGroup) moduleByVariantName(name string) *moduleInfo {
 
 // registerSupportedVariants registers the supported variants, but does not create them
 func (group *moduleGroup) registerSupportedVariants(mutatorName string, infos TransitionInfos) {
+	if len(infos) == 0 {
+		return
+	}
 	group.variantOnDemandLock.Lock()
 	defer group.variantOnDemandLock.Unlock()
 	if group.supportedVariantsOnDemand == nil {
@@ -425,39 +428,23 @@ func (group *moduleGroup) registerSupportedVariants(mutatorName string, infos Tr
 	group.supportedVariantsOnDemand[mutatorName] = append(group.supportedVariantsOnDemand[mutatorName], infos...)
 }
 
-func (group *moduleGroup) supportsOnDemandVariant(onDemandVariants variationMap, far bool, atMutatorIndex int, transitionMutators []*transitionMutatorImpl) bool {
-	for mutator, variant := range onDemandVariants.variations {
-		if supportedOnDemandVariants, exists := group.supportedVariantsOnDemand[mutator]; exists {
-			found := false
-			for _, supportedOnDemandVariant := range supportedOnDemandVariants {
-				if supportedOnDemandVariant.Variation() == variant {
-					found = true
-				}
-			}
-			if !found {
-				return false
-			}
-		} else {
-			return false
+// searchOnDemandVariant returns true if an on-demand variant creation should be attempted.
+// It uses the following heuristics.
+// 1. SplitOnDemand is non-nil for any mutator in the requested variation map.
+// 2. No transition has occurred yet
+//
+// Feasibility of on-demand variant request will be determined subsequently by using `applyTransitions`
+// across a sliding window on the on-demand variant.
+func (group *moduleGroup) searchOnDemandVariant(onDemandVariants variationMap, far bool, atMutatorIndex int, transitionMutators []*transitionMutatorImpl) bool {
+	for mutator, _ := range onDemandVariants.variations {
+		if _, exists := group.supportedVariantsOnDemand[mutator]; exists {
+			return true
 		}
 	}
-	transitionMutatorNameToIndex := map[string]int{}
-	for _, t := range transitionMutators {
-		transitionMutatorNameToIndex[t.name] = t.mutatorIndex
+	if len(transitionMutators) > 0 && atMutatorIndex < transitionMutators[0].mutatorIndex {
+		return true
 	}
-	if !far {
-		// non-far uses strict equality.
-		// check that the mutator keys of requested variant and supported variants of the group match.
-		for mutator := range group.supportedVariantsOnDemand {
-			if index, _ := transitionMutatorNameToIndex[mutator]; atMutatorIndex < index {
-				continue // Non-far, but the transition has not occurred yet.
-			}
-			if _, exists := onDemandVariants.variations[mutator]; !exists {
-				return false
-			}
-		}
-	}
-	return true
+	return false
 }
 
 // createVariantOnDemand uses group.coreModuleInfo.factory() to create an "empty" variant on demand.
@@ -489,12 +476,24 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMuta
 			// Transitive variant on demand.
 			// Set `requestedOnDemandVariant` on this transitive dep.
 			// This will be used in the main coordinator goroutine to create the correct transition for this variant.
-			dep.requestedOnDemandVariant = newmodule.requestedOnDemandVariant
+			for _, transitionMutator := range c.transitionMutators[:c.completedTransitionMutators] {
+				if transitionMutator.mutatorIndex > newmodule.finishedMutator {
+					// Copy requestedOnDemandVariant from rdep to dep on-demand modules.
+					// This will be done only for the transition mutators that have not yet
+					// been completed in rerunMutator.
+					// variation map for earlier transition mutators will be resolved by `findVariant`.
+					//
+					// TODO (spandandas): Does this handle transition mutators between
+					// newmodule.finishedMutator and c.completedTransitionMutators?
+					dep.requestedOnDemandVariant.set(transitionMutator.name, newmodule.requestedOnDemandVariant.get(transitionMutator.name))
+				}
+			}
 		}
 		if p != nil {
 			p(dep)
 		}
 	}
+
 	// initialize the properties from coreModuleInfo.
 	if fromMutatorIndex == c.mutatorIndexAfterLastCreateModule {
 		newlogicmodule, newproperties := c.cloneLogicModule(&newmodule.group.coreModuleInfo)
@@ -507,6 +506,7 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMuta
 		if index < fromMutatorIndex {
 			continue
 		}
+		newmodule.startedMutator = index
 		mctx := &mutatorContext{
 			baseModuleContext: baseModuleContext{
 				context: c,
@@ -522,6 +522,7 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMuta
 			mctx.mutator = mi
 			mi.bottomUpMutator(mctx)
 		}
+		newmodule.finishedMutator = index
 		if len(mctx.reverseDeps) > 0 || len(mctx.replace) > 0 || len(mctx.rename) > 0 {
 			panic("TODO (b/448182009): Add support for AddReverseDependency, ReplaceDependency, Rename")
 		}
@@ -529,6 +530,11 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMuta
 		// The module has been mutated till the current mutator.
 		// Do not mutate further.
 		if index == tillMutatorIndex {
+			break
+		}
+
+		// Err
+		if newmodule.createdOnDemandIncompatible {
 			break
 		}
 	}
@@ -615,6 +621,9 @@ type moduleInfo struct {
 	createdOnDemand            bool
 	createdOnDemandReplaceWith *moduleInfo
 	requestedOnDemandVariant   variationMap
+	// Properties used to determine whether a requested on-demand variant can be created.
+	createdOnDemandIncompatible    bool
+	createdOnDemandSupportedSplits []TransitionInfo
 }
 
 type providerInfo struct {
@@ -2271,9 +2280,8 @@ func blueprintDepsMutator(ctx BottomUpMutatorContext) {
 // for onDemand: true, a copy of the dependency will be created on demand and used as the context
 // for IncomingTransition.
 func (c *Context) applyTransitions(config any, module *moduleInfo, depTag DependencyTag, group *moduleGroup, variant variationMap,
-	requestedVariations []Variation, far bool, onDemand bool) (variationMap, []error) {
+	requestedVariations []Variation, far bool, onDemandMatchingVariant *moduleInfo) (variationMap, []error) {
 	// Initialize some variables that will be used to manage IncomingTransition context of on demand variants.
-	var onDemandMatchingVariant *moduleInfo
 	onDemandFromMutatorIndex := c.mutatorIndexAfterLastCreateModule
 
 	for _, transitionMutator := range c.transitionMutators[:c.completedTransitionMutators] {
@@ -2318,15 +2326,15 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, depTag Depend
 			}
 		}
 
-		if onDemand {
+		if onDemandMatchingVariant != nil {
 			// Mutate the onDemand variant through a moving window,
 			// from the previous transition mutator to the current transition mutator.
 			// This variant can then be used as the context for the IncomingTransition.
-			if onDemandFromMutatorIndex == 0 {
-				onDemandMatchingVariant = c.createVariantOnDemand(group, variant) // initialize
-			}
-			c.rerunMutatorsOnVariantOnDemand(onDemandMatchingVariant, onDemandFromMutatorIndex, transitionMutator.mutatorIndex, nil, config)
 			matchingInputVariant = onDemandMatchingVariant
+			if outgoingTransitionInfo != nil {
+				onDemandMatchingVariant.requestedOnDemandVariant.variations[transitionMutator.name] = outgoingTransitionInfo.Variation()
+			}
+			c.rerunMutatorsOnVariantOnDemand(onDemandMatchingVariant, onDemandFromMutatorIndex, transitionMutator.mutatorIndex, nil, config) // Mutate till the current mutator.
 			onDemandFromMutatorIndex = transitionMutator.mutatorIndex + 1
 		}
 
@@ -2350,6 +2358,23 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, depTag Depend
 				variation = finalTransitionInfo.Variation()
 			}
 			variant.set(transitionMutator.name, variation)
+			// For on-demand variants, check if requested variation can be supported by `SplitOnDemand`.
+			if onDemandMatchingVariant != nil && variation == "" {
+				onDemandMatchingVariant.requestedOnDemandVariant.delete(transitionMutator.name)
+			} else if onDemandMatchingVariant != nil {
+				found := false
+				for _, split := range onDemandMatchingVariant.createdOnDemandSupportedSplits {
+					if split.Variation() == variation {
+						found = true
+					}
+				}
+				if !found {
+					onDemandMatchingVariant.createdOnDemandIncompatible = true
+					return variant, nil
+				}
+				onDemandMatchingVariant.requestedOnDemandVariant.variations[transitionMutator.name] = variation
+				onDemandMatchingVariant.createdOnDemandSupportedSplits = nil // reset for next transition mutator check.
+			}
 		}
 
 		if (matchingInputVariant == nil && !explicitlyRequested) || variant.get(transitionMutator.name) == "" {
@@ -2386,7 +2411,7 @@ func (c *Context) findVariant(config any, module *moduleInfo, depTag DependencyT
 
 	if !reverse {
 		var errs []error
-		newVariant, errs = c.applyTransitions(config, module, depTag, possibleDeps, newVariant, requestedVariations, far, false)
+		newVariant, errs = c.applyTransitions(config, module, depTag, possibleDeps, newVariant, requestedVariations, far, nil)
 		if len(errs) > 0 {
 			return nil, variationMap{}, errs
 		}
@@ -2424,15 +2449,14 @@ func (c *Context) findVariant(config any, module *moduleInfo, depTag DependencyT
 
 	if foundDep == nil &&
 		!c.allowMissingDependencies && // TODO (b/448182009): Skip checking for possible on-demand variant if allowMissingDependencies is set.
-		possibleDeps.supportsOnDemandVariant(newVariantBeforeTransitions, far, mutatorIndex, c.transitionMutators) {
-		newVariantOnDemand, errs := c.applyTransitions(config, module, depTag, possibleDeps, newVariantBeforeTransitions, requestedVariations, far, true)
-		if len(errs) > 0 {
-			return nil, variationMap{}, errs
+		possibleDeps.searchOnDemandVariant(newVariantBeforeTransitions, far, mutatorIndex, c.transitionMutators) {
+		onDemandVariantForIncomingTransition := c.createVariantOnDemand(possibleDeps, newVariantBeforeTransitions)
+		newVariantOnDemand, errs := c.applyTransitions(config, module, depTag, possibleDeps, newVariantBeforeTransitions, requestedVariations, far, onDemandVariantForIncomingTransition)
+		if len(errs) > 0 || onDemandVariantForIncomingTransition.createdOnDemandIncompatible {
+			return nil, newVariantOnDemand, errs
 		}
-		if possibleDeps.supportsOnDemandVariant(newVariantOnDemand, far, mutatorIndex, c.transitionMutators) {
-			foundDep = c.createVariantOnDemand(possibleDeps, newVariantOnDemand)
-			newVariant = newVariantOnDemand
-		}
+		foundDep = c.createVariantOnDemand(possibleDeps, onDemandVariantForIncomingTransition.requestedOnDemandVariant.clone())
+		newVariant = onDemandVariantForIncomingTransition.requestedOnDemandVariant.clone()
 	}
 
 	return foundDep, newVariant, nil
@@ -3683,6 +3707,7 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		module.createdOnDemandReplaceWith = nil
 		module.newDirectDeps = nil
 		module.newOnDemandReverseDeps = nil
+		module.createdOnDemandSupportedSplits = nil
 	}
 
 	return deps, errs
