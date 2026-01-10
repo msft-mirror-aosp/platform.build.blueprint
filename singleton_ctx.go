@@ -335,16 +335,6 @@ func (s *singletonContext) Rule(pctx PackageContext, name string,
 	s.scope.ReparentTo(pctx)
 
 	config := s.Config()
-	sbConfig, ok := config.(sandboxConfig)
-	if ok && !sbConfig.IsActionSandboxedBuild() {
-		// sandbox_disabled variable should be written to the ninja file only when
-		// action sandboxing is enabled, to account for the executors that do not
-		// support this variable and to decrease the ninja file size.
-		params.SandboxDisabled = false
-	} else if ok && sbConfig.IsActionSandboxedBuild() && sbConfig.ActionSandboxMetrics() != nil {
-		sbConfig.ActionSandboxMetrics().updateSandboxMetrics(params.SandboxDisabled)
-	}
-
 	r, err := s.scope.AddLocalRule(config, name, &params, argNames...)
 	if err != nil {
 		panic(err)

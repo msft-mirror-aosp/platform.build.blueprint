@@ -70,6 +70,7 @@ type RuleParams struct {
 	Rspfile         string  // The response file.
 	RspfileContent  string  // The response file content.
 	SandboxDisabled bool    // Whether to disable sandboxing for this rule
+	Source          string  // A string identify the source of this rule, used to dedup rules in the reporting of certain metrics
 
 	// These fields are used internally in Blueprint
 	CommandDeps      []string // Command-specific implicit dependencies to prepend to builds
@@ -221,6 +222,8 @@ type ruleDef struct {
 	Comment          string
 	Pool             Pool
 	Variables        map[string]*ninjaString
+	SandboxDisabled  bool
+	Source           string
 }
 
 func parseRuleParams(config any, scope scope, params *RuleParams) (*ruleDef, error) {
@@ -303,8 +306,15 @@ func parseRuleParams(config any, scope scope, params *RuleParams) (*ruleDef, err
 		r.Variables["rspfile_content"] = value
 	}
 
-	if params.SandboxDisabled {
-		r.Variables["sandbox_disabled"] = simpleNinjaString("true")
+	r.SandboxDisabled = params.SandboxDisabled
+	r.Source = params.Source
+	// sandbox_disabled variable should be written to the ninja file only when
+	// action sandboxing is enabled, to account for the executors that do not
+	// support this variable.
+	if config.(sandboxConfig).IsActionSandboxedBuild() {
+		if params.SandboxDisabled {
+			r.Variables["sandbox_disabled"] = simpleNinjaString("true")
+		}
 	}
 
 	r.CommandDeps, err = parseNinjaStrings(scope, params.CommandDeps)
