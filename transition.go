@@ -246,6 +246,10 @@ func (t *transitionMutatorImpl) addRequiredVariation(m *moduleInfo, variation st
 func (t *transitionMutatorImpl) propagateMutator(mctx BaseModuleContext) {
 	module := mctx.(*mutatorContext).module
 	mutatorSplits := t.mutator.Split(mctx)
+	if mctx.base().context.GetSplitAllVariants() {
+		// If splitAllVariants=true, frontload the creation of all supported variants.
+		mutatorSplits = append(mutatorSplits, t.mutator.SplitOnDemand(mctx)...)
+	}
 	if mutatorSplits == nil || len(mutatorSplits) == 0 {
 		panic(fmt.Errorf("transition mutator %s returned no splits for module %s", t.name, mctx.ModuleName()))
 	}
@@ -294,7 +298,9 @@ func (t *transitionMutatorImpl) propagateMutator(mctx BaseModuleContext) {
 	module.outgoingTransitionCache = outgoingTransitionVariationCache
 	module.splitTransitionVariations = transitionVariations
 	module.splitTransitionInfos = transitionInfos
-	module.group.registerSupportedVariants(t.name, t.mutator.SplitOnDemand(mctx))
+	if !mctx.base().context.GetSplitAllVariants() {
+		module.group.registerSupportedVariants(t.name, t.mutator.SplitOnDemand(mctx))
+	}
 }
 
 var (
