@@ -671,10 +671,14 @@ func propertyToValue(typ reflect.Type, property *parser.Property) (reflect.Value
 	case reflect.Int64:
 		b, ok := property.Value.(*parser.Int64)
 		if !ok {
-			return value, &UnpackError{
-				fmt.Errorf("can't assign %s value to int64 property %q",
-					property.Value.Type(), property.Name),
-				property.Value.Pos(),
+			if err := selectOnNonConfigurablePropertyError(property); err != nil {
+				return value, err
+			} else {
+				return value, &UnpackError{
+					fmt.Errorf("can't assign %s value to int64 property %q",
+						property.Value.Type(), property.Name),
+					property.Value.Pos(),
+				}
 			}
 		}
 		value = reflect.ValueOf(b.Value)
