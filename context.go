@@ -464,6 +464,7 @@ func (c *Context) createVariantOnDemand(group *moduleGroup, onDemandVariants var
 		createdOnDemand:          true,
 		requestedOnDemandVariant: onDemandVariants,
 		relBlueprintsFile:        group.coreModuleInfo.relBlueprintsFile,
+		pos:                      group.coreModuleInfo.pos,
 	}
 	newmodule.createdOnDemandReplaceWith = &newmodule
 	newlogicmodule.setInfo(&newmodule)
