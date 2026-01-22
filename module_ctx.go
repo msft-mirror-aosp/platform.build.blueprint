@@ -598,6 +598,7 @@ func (d *baseModuleContext) storeCoreModuleInfo() {
 		directDeps:        slices.Clone(d.module.directDeps),
 		factory:           d.module.factory,
 		relBlueprintsFile: d.module.relBlueprintsFile,
+		pos:               d.module.pos,
 	}
 	d.module.group.coreModuleInfo = newModule
 }
