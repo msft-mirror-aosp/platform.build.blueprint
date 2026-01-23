@@ -422,6 +422,8 @@ func NewConfigurableCase[T ConfigurableElements](patterns []ConfigurablePattern,
 			valueExpr = &parser.String{Value: *v}
 		case *bool:
 			valueExpr = &parser.Bool{Value: *v}
+		case *int64:
+			valueExpr = &parser.Int64{Value: *v}
 		case *[]string:
 			innerValues := make([]parser.Expression, 0, len(*v))
 			for _, x := range *v {
@@ -474,6 +476,8 @@ func configurableType(configuredType reflect.Type) (reflect.Type, error) {
 		return reflect.TypeOf(Configurable[string]{}), nil
 	case reflect.Bool:
 		return reflect.TypeOf(Configurable[bool]{}), nil
+	case reflect.Int64:
+		return reflect.TypeOf(Configurable[int64]{}), nil
 	case reflect.Slice:
 		switch configuredType.Elem().Kind() {
 		case reflect.String:
@@ -567,6 +571,10 @@ func NewConfigurable[T ConfigurableElements](conditions []ConfigurableCondition,
 		},
 		postProcessors: &zeroPostProcessors,
 	}
+}
+
+func NewEmptyConfigurable[T ConfigurableElements]() Configurable[T] {
+	return NewConfigurable[T](nil, nil)
 }
 
 func NewSimpleConfigurable[T ConfigurableElements](value T) Configurable[T] {
@@ -921,6 +929,8 @@ func appendConfiguredValues[T ConfigurableElements](a, b *T) *T {
 			result = result || *any(b).(*bool)
 		}
 		return any(&result).(*T)
+	case *int64:
+		panic(`ints cannot be appended, tag the Configurable field with android:"replace_instead_of_append"`)
 	default:
 		panic("Should be unreachable")
 	}
@@ -1291,6 +1301,8 @@ func configuredValueToExpression[T ConfigurableElements](value T) parser.Express
 			values = append(values, &parser.String{Value: x})
 		}
 		return &parser.List{Values: values}
+	case int64:
+		return &parser.Int64{Value: v}
 	default:
 		panic("unhandled type in configuredValueToExpression")
 	}
@@ -1357,6 +1369,8 @@ func promoteValueToConfigurable(origional reflect.Value) reflect.Value {
 			expr = &parser.String{Value: origional.String()}
 		case reflect.Bool:
 			expr = &parser.Bool{Value: origional.Bool()}
+		case reflect.Int64:
+			expr = &parser.Int64{Value: origional.Int()}
 		case reflect.Slice:
 			strList := origional.Interface().([]string)
 			exprList := make([]parser.Expression, 0, len(strList))
@@ -1365,7 +1379,7 @@ func promoteValueToConfigurable(origional reflect.Value) reflect.Value {
 			}
 			expr = &parser.List{Values: exprList}
 		default:
-			panic("can only convert string/bool/[]string to configurable")
+			panic("can only convert string/bool/int64/[]string to configurable")
 		}
 	}
 	switch kind {
@@ -1390,6 +1404,17 @@ func promoteValueToConfigurable(origional reflect.Value) reflect.Value {
 				},
 			},
 			postProcessors: &[][]postProcessor[bool]{},
+		})
+	case reflect.Int64:
+		return reflect.ValueOf(Configurable[int64]{
+			inner: &configurableInner[int64]{
+				single: singleConfigurable[int64]{
+					cases: []ConfigurableCase[int64]{{
+						value: expr,
+					}},
+				},
+			},
+			postProcessors: &[][]postProcessor[int64]{},
 		})
 	case reflect.Slice:
 		return reflect.ValueOf(Configurable[[]string]{

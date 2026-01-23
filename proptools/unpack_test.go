@@ -782,6 +782,36 @@ var validUnpackTestCases = []struct {
 		},
 	},
 	{
+		name: "Int64 configurable property that isn't configured",
+		input: `
+			m {
+				foo: 1234,
+			}
+		`,
+		output: []interface{}{
+			&struct {
+				Foo Configurable[int64]
+			}{
+				Foo: newConfigurableWithPropertyName(
+					"foo",
+					nil,
+					[]ConfigurableCase[int64]{{
+						value: &parser.Int64{
+							LiteralPos: scanner.Position{
+								Offset: 17,
+								Line:   3,
+								Column: 10,
+							},
+							Value: 1234,
+							Token: "1234",
+						},
+					}},
+					false,
+				),
+			},
+		},
+	},
+	{
 		name: "String list configurable property that isn't configured",
 		input: `
 			m {
@@ -1355,6 +1385,63 @@ func TestUnpackErrors(t *testing.T) {
 				`<input>:6:16: unrecognized property "foo.foo_prop3"`,
 				`<input>:9:15: unrecognized property "bar.bar_prop"`,
 				`<input>:11:9: unrecognized property "baz"`,
+			},
+		},
+		{
+			name: "Select on non-configurable string property",
+			input: `
+			m {
+				foo: select(soong_config_variable("my_namespace", "my_variable"), {
+					"a": "b",
+					default: unset,
+				}),
+			}
+		`,
+			output: []interface{}{
+				&struct {
+					Foo *string
+				}{},
+			},
+			errors: []string{
+				`<input>:3:10: can't assign select statement to non-configurable property "foo". This requires a small soong change to enable in most cases, please file a go/soong-bug if you'd like to use a select statement here`,
+			},
+		},
+		{
+			name: "Select on non-configurable bool property",
+			input: `
+			m {
+				foo: select(soong_config_variable("my_namespace", "my_variable"), {
+					"a": true,
+					default: unset,
+				}),
+			}
+		`,
+			output: []interface{}{
+				&struct {
+					Foo *bool
+				}{},
+			},
+			errors: []string{
+				`<input>:3:10: can't assign select statement to non-configurable property "foo". This requires a small soong change to enable in most cases, please file a go/soong-bug if you'd like to use a select statement here`,
+			},
+		},
+		{
+			name: "Select on non-configurable int64 property",
+			input: `
+			m {
+				foo: select(soong_config_variable("my_namespace", "my_variable"), {
+					"a": 1234,
+					default: unset,
+				}),
+			}
+		`,
+			output: []interface{}{
+				&struct {
+					Foo *int64
+				}{},
+			},
+			errors: []string{
+				`<input>:3:10: can't assign select statement to non-configurable property "foo". This requires a small soong change to enable in most cases, please file a go/soong-bug if you'd like to use a select statement here`,
 			},
 		},
 	}
