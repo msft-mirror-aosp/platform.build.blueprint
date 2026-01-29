@@ -3707,6 +3707,34 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		}
 	}
 
+	// Sort the on-demand variants before adding to moduleGroup.
+	// For variants that belong to the same group, the variants will be ordered by SplitOnDemand values.
+	moduleLess := func(a, b *moduleInfo) int {
+		if a.group != b.group {
+			return cmp.Compare(a.group.name, b.group.name)
+		}
+		// Both modules belong to the same group.
+		for mutator, aVariant := range a.variant.variations.variations {
+			bVariant := b.variant.variations.variations[mutator]
+			if aVariant != bVariant {
+				aVariantIndex := -1
+				bVariantIndex := -1
+				for index, variant := range a.group.supportedVariantsOnDemand[mutator] {
+					if aVariant == variant.Variation() {
+						aVariantIndex = index
+					}
+					if bVariant == variant.Variation() {
+						bVariantIndex = index
+					}
+				}
+				return aVariantIndex - bVariantIndex
+			}
+		}
+		return -1
+	}
+
+	slices.SortFunc(onDemandModules, moduleLess)
+
 	for _, module := range onDemandModules {
 		for _, fd := range module.newDirectDeps {
 			fd.reverseDeps = append(fd.reverseDeps, module)
