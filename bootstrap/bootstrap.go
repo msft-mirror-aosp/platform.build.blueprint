@@ -129,19 +129,17 @@ var (
 
 	cp = pctx.StaticRule("cp",
 		blueprint.RuleParams{
-			Command:         "${toybox} cp $in $out",
-			CommandDeps:     []string{`${toybox}`},
-			Description:     "cp $out",
-			SandboxDisabled: true,
+			Command:     "${toybox} cp -P $in $out",
+			CommandDeps: []string{`${toybox}`},
+			Description: "cp $out",
 		},
 		"generator")
 
 	touch = pctx.StaticRule("touch",
 		blueprint.RuleParams{
-			Command:         "${toybox} touch $out",
-			CommandDeps:     []string{`${toybox}`},
-			Description:     "touch $out",
-			SandboxDisabled: true,
+			Command:     "${toybox} touch $out",
+			CommandDeps: []string{`${toybox}`},
+			Description: "touch $out",
 		},
 		"depfile", "generator")
 
