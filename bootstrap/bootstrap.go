@@ -36,6 +36,26 @@ var (
 	goTestRunnerCmd = pctx.StaticVariable("goTestRunnerCmd", filepath.Join("$ToolDir", "gotestrunner"))
 	pluginGenSrcCmd = pctx.StaticVariable("pluginGenSrcCmd", filepath.Join("$ToolDir", "loadplugins"))
 	gobGenCmd       = pctx.StaticVariable("gobGenCmd", filepath.Join("$ToolDir", "gob_gen"))
+	_               = pctx.VariableFunc("toybox", func(ctx blueprint.VariableFuncContext, config interface{}) (string, error) {
+		prebuiltOs := func() string {
+			switch runtime.GOOS {
+			case "linux":
+				switch runtime.GOARCH {
+				case "amd64":
+					return "linux-x86"
+				case "arm64":
+					return "linux-arm64"
+				default:
+					panic(fmt.Errorf("Unknown GOARCH %s", runtime.GOARCH))
+				}
+			case "darwin":
+				return "darwin-x86"
+			default:
+				panic(fmt.Errorf("Unknown GOOS %s", runtime.GOOS))
+			}
+		}()
+		return filepath.Join("prebuilts/build-tools", prebuiltOs, "bin/toybox"), nil
+	})
 
 	parallelCompile = pctx.StaticVariable("parallelCompile", func() string {
 		numCpu := runtime.NumCPU()
@@ -109,35 +129,32 @@ var (
 
 	cp = pctx.StaticRule("cp",
 		blueprint.RuleParams{
-			Command:         "cp $in $out",
-			Description:     "cp $out",
-			SandboxDisabled: true,
+			Command:     "${toybox} cp -P $in $out",
+			CommandDeps: []string{`${toybox}`},
+			Description: "cp $out",
 		},
 		"generator")
 
 	touch = pctx.StaticRule("touch",
 		blueprint.RuleParams{
-			Command:         "touch $out",
-			Description:     "touch $out",
-			SandboxDisabled: true,
+			Command:     "${toybox} touch $out",
+			CommandDeps: []string{`${toybox}`},
+			Description: "touch $out",
 		},
 		"depfile", "generator")
 
 	cat = pctx.StaticRule("Cat",
 		blueprint.RuleParams{
-			Command:         "rm -f $out && cat $in > $out",
-			Description:     "concatenate files to $out",
-			SandboxDisabled: true,
+			Command:     "${toybox} rm -f $out && ${toybox} cat $in > $out",
+			CommandDeps: []string{`${toybox}`},
+			Description: "concatenate files to $out",
 		})
 
-	// ubuntu 14.04 offcially use dash for /bin/sh, and its builtin echo command
-	// doesn't support -e option. Therefore we force to use /bin/bash when writing out
-	// content to file.
 	writeFile = pctx.StaticRule("writeFile",
 		blueprint.RuleParams{
-			Command:         `rm -f $out && /bin/bash -c 'echo -e -n "$$0" > $out' $content`,
-			Description:     "writing file $out",
-			SandboxDisabled: true,
+			Command:     `${toybox} rm -f $out && ${toybox} echo -e -n $content > $out`,
+			CommandDeps: []string{`${toybox}`},
+			Description: "writing file $out",
 		},
 		"content")
 
@@ -164,16 +181,6 @@ var (
 			SandboxDisabled: true,
 		},
 		"builder", "env", "extra", "pool")
-
-	// Work around a Ninja issue.  See https://github.com/martine/ninja/pull/634
-	phony = pctx.StaticRule("phony",
-		blueprint.RuleParams{
-			Command:         "# phony $out",
-			Description:     "phony $out",
-			Generator:       true,
-			SandboxDisabled: true,
-		},
-		"depfile")
 
 	_ = pctx.VariableFunc("ToolDir", func(ctx blueprint.VariableFuncContext, config interface{}) (string, error) {
 		return config.(BootstrapConfig).HostToolDir(), nil
