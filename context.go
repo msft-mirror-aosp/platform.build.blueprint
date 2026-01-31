@@ -3714,7 +3714,8 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			return cmp.Compare(a.group.name, b.group.name)
 		}
 		// Both modules belong to the same group.
-		for mutator, aVariant := range a.variant.variations.variations {
+		for _, mutator := range c.transitionMutatorNames {
+			aVariant := a.variant.variations.variations[mutator]
 			bVariant := b.variant.variations.variations[mutator]
 			if aVariant != bVariant {
 				aVariantIndex := -1
@@ -3727,10 +3728,13 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 						bVariantIndex = index
 					}
 				}
-				return aVariantIndex - bVariantIndex
+				if aVariantIndex != bVariantIndex {
+					return cmp.Compare(aVariantIndex, bVariantIndex)
+				}
+				return cmp.Compare(aVariant, bVariant)
 			}
 		}
-		return -1
+		return 0
 	}
 
 	slices.SortFunc(onDemandModules, moduleLess)
