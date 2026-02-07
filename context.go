@@ -481,7 +481,8 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMuta
 			// Set `requestedOnDemandVariant` on this transitive dep.
 			// This will be used in the main coordinator goroutine to create the correct transition for this variant.
 			for _, transitionMutator := range c.transitionMutators[:c.completedTransitionMutators] {
-				if transitionMutator.mutatorIndex > newmodule.finishedMutator {
+				if transitionMutator.mutatorIndex >
+					newmodule.finishedMutator+1 { // The +1 is to account for Mutate function of transition, which can create additional deps.
 					// Copy requestedOnDemandVariant from rdep to dep on-demand modules.
 					// This will be done only for the transition mutators that have not yet
 					// been completed in rerunMutator.
@@ -2510,6 +2511,11 @@ func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInf
 			Pos: module.pos,
 		}}
 	}
+	if foundDep.createdOnDemand {
+		// `runMutator` will create the dependency edges, deduping on demand variants if necessary.
+		// Also, defer the beforeInModuleList check to the end of runMutator.
+		return foundDep, nil
+	}
 	// AddVariationDependency allows adding a dependency on itself, but only if
 	// that module is earlier in the module list than this one, since we always
 	// run GenerateBuildActions in order for the variants of a module
@@ -2518,10 +2524,6 @@ func (c *Context) addVariationDependency(module *moduleInfo, mutator *mutatorInf
 			Err: fmt.Errorf("%q depends on later version of itself", depName),
 			Pos: module.pos,
 		}}
-	}
-	if foundDep.createdOnDemand {
-		// `runMutator` will create the dependency edges, deduping on demand variants if necessary.
-		return foundDep, nil
 	}
 
 	// The mutator will pause until the newly added dependency has finished running the current mutator,
@@ -3720,6 +3722,17 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			return cmp.Compare(a.group.name, b.group.name)
 		}
 		// Both modules belong to the same group.
+		// If one module is an inter-variant dep of the other, it goes before.
+		for _, dep := range a.directDeps {
+			if dep.module == b {
+				return 1
+			}
+		}
+		for _, dep := range b.directDeps {
+			if dep.module == a {
+				return -1
+			}
+		}
 		for _, mutator := range c.transitionMutatorNames {
 			aVariant := a.variant.variations.variations[mutator]
 			bVariant := b.variant.variations.variations[mutator]
@@ -3748,7 +3761,17 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	for _, module := range onDemandModules {
 		for _, fd := range module.newDirectDeps {
 			fd.reverseDeps = append(fd.reverseDeps, module)
+			// AddVariationDependency allows adding a dependency on itself, but only if
+			// that module is earlier in the module list than this one, since we always
+			// run GenerateBuildActions in order for the variants of a module
+			if fd.group == module.group && beforeInModuleList(module, fd, module.group.modules) {
+				return nil, []error{&BlueprintError{
+					Err: fmt.Errorf("%q depends on later version of itself", module.Name()),
+					Pos: module.pos,
+				}}
+			}
 		}
+
 		module.group.modules = append(module.group.modules, module)
 		// The module has been created and mutated.
 		// For future mutators, this variant is the same as normal variants.
