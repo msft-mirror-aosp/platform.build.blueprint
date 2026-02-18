@@ -18,7 +18,6 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"slices"
 	"sort"
@@ -52,58 +51,47 @@ func (c *Context) glob(pattern string, excludes []string) ([]string, error) {
 
 	key := globToKey(pattern, excludes)
 
-	// Try to get existing glob from the stored results
-	c.globLock.Lock()
-	g, exists := c.globs[key]
-	c.globLock.Unlock()
-
-	if exists {
-		// Glob has already been done, double check it is identical
-		verifyGlob(key, pattern, excludes, g)
-		// Return a copy so that modifications don't affect the cached value.
-		return slices.Clone(g.Matches), nil
-	}
-
-	// Check if the glob was restored from the cache
-	var result pathtools.GlobResult
-	if cachedGlob, exists := c.restoredGlobsFromCache[key]; exists {
-		result = cachedGlob
-	} else {
+	// Try to get existing glob from the stored results, compute it otherwise
+	entry, exists := c.globs.LoadOrCompute(key, func() globsMapEntry {
+		// Check if the glob was restored from the cache
+		if cachedGlob, exists := c.restoredGlobsFromCache[key]; exists {
+			return globsMapEntry{result: cachedGlob}
+		}
 		// Get a globbed file list
 		g, err := c.fs.Glob(pattern, excludes, pathtools.FollowSymlinks)
 		if err != nil {
-			return nil, err
+			return globsMapEntry{err: err}
 		}
-		result = g
+		return globsMapEntry{result: g}
+	})
+
+	if entry.err != nil {
+		return nil, entry.err
 	}
 
-	// Store the results
-	c.globLock.Lock()
-	if g, exists = c.globs[key]; !exists {
-		c.globs[key] = result
-	}
-	c.globLock.Unlock()
-
+	g := entry.result
 	if exists {
-		// Getting the list raced with another goroutine, throw away the results and use theirs
+		// Glob has already been done, double check it is identical
 		verifyGlob(key, pattern, excludes, g)
-		// Return a copy so that modifications don't affect the cached value.
-		return slices.Clone(g.Matches), nil
 	}
-
 	// Return a copy so that modifications don't affect the cached value.
-	return slices.Clone(result.Matches), nil
+	return slices.Clone(g.Matches), nil
 }
 
 // WriteGlobFile writes the list of globs and a timestamp to files next to finalOutFile.
 func (c *Context) WriteGlobFile(finalOutFile string, startTime time.Time) error {
-	globKeys := slices.Collect(maps.Keys(c.globs))
+	var globKeys []globKey
+	c.globs.Range(func(key globKey, value globsMapEntry) bool {
+		globKeys = append(globKeys, key)
+		return true
+	})
 	slices.SortFunc(globKeys, func(a, b globKey) int {
 		return cmp.Or(cmp.Compare(a.pattern, b.pattern), cmp.Compare(a.excludes, b.excludes))
 	})
 	globs := make([]pathtools.GlobResult, 0, len(globKeys))
 	for _, key := range globKeys {
-		globs = append(globs, c.globs[key])
+		entry, _ := c.globs.Load(key)
+		globs = append(globs, entry.result)
 	}
 
 	globsFile, err := os.Create(finalOutFile + ".globs")
@@ -169,6 +157,11 @@ func (c *Context) RestoreGlobsFromCache(finalOutFile string) error {
 type globKey struct {
 	pattern  string
 	excludes string
+}
+
+type globsMapEntry struct {
+	result pathtools.GlobResult
+	err    error
 }
 
 // globToKey converts a pattern and an excludes list into a globKey struct that is hashable and
