@@ -117,6 +117,7 @@ type Property struct {
 	NamePos  scanner.Position
 	ColonPos scanner.Position
 	Value    Expression
+	Deleted  bool
 }
 
 func (p *Property) Copy() *Property {
@@ -518,7 +519,7 @@ func (x *Map) getPropertyImpl(name string) (Property *Property, found bool, inde
 func (x *Map) RemoveProperty(propertyName string) (removed bool) {
 	_, found, index := x.getPropertyImpl(propertyName)
 	if found {
-		x.Properties = append(x.Properties[:index], x.Properties[index+1:]...)
+		x.Properties[index].Deleted = true
 	}
 	return found
 }
@@ -622,6 +623,7 @@ func (x *List) Type() Type { return ListType }
 type String struct {
 	LiteralPos scanner.Position
 	Value      string
+	Deleted    bool
 }
 
 func (x *String) Pos() scanner.Position { return x.LiteralPos }

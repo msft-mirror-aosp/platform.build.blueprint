@@ -40,9 +40,9 @@ func AddStringToList(list *List, s string) (modified bool) {
 }
 
 func RemoveStringFromList(list *List, s string) (modified bool) {
-	for i, v := range list.Values {
+	for _, v := range list.Values {
 		if sv, ok := v.(*String); ok && sv.Value == s {
-			list.Values = append(list.Values[:i], list.Values[i+1:]...)
+			sv.Deleted = true
 			return true
 		} else if !ok {
 			panic(fmt.Errorf("expected string in list, got %s", v.Type()))
