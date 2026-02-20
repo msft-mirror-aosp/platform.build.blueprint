@@ -170,11 +170,11 @@ func processFile(filename string, in io.Reader, out io.Writer) error {
 		}
 	}
 	if *doDiff {
-		data, err := diff(src, res)
+		data, err := diff(src, res, filename)
 		if err != nil {
 			return fmt.Errorf("computing diff: %s", err)
 		}
-		fmt.Printf("diff %s bpfmt/%s\n", filename, filename)
+		fmt.Printf("diff -uw a/%s b/%s\n", filename, filename)
 		out.Write(data)
 	}
 	if !*list && !*write && !*doDiff {
@@ -262,7 +262,7 @@ func main() {
 	}
 }
 
-func diff(b1, b2 []byte) (data []byte, err error) {
+func diff(b1, b2 []byte, filename string) (data []byte, err error) {
 	f1, err := ioutil.TempFile("", "bpfmt")
 	if err != nil {
 		return
@@ -277,7 +277,10 @@ func diff(b1, b2 []byte) (data []byte, err error) {
 	defer f2.Close()
 	f1.Write(b1)
 	f2.Write(b2)
-	data, err = exec.Command("diff", "-uw", f1.Name(), f2.Name()).CombinedOutput()
+	data, err = exec.Command(
+		"diff", "-uw",
+		f1.Name(), "--label", "a/"+filename,
+		f2.Name(), "--label", "b/"+filename).CombinedOutput()
 	if len(data) > 0 {
 		// diff exits with a non-zero status when the files don't match.
 		// Ignore that failure as long as we get output.
