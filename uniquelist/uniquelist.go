@@ -131,25 +131,21 @@ func Make[T comparable](slice []T) UniqueList[T] {
 	uniqueListsForT := getUniqueListMapForType[T]()
 	key := hashSliceContents(slice)
 
-	var p *[]T
 	for {
 		var s []T
-		w, ok := uniqueListsForT.Load(key)
-		if !ok {
+		w, _ := uniqueListsForT.LoadOrCompute(key, func() weak.Pointer[[]T] {
 			s = slices.Clone(slice)
-			w = weak.Make(&s)
-			w, _ = uniqueListsForT.LoadOrStore(key, w)
-		}
+			return weak.Make(&s)
+		})
 
-		p = w.Value()
+		p := w.Value()
 		runtime.KeepAlive(s)
 		if p != nil {
-			break
+			return UniqueList[T]{p}
 		}
 
-		uniqueListsForT.Delete(key)
+		uniqueListsForT.CompareAndDelete(key, w)
 	}
-	return UniqueList[T]{p}
 }
 
 var seed = maphash.MakeSeed()
