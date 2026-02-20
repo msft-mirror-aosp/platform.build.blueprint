@@ -73,9 +73,10 @@ type RuleParams struct {
 	Source          string  // A string identify the source of this rule, used to dedup rules in the reporting of certain metrics
 
 	// These fields are used internally in Blueprint
-	CommandDeps      []string // Command-specific implicit dependencies to prepend to builds
-	CommandOrderOnly []string // Command-specific order-only dependencies to prepend to builds
-	Comment          string   // The comment that will appear above the definition.
+	CommandDeps      []string    // Command-specific implicit dependencies to prepend to builds
+	CommandDepsTools []*HostTool // Command-specific implicit dependencies too, but host tools, used to update CommandDeps
+	CommandOrderOnly []string    // Command-specific order-only dependencies to prepend to builds
+	Comment          string      // The comment that will appear above the definition.
 }
 
 // A command that ninja will run. It's an interpolation of strings and references to host tools,
@@ -249,6 +250,16 @@ func parseRuleParams(config any, scope scope, params *RuleParams) (*ruleDef, err
 		}
 		params.Command = cmd
 		params.CommandDeps = append(params.CommandDeps, deps...)
+	}
+
+	if params.CommandDepsTools != nil {
+		for _, hostTool := range params.CommandDepsTools {
+			_, deps, err := hostTool.getValueAndDeps(config)
+			if err != nil {
+				return nil, err
+			}
+			params.CommandDeps = append(params.CommandDeps, deps...)
+		}
 	}
 
 	if r.Pool != nil && !scope.IsPoolVisible(r.Pool) {
