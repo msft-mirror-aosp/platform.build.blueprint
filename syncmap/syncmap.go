@@ -17,8 +17,13 @@ package syncmap
 import "sync"
 
 // SyncMap is a wrapper around sync.Map that provides type safety via generics.
+// It also has an additional LoadOrCompute() method that can be used to initialize a key only once.
 type SyncMap[K comparable, V any] struct {
 	sync.Map
+}
+
+type syncmapWaiter[V any] struct {
+	value func() V
 }
 
 // Load returns the value stored in the map for a key, or the zero value if no
@@ -27,7 +32,11 @@ type SyncMap[K comparable, V any] struct {
 func (m *SyncMap[K, V]) Load(key K) (value V, ok bool) {
 	v, ok := m.Map.Load(key)
 	if !ok {
-		return *new(V), false
+		var zero V
+		return zero, false
+	}
+	if waiter, ok := v.(*syncmapWaiter[V]); ok {
+		return waiter.value(), true
 	}
 	return v.(V), true
 }
@@ -42,11 +51,37 @@ func (m *SyncMap[K, V]) Store(key K, value V) {
 // The loaded result is true if the value was loaded, false if stored.
 func (m *SyncMap[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	v, loaded := m.Map.LoadOrStore(key, value)
+	if waiter, ok := v.(*syncmapWaiter[V]); ok {
+		return waiter.value(), loaded
+	}
+	return v.(V), loaded
+}
+
+// LoadOrCompute returns the existing value for the key if present.
+// Otherwise, it calls the computer function and stores and returns its result.
+// The loaded result is true if the value was loaded, false if computed and stored.
+// Any other operations that read from the map will wait for the computation to finish for
+// any keys they read.
+func (m *SyncMap[K, V]) LoadOrCompute(key K, computer func() V) (actual V, loaded bool) {
+	waiter := &syncmapWaiter[V]{value: sync.OnceValue(computer)}
+	v, loaded := m.Map.LoadOrStore(key, waiter)
+	if waiter, ok := v.(*syncmapWaiter[V]); ok {
+		value := waiter.value()
+		// Replace the waiter with the real value to save some memory. Use CompareAndSwap
+		// so that if we delete or overwrite the key we won't accidentally store the value again.
+		if !loaded {
+			m.Map.CompareAndSwap(key, waiter, value)
+		}
+		return value, loaded
+	}
 	return v.(V), loaded
 }
 
 func (m *SyncMap[K, V]) Range(f func(key K, value V) bool) {
 	m.Map.Range(func(k, v any) bool {
+		if waiter, ok := v.(*syncmapWaiter[V]); ok {
+			return f(k.(K), waiter.value())
+		}
 		return f(k.(K), v.(V))
 	})
 }

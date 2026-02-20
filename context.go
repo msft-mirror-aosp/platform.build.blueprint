@@ -189,8 +189,7 @@ type Context struct {
 	// cache deps modified to determine whether cachedSortedModuleGroups needs to be recalculated
 	cachedDepsModified bool
 
-	globs    map[globKey]pathtools.GlobResult
-	globLock sync.Mutex
+	globs syncmap.SyncMap[globKey, globsMapEntry]
 
 	restoredGlobsFromCache map[globKey]pathtools.GlobResult
 	restoredGlobMetrics    pathtools.RestoredGlobsMetrics
@@ -869,7 +868,6 @@ func newContext() *Context {
 		EventHandler:          &eventHandler,
 		moduleFactories:       make(map[string]ModuleFactory),
 		nameInterface:         NewSimpleNameInterface(),
-		globs:                 make(map[globKey]pathtools.GlobResult),
 		fs:                    pathtools.OsFs,
 		includeTags:           &IncludeTags{},
 		sourceRootDirs:        &SourceRootDirs{},

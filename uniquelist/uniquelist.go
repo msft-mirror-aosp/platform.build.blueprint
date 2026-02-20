@@ -133,21 +133,22 @@ func Make[T comparable](slice []T) UniqueList[T] {
 
 	var p *[]T
 	for {
+		var s []T
 		w, ok := uniqueListsForT.Load(key)
 		if !ok {
-			s := slices.Clone(slice)
+			s = slices.Clone(slice)
 			w = weak.Make(&s)
 			w, _ = uniqueListsForT.LoadOrStore(key, w)
 		}
 
 		p = w.Value()
+		runtime.KeepAlive(s)
 		if p != nil {
 			break
 		}
 
 		uniqueListsForT.Delete(key)
 	}
-	runtime.KeepAlive(slice)
 	return UniqueList[T]{p}
 }
 
