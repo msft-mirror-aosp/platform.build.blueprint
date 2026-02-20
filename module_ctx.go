@@ -565,11 +565,14 @@ func (d *baseModuleContext) GlobWithDeps(pattern string,
 		if err != nil {
 			panic(newPanicErrorf(err, "failed to calculate hash for glob result: %s", d.ModuleName()))
 		}
-		d.module.globCache = append(d.module.globCache, globResultCache{
+		cacheResult := globResultCache{
 			Pattern:  pattern,
 			Excludes: excludes,
 			Result:   hash,
-		})
+		}
+		if !slices.ContainsFunc(d.module.globCache, func(entry globResultCache) bool { return entry.equal(cacheResult) }) {
+			d.module.globCache = append(d.module.globCache, cacheResult)
+		}
 	}
 	return result, err
 }

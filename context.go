@@ -643,6 +643,10 @@ type globResultCache struct {
 	Result   proptools.Hash
 }
 
+func (g *globResultCache) equal(other globResultCache) bool {
+	return g.Result == other.Result && g.Pattern == other.Pattern && slices.Equal(g.Excludes, other.Excludes)
+}
+
 type moduleIncrementalInfo struct {
 	commonIncrementalInfo
 	buildActionInputHash proptools.Hash
