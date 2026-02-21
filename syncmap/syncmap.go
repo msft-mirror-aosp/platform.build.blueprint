@@ -89,3 +89,12 @@ func (m *SyncMap[K, V]) Range(f func(key K, value V) bool) {
 func (m *SyncMap[K, V]) Delete(key K) {
 	m.Map.Delete(key)
 }
+
+// CompareAndDelete deletes the entry for key if its value is equal to old.
+// The old value must be of a comparable type.
+//
+// If there is no current value for key in the map, CompareAndDelete
+// returns false (even if the old value is the nil interface value).
+func (m *SyncMap[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
+	return m.Map.CompareAndDelete(key, old)
+}
