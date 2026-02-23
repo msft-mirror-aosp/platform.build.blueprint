@@ -270,6 +270,10 @@ func (p *printer) printList(list []Expression, pos, endPos scanner.Position) {
 		p.requestNewline()
 		p.indent(p.curIndent() + 4)
 		for _, value := range list {
+			if sv, ok := value.(*String); ok && sv.Deleted {
+				p.pos = sv.LiteralPos
+				continue
+			}
 			p.printExpression(value)
 			p.printToken(",", noPos)
 			p.requestNewline()
@@ -277,6 +281,10 @@ func (p *printer) printList(list []Expression, pos, endPos scanner.Position) {
 		p.unindent(endPos)
 	} else {
 		for _, value := range list {
+			if sv, ok := value.(*String); ok && sv.Deleted {
+				p.pos = sv.LiteralPos
+				continue
+			}
 			p.printExpression(value)
 		}
 	}
@@ -290,6 +298,10 @@ func (p *printer) printMap(m *Map) {
 		p.requestNewline()
 		p.indent(p.curIndent() + 4)
 		for _, prop := range m.Properties {
+			if prop.Deleted {
+				p.pos = prop.End()
+				continue
+			}
 			p.printProperty(prop)
 			p.printToken(",", noPos)
 			p.requestNewline()
