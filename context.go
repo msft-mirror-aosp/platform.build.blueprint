@@ -3720,50 +3720,32 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		}
 	}
 
-	// Sort the on-demand variants before adding to moduleGroup.
-	// For variants that belong to the same group, the variants will be ordered by SplitOnDemand values.
-	moduleLess := func(a, b *moduleInfo) int {
-		if a.group != b.group {
-			return cmp.Compare(a.group.name, b.group.name)
-		}
-		// Both modules belong to the same group.
-		// If one module is an inter-variant dep of the other, it goes before.
-		for _, dep := range a.directDeps {
-			if dep.module == b {
-				return 1
+	// Add the on-demand variant into its module group.
+	// Since there can be inter-variant deps, it needs to be inserted before its inter-variant rdep.
+	insertIntoModuleGroup := func(module *moduleInfo) {
+		isInterVariantDep := false
+		// Check reverseDeps to see if inter-variant rdep exists.
+		for _, rdep := range module.reverseDeps {
+			if rdep.group == module.group {
+				isInterVariantDep = true
+				break
 			}
 		}
-		for _, dep := range b.directDeps {
-			if dep.module == a {
-				return -1
+		insertIndex := len(module.group.modules)
+		if isInterVariantDep {
+			insertIndex = slices.IndexFunc(module.group.modules, func(groupModule *moduleInfo) bool {
+				return slices.ContainsFunc(groupModule.directDeps, func(directDep depInfo) bool {
+					return directDep.module == module
+				})
+			})
+			if insertIndex == -1 {
+				insertIndex = len(module.group.modules)
 			}
 		}
-		for _, mutator := range c.transitionMutatorNames {
-			aVariant := a.variant.variations.variations[mutator]
-			bVariant := b.variant.variations.variations[mutator]
-			if aVariant != bVariant {
-				aVariantIndex := -1
-				bVariantIndex := -1
-				for index, variant := range a.group.supportedVariantsOnDemand[mutator] {
-					if aVariant == variant.Variation() {
-						aVariantIndex = index
-					}
-					if bVariant == variant.Variation() {
-						bVariantIndex = index
-					}
-				}
-				if aVariantIndex != bVariantIndex {
-					return cmp.Compare(aVariantIndex, bVariantIndex)
-				}
-				return cmp.Compare(aVariant, bVariant)
-			}
-		}
-		return 0
+		module.group.modules = slices.Insert(module.group.modules, insertIndex, module)
 	}
-
-	slices.SortFunc(onDemandModules, moduleLess)
-
 	for _, module := range onDemandModules {
+		insertIntoModuleGroup(module)
 		for _, fd := range module.newDirectDeps {
 			fd.reverseDeps = append(fd.reverseDeps, module)
 			// AddVariationDependency allows adding a dependency on itself, but only if
@@ -3777,7 +3759,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			}
 		}
 
-		module.group.modules = append(module.group.modules, module)
 		// The module has been created and mutated.
 		// For future mutators, this variant is the same as normal variants.
 		// Set this flag to false so that we do not try to call `rerunMutatorsOnVariantOnDemand` again.
@@ -4210,11 +4191,17 @@ func (c *Context) calculateProvidersHashes() {
 			var providerHashes []proptools.Hash
 			// For singleton providers we collect provider hashes from singletons.
 			if providerRegistry[i].mutator != singletonTag {
-				c.visitAllModuleInfos(func(m *moduleInfo) {
-					if m.providerInitialValueHashes != nil {
-						providerHashes = append(providerHashes, m.providerInitialValueHashes[i])
+				for _, mg := range c.sortedModuleGroups() {
+					modules := slices.Clone(mg.modules)
+					slices.SortFunc(modules, func(a, b *moduleInfo) int {
+						return cmp.Compare(a.variant.name, b.variant.name)
+					})
+					for _, m := range modules {
+						if m.providerInitialValueHashes != nil {
+							providerHashes = append(providerHashes, m.providerInitialValueHashes[i])
+						}
 					}
-				})
+				}
 			}
 			var err error
 			c.providerValueHashes[i], err = proptools.CalculateHash(hashList(providerHashes))
