@@ -32,12 +32,13 @@ func must2[T any](v T, err error) T {
 	return v
 }
 
+// Ignores indent but keeps newlines
 func simplifyModuleDefinition(def string) string {
 	var result string
 	for _, line := range strings.Split(def, "\n") {
-		result += strings.TrimSpace(line)
+		result += strings.TrimSpace(line) + "\n"
 	}
-	return result
+	return strings.TrimSpace(result)
 }
 func TestBpModify(t *testing.T) {
 	var testCases = []struct {
@@ -88,6 +89,37 @@ func TestBpModify(t *testing.T) {
 			},
 		},
 		{
+			name: "remove multiline",
+			input: `
+			cc_foo {
+				name: "foo",
+				deps: [
+					"abc", // comment 1
+					"def",
+					"ghi",
+					"jkl", // comment 2
+				],
+				cflags: ["-Werror"],
+			}
+			`,
+			output: `
+			cc_foo {
+				name: "foo",
+				deps: [
+					"abc", // comment 1
+					"jkl", // comment 2
+				],
+				cflags: ["-Werror"],
+			}
+			`,
+			modified: true,
+			f: func(bp *Blueprint) {
+				props := must2(bp.ModulesByName("foo").GetProperty("deps"))
+				must(props.RemoveStringFromList("def"))
+				must(props.RemoveStringFromList("ghi"))
+			},
+		},
+		{
 			name: "nested add",
 			input: `
 			cc_foo {
@@ -101,9 +133,11 @@ func TestBpModify(t *testing.T) {
 					arm: {
 						deps: [
 							"dep2",
-							"nested_dep",],
+							"nested_dep",
+						],
 					},
 				},
+
 			}
 			`,
 			modified: true,
@@ -307,7 +341,6 @@ func TestBpModify(t *testing.T) {
 				structs: [
 					{
 						version: "1",
-
 						imports: [
 							"bar1",
 							"bar2",
@@ -430,12 +463,46 @@ func TestBpModify(t *testing.T) {
 			output: `
 			cc_foo {
 				name: "foo",
-				foo: {},
+				foo: {
+				},
 			}
 			`,
 			modified: true,
 			f: func(bp *Blueprint) {
 				must(bp.ModulesByName("foo").RemoveProperty("foo.bar"))
+			},
+		}, {
+			name: "remove multiple properties",
+			input: `
+			cc_foo {
+				name: "foo",
+				foo: "value1", // comment 1
+				bar: "value2",
+				baz: "value3",
+				quux: "value4", // comment 2
+				nested: {
+					bar: "baz", // comment 3
+					baz: "bar",
+					quux: "glorp", // comment 4
+				}, // closing comment
+			}
+			`,
+			output: `
+			cc_foo {
+				name: "foo",
+				foo: "value1", // comment 1
+				quux: "value4", // comment 2
+				nested: {
+					bar: "baz", // comment 3
+					quux: "glorp", // comment 4
+				}, // closing comment
+			}
+			`,
+			modified: true,
+			f: func(bp *Blueprint) {
+				must(bp.ModulesByName("foo").RemoveProperty("bar"))
+				must(bp.ModulesByName("foo").RemoveProperty("baz"))
+				must(bp.ModulesByName("foo").RemoveProperty("nested.baz"))
 			},
 		}, {
 			name: "remove non-existing property",
@@ -491,8 +558,8 @@ func TestBpModify(t *testing.T) {
 			cc_foo {
 				name: "foo",
 				deps: [
-								"baz_lib",
-								"unchanged",
+					"baz_lib",
+					"unchanged",
 				],
 				unchanged: ["baz"],
 				required: ["foobar_lib"],
@@ -583,7 +650,6 @@ func TestBpModify(t *testing.T) {
 					"bazContents",
 					"barContents",
 				],
-
 			}
 			`,
 			modified: true,

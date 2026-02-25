@@ -432,17 +432,20 @@ func (group *moduleGroup) registerSupportedVariants(mutatorName string, infos Tr
 
 // searchOnDemandVariant returns true if an on-demand variant creation should be attempted.
 // It uses the following heuristics.
-// 1. SplitOnDemand is non-nil for any mutator in the requested variation map.
+// 1. SplitOnDemand is non-nil for any mutator that precedes the Add.*Dependency request.
 // 2. No transition has occurred yet
 //
 // Feasibility of on-demand variant request will be determined subsequently by using `applyTransitions`
 // across a sliding window on the on-demand variant.
 func (group *moduleGroup) searchOnDemandVariant(onDemandVariants variationMap, far bool, atMutatorIndex int, transitionMutators []*transitionMutatorImpl) bool {
-	for mutator, _ := range onDemandVariants.variations {
-		if _, exists := group.supportedVariantsOnDemand[mutator]; exists {
-			return true
+	for _, mutator := range transitionMutators {
+		if atMutatorIndex >= mutator.mutatorIndex {
+			if _, exists := group.supportedVariantsOnDemand[mutator.name]; exists {
+				return true
+			}
 		}
 	}
+
 	if len(transitionMutators) > 0 && atMutatorIndex < transitionMutators[0].mutatorIndex {
 		return true
 	}
@@ -640,6 +643,10 @@ type globResultCache struct {
 	Pattern  string
 	Excludes []string
 	Result   proptools.Hash
+}
+
+func (g *globResultCache) equal(other globResultCache) bool {
+	return g.Result == other.Result && g.Pattern == other.Pattern && slices.Equal(g.Excludes, other.Excludes)
 }
 
 type moduleIncrementalInfo struct {
