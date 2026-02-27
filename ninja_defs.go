@@ -73,10 +73,10 @@ type RuleParams struct {
 	Source          string  // A string identify the source of this rule, used to dedup rules in the reporting of certain metrics
 
 	// These fields are used internally in Blueprint
-	CommandDeps      []string    // Command-specific implicit dependencies to prepend to builds
-	CommandDepsTools []*HostTool // Command-specific implicit dependencies too, but host tools, used to update CommandDeps
-	CommandOrderOnly []string    // Command-specific order-only dependencies to prepend to builds
-	Comment          string      // The comment that will appear above the definition.
+	CommandDeps      []string   // Command-specific implicit dependencies to prepend to builds
+	CommandDepsTools []HostTool // Command-specific implicit dependencies, but host tools, used to update CommandDeps
+	CommandOrderOnly []string   // Command-specific order-only dependencies to prepend to builds
+	Comment          string     // The comment that will appear above the definition.
 }
 
 // A command that ninja will run. It's an interpolation of strings and references to host tools,
