@@ -3744,29 +3744,65 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		}
 		module.group.modules = slices.Insert(module.group.modules, insertIndex, module)
 	}
-	for _, module := range onDemandModules {
-		insertIntoModuleGroup(module)
-		for _, fd := range module.newDirectDeps {
-			fd.reverseDeps = append(fd.reverseDeps, module)
-			// AddVariationDependency allows adding a dependency on itself, but only if
-			// that module is earlier in the module list than this one, since we always
-			// run GenerateBuildActions in order for the variants of a module
-			if fd.group == module.group && beforeInModuleList(module, fd, module.group.modules) {
-				return nil, []error{&BlueprintError{
-					Err: fmt.Errorf("%q depends on later version of itself", module.Name()),
-					Pos: module.pos,
-				}}
+	// Sort the on-demand variants before adding to moduleGroup.
+	// The variants will be ordered by SplitOnDemand values.
+	moduleLess := func(a, b *moduleInfo) int {
+		for _, mutator := range c.transitionMutatorNames {
+			aVariant := a.variant.variations.variations[mutator]
+			bVariant := b.variant.variations.variations[mutator]
+			if aVariant != bVariant {
+				aVariantIndex := -1
+				bVariantIndex := -1
+				for index, variant := range a.group.supportedVariantsOnDemand[mutator] {
+					if aVariant == variant.Variation() {
+						aVariantIndex = index
+					}
+					if bVariant == variant.Variation() {
+						bVariantIndex = index
+					}
+				}
+				if aVariantIndex != bVariantIndex {
+					return cmp.Compare(aVariantIndex, bVariantIndex)
+				}
+				return cmp.Compare(aVariant, bVariant)
 			}
 		}
+		return 0
+	}
+	// Group the on-demand variants per module group for faster sorting.
+	moduleGroupToOnDemandModules := make(map[*moduleGroup][]*moduleInfo)
+	for _, module := range onDemandModules {
+		moduleGroupToOnDemandModules[module.group] = append(moduleGroupToOnDemandModules[module.group], module)
+	}
+	for moduleGroup := range moduleGroupToOnDemandModules {
+		slices.SortFunc(moduleGroupToOnDemandModules[moduleGroup], moduleLess)
+	}
 
-		// The module has been created and mutated.
-		// For future mutators, this variant is the same as normal variants.
-		// Set this flag to false so that we do not try to call `rerunMutatorsOnVariantOnDemand` again.
-		module.createdOnDemand = false
-		module.createdOnDemandReplaceWith = nil
-		module.newDirectDeps = nil
-		module.newOnDemandReverseDeps = nil
-		module.createdOnDemandSupportedSplits = nil
+	for _, modules := range moduleGroupToOnDemandModules {
+		for _, module := range modules {
+			insertIntoModuleGroup(module)
+			for _, fd := range module.newDirectDeps {
+				fd.reverseDeps = append(fd.reverseDeps, module)
+				// AddVariationDependency allows adding a dependency on itself, but only if
+				// that module is earlier in the module list than this one, since we always
+				// run GenerateBuildActions in order for the variants of a module
+				if fd.group == module.group && beforeInModuleList(module, fd, module.group.modules) {
+					return nil, []error{&BlueprintError{
+						Err: fmt.Errorf("%q depends on later version of itself", module.Name()),
+						Pos: module.pos,
+					}}
+				}
+			}
+
+			// The module has been created and mutated.
+			// For future mutators, this variant is the same as normal variants.
+			// Set this flag to false so that we do not try to call `rerunMutatorsOnVariantOnDemand` again.
+			module.createdOnDemand = false
+			module.createdOnDemandReplaceWith = nil
+			module.newDirectDeps = nil
+			module.newOnDemandReverseDeps = nil
+			module.createdOnDemandSupportedSplits = nil
+		}
 	}
 
 	return deps, errs
@@ -4191,17 +4227,11 @@ func (c *Context) calculateProvidersHashes() {
 			var providerHashes []proptools.Hash
 			// For singleton providers we collect provider hashes from singletons.
 			if providerRegistry[i].mutator != singletonTag {
-				for _, mg := range c.sortedModuleGroups() {
-					modules := slices.Clone(mg.modules)
-					slices.SortFunc(modules, func(a, b *moduleInfo) int {
-						return cmp.Compare(a.variant.name, b.variant.name)
-					})
-					for _, m := range modules {
-						if m.providerInitialValueHashes != nil {
-							providerHashes = append(providerHashes, m.providerInitialValueHashes[i])
-						}
+				c.visitAllModuleInfos(func(m *moduleInfo) {
+					if m.providerInitialValueHashes != nil {
+						providerHashes = append(providerHashes, m.providerInitialValueHashes[i])
 					}
-				}
+				})
 			}
 			var err error
 			c.providerValueHashes[i], err = proptools.CalculateHash(hashList(providerHashes))
