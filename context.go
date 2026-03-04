@@ -2352,8 +2352,12 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, depTag Depend
 			if outgoingTransitionInfo != nil {
 				onDemandMatchingVariant.requestedOnDemandVariant.variations[transitionMutator.name] = outgoingTransitionInfo.Variation()
 			}
-			c.rerunMutatorsOnVariantOnDemand(onDemandMatchingVariant, onDemandFromMutatorIndex, transitionMutator.mutatorIndex, nil, config) // Mutate till the current mutator.
-			onDemandFromMutatorIndex = transitionMutator.mutatorIndex + 1
+			// Rerun till propagate mutator handle of the Transition mutator.
+			// transitionMutator.mutatorIndex corresponds to mutate.
+			// transitionMutator.mutatorIndex-1 corresponds to bottomUp handle of the transition mutator
+			// transitionMutator.mutatorIndex-2 (inclusive) corresponds to propagate mutator handle of the transition mutator
+			c.rerunMutatorsOnVariantOnDemand(onDemandMatchingVariant, onDemandFromMutatorIndex, transitionMutator.mutatorIndex-2, nil, config)
+			onDemandFromMutatorIndex = transitionMutator.mutatorIndex - 1
 		}
 
 		if matchingInputVariant != nil {
@@ -2380,6 +2384,10 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, depTag Depend
 			if onDemandMatchingVariant != nil && variation == "" {
 				onDemandMatchingVariant.requestedOnDemandVariant.delete(transitionMutator.name)
 			} else if onDemandMatchingVariant != nil {
+				// Rerun till Mutate of the Transition mutator
+				onDemandMatchingVariant.requestedOnDemandVariant.variations[transitionMutator.name] = variation
+				c.rerunMutatorsOnVariantOnDemand(onDemandMatchingVariant, onDemandFromMutatorIndex, transitionMutator.mutatorIndex, nil, config)
+				onDemandFromMutatorIndex = transitionMutator.mutatorIndex + 1
 				found := false
 				for _, split := range onDemandMatchingVariant.createdOnDemandSupportedSplits {
 					if split.Variation() == variation {
@@ -2390,7 +2398,6 @@ func (c *Context) applyTransitions(config any, module *moduleInfo, depTag Depend
 					onDemandMatchingVariant.createdOnDemandIncompatible = true
 					return variant, nil
 				}
-				onDemandMatchingVariant.requestedOnDemandVariant.variations[transitionMutator.name] = variation
 				onDemandMatchingVariant.createdOnDemandSupportedSplits = nil // reset for next transition mutator check.
 			}
 		}
