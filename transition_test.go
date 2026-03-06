@@ -684,6 +684,16 @@ func TestOnDemandDependencyVariantTransitiveDepsOutgoingTransition(t *testing.T)
 	checkTransitionDeps(t, ctx, getTransitionModule(ctx, "C", "2"), "C_dep_pre_transition(1)")
 }
 
+type transitionTestMutatorPanicInMutate struct {
+	transitionTestMutator
+}
+
+func (transitionTestMutatorPanicInMutate) Mutate(ctx BottomUpMutatorContext, variation TransitionInfo) {
+	if ctx.ModuleName() == "D" && ctx.moduleInfo().createdOnDemand && variation.Variation() != "1" {
+		panic(fmt.Errorf("Should not reach here %v. Found %s as the variation during Mutate.", ctx.Module(), variation))
+	}
+}
+
 // Create an on demand variant with multiple transitions.
 func TestOnDemandDependendcyVariantMultipleTransitions(t *testing.T) {
 	t.Parallel()
@@ -703,14 +713,15 @@ func TestOnDemandDependendcyVariantMultipleTransitions(t *testing.T) {
 		}
 		transition_module {
 			name: "D",
-			split: ["1"],
+			split: ["2"], // 2 is the primary variant
+			split_on_demand: ["1"], // 1 is additional supported variant
 			incoming: "1", // Override the transition request of rdeps.
 		}
 	`,
 		false,
 		func(ctx *Context) {
 			// Add a second transition.
-			ctx.RegisterTransitionMutator("transition2", transitionTestMutator{})
+			ctx.RegisterTransitionMutator("transition2", transitionTestMutatorPanicInMutate{})
 			// Deps mutator that runs after the two transitions.
 			ctx.RegisterBottomUpMutator("post_transition_bottom_up", func(mctx BottomUpMutatorContext) {
 				if mctx.ModuleName() == "A" || mctx.ModuleName() == "B" {
