@@ -248,7 +248,14 @@ func (t *transitionMutatorImpl) propagateMutator(mctx BaseModuleContext) {
 	mutatorSplits := t.mutator.Split(mctx)
 	if mctx.base().context.GetSplitAllVariants() {
 		// If splitAllVariants=true, frontload the creation of all supported variants.
-		mutatorSplits = append(mutatorSplits, t.mutator.SplitOnDemand(mctx)...)
+		for _, onDemandSplit := range t.mutator.SplitOnDemand(mctx) {
+			exists := slices.ContainsFunc(mutatorSplits, func(ti TransitionInfo) bool {
+				return ti.Variation() == onDemandSplit.Variation()
+			})
+			if !exists {
+				mutatorSplits = append(mutatorSplits, onDemandSplit)
+			}
+		}
 	}
 	if mutatorSplits == nil || len(mutatorSplits) == 0 {
 		panic(fmt.Errorf("transition mutator %s returned no splits for module %s", t.name, mctx.ModuleName()))
