@@ -251,6 +251,8 @@ type Context struct {
 
 	// If splitAllVariants is true, all variants will be created upfront rather than on-demand.
 	splitAllVariants bool
+
+	partialAnalysisTargets []string
 }
 
 type orderOnlyStringsInfo struct {
@@ -1028,6 +1030,20 @@ func (c *Context) GetIncrementalEnabled() bool {
 
 func (c *Context) SetIncrementalDebugFile(file string) {
 	c.incrementalDebugFile = file
+}
+
+func (c *Context) SetPartialAnalysisTargets(targets string) {
+	rawSlice := strings.Split(strings.TrimSpace(targets), ",")
+	for _, item := range rawSlice {
+		cleanItem := strings.TrimSpace(item)
+		if cleanItem != "" {
+			c.partialAnalysisTargets = append(c.partialAnalysisTargets, cleanItem)
+		}
+	}
+}
+
+func (c *Context) GetPartialAnalysisTargets() []string {
+	return c.partialAnalysisTargets
 }
 
 func (c *Context) GetSplitAllVariants() bool {
