@@ -533,8 +533,8 @@ func (c *Context) rerunMutatorsOnVariantOnDemand(newmodule *moduleInfo, fromMuta
 			// Set `requestedOnDemandVariant` on this transitive dep.
 			// This will be used in the main coordinator goroutine to create the correct transition for this variant.
 			for _, transitionMutator := range c.transitionMutators[:c.completedTransitionMutators] {
-				if transitionMutator.mutatorIndex >
-					newmodule.finishedMutator+1 { // The +1 is to account for Mutate function of transition, which can create additional deps.
+				if transitionMutator.mutatorIndex >=
+					dep.finishedMutator+3 { // TODO (b/448182248): Revisit partially transitioned on-demand variants.
 					// Copy requestedOnDemandVariant from rdep to dep on-demand modules.
 					// This will be done only for the transition mutators that have not yet
 					// been completed in rerunMutator.
@@ -2527,6 +2527,7 @@ func (c *Context) findVariant(config any, module *moduleInfo, depTag DependencyT
 		possibleDeps.searchOnDemandVariant(newVariantBeforeTransitions, far, mutatorIndex, c.transitionMutators) {
 		if variantOnDemand, errs := c.loadOrCreateVariantOnDemand(config, module, depTag, possibleDeps, newVariantBeforeTransitions, requestedVariations, far); variantOnDemand != nil {
 			foundDep = c.createVariantOnDemand(possibleDeps, variantOnDemand.requestedOnDemandVariant.clone())
+			foundDep.finishedMutator = mutatorIndex
 			newVariant = variantOnDemand.requestedOnDemandVariant.clone()
 		} else {
 			return nil, newVariant, errs
@@ -3830,9 +3831,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	for _, module := range onDemandModules {
 		moduleGroupToOnDemandModules[module.group] = append(moduleGroupToOnDemandModules[module.group], module)
 	}
-	for moduleGroup := range moduleGroupToOnDemandModules {
-		slices.SortFunc(moduleGroupToOnDemandModules[moduleGroup], moduleLess)
-	}
 
 	for _, modules := range moduleGroupToOnDemandModules {
 		for _, module := range modules {
@@ -3860,6 +3858,10 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			module.createdOnDemandSupportedSplits = nil
 			module.group.cachedVariantsOnDemand = nil
 		}
+	}
+
+	for moduleGroup := range moduleGroupToOnDemandModules {
+		slices.SortFunc(moduleGroupToOnDemandModules[moduleGroup], moduleLess)
 	}
 
 	return deps, errs
