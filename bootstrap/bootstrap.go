@@ -17,6 +17,7 @@ package bootstrap
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -36,7 +37,10 @@ var (
 	goTestRunnerCmd = pctx.StaticVariable("goTestRunnerCmd", filepath.Join("$ToolDir", "gotestrunner"))
 	pluginGenSrcCmd = pctx.StaticVariable("pluginGenSrcCmd", filepath.Join("$ToolDir", "loadplugins"))
 	gobGenCmd       = pctx.StaticVariable("gobGenCmd", filepath.Join("$ToolDir", "gob_gen"))
-	_               = pctx.VariableFunc("toybox", func(ctx blueprint.VariableFuncContext, config interface{}) (string, error) {
+
+	goToolchainTarget = "go_toolchain"
+
+	_ = pctx.VariableFunc("toybox", func(ctx blueprint.VariableFuncContext, config interface{}) (string, error) {
 		prebuiltOs := func() string {
 			switch runtime.GOOS {
 			case "linux":
@@ -69,61 +73,61 @@ var (
 		return fmt.Sprintf("-c %d", numCpu)
 	}())
 
+	// We must explicitly use the $toybox path for utilities like cmp, rm, and mv in
+	// bootstrap rules. Unlike downstream Soong rules (which are wrapped by sbox or
+	// RuleBuilder with injected $PATHs), bootstrap rules execute raw commands.
+	// Explicit paths guarantee execution hermeticity on remote bots (RBE) that
+	// lack basic POSIX tools in their base image.
 	compile = pctx.StaticRule("compile",
 		blueprint.RuleParams{
 			Command: "GOROOT='$goRoot' $compileCmd $parallelCompile -o $out.tmp " +
 				"$debugFlags -p $pkgPath -complete $incFlags $embedFlags -pack $in && " +
-				"if cmp --quiet $out.tmp $out; then rm $out.tmp; else mv -f $out.tmp $out; fi",
-			CommandDeps:     []string{"$compileCmd"},
-			Description:     "compile $out",
-			Restat:          true,
-			SandboxDisabled: true,
+				"if $toybox cmp --quiet $out.tmp $out; then $toybox rm $out.tmp; else $toybox mv -f $out.tmp $out; fi",
+			CommandDeps: []string{"$compileCmd", "${toybox}"},
+			Description: "compile $out",
+			Restat:      true,
 		},
 		"pkgPath", "incFlags", "embedFlags")
 
+	// See comment on compile rule for why $toybox is explicitly prefixed.
 	link = pctx.StaticRule("link",
 		blueprint.RuleParams{
 			Command: "GOROOT='$goRoot' $linkCmd -o $out.tmp $libDirFlags $in && " +
-				"if cmp --quiet $out.tmp $out; then rm $out.tmp; else mv -f $out.tmp $out; fi",
-			CommandDeps:     []string{"$linkCmd"},
-			Description:     "link $out",
-			Restat:          true,
-			SandboxDisabled: true,
+				"if $toybox cmp --quiet $out.tmp $out; then $toybox rm $out.tmp; else $toybox mv -f $out.tmp $out; fi",
+			CommandDeps: []string{"$linkCmd", "${toybox}"},
+			Description: "link $out",
+			Restat:      true,
 		},
 		"libDirFlags")
 
 	goTestMain = pctx.StaticRule("gotestmain",
 		blueprint.RuleParams{
-			Command:         "$goTestMainCmd -o $out -pkg $pkg $in",
-			CommandDeps:     []string{"$goTestMainCmd"},
-			Description:     "gotestmain $out",
-			SandboxDisabled: true,
+			Command:     "$goTestMainCmd -o $out -pkg $pkg $in",
+			CommandDeps: []string{"$goTestMainCmd"},
+			Description: "gotestmain $out",
 		},
 		"pkg")
 
 	pluginGenSrc = pctx.StaticRule("pluginGenSrc",
 		blueprint.RuleParams{
-			Command:         "$pluginGenSrcCmd -o $out -p $pkg $plugins",
-			CommandDeps:     []string{"$pluginGenSrcCmd"},
-			Description:     "create $out",
-			SandboxDisabled: true,
+			Command:     "$pluginGenSrcCmd -o $out -p $pkg $plugins",
+			CommandDeps: []string{"$pluginGenSrcCmd"},
+			Description: "create $out",
 		},
 		"pkg", "plugins")
 
 	verifySerializers = pctx.StaticRule("generateSerializers",
 		blueprint.RuleParams{
-			Command:         "rm -f $out && $gobGenCmd -verify $in && touch $out",
-			CommandDeps:     []string{"$gobGenCmd"},
-			Description:     "generate serializers $out",
-			SandboxDisabled: true,
+			Command:     "${toybox} rm -f $out && $gobGenCmd -verify $in && ${toybox} touch $out",
+			CommandDeps: []string{"$gobGenCmd", "${toybox}"},
+			Description: "generate serializers $out",
 		})
 
 	test = pctx.StaticRule("test",
 		blueprint.RuleParams{
-			Command:         "$goTestRunnerCmd -p $pkgSrcDir -f $out -- $in -test.short",
-			CommandDeps:     []string{"$goTestRunnerCmd"},
-			Description:     "test $pkg",
-			SandboxDisabled: true,
+			Command:     "$goTestRunnerCmd -p $pkgSrcDir -f $out -- $in -test.short",
+			CommandDeps: []string{"$goTestRunnerCmd"},
+			Description: "test $pkg",
 		},
 		"pkg", "pkgSrcDir")
 
@@ -588,7 +592,7 @@ func (g *GoBinary) GenerateBuildActions(ctx blueprint.ModuleContext) {
 		Rule:      link,
 		Outputs:   []string{aoutFile},
 		Inputs:    []string{archiveFile},
-		Implicits: linkFlagsDeps,
+		Implicits: append(linkFlagsDeps, goToolchainPhony()),
 		Args:      linkArgs,
 	})
 
@@ -683,6 +687,7 @@ func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
 		generateEmbedcfgFile(ctx, embedSrcs, srcDir, embedcfgFile)
 		compileArgs["embedFlags"] = "-embedcfg " + embedcfgFile
 		deps = append(deps, embedcfgFile)
+		deps = append(deps, pathtools.PrefixPaths(embedSrcs, srcDir)...)
 	}
 
 	var validations []string
@@ -697,7 +702,7 @@ func buildGoPackage(ctx blueprint.ModuleContext, pkgRoot string,
 		Rule:        compile,
 		Outputs:     []string{archiveFile},
 		Inputs:      srcFiles,
-		Implicits:   deps,
+		Implicits:   append(deps, goToolchainPhony()),
 		Args:        compileArgs,
 		Validations: validations,
 	})
@@ -755,7 +760,7 @@ func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
 		Rule:      compile,
 		Outputs:   []string{testArchive},
 		Inputs:    []string{mainFile},
-		Implicits: []string{testPkgArchive},
+		Implicits: []string{testPkgArchive, goToolchainPhony()},
 		Args: map[string]string{
 			"pkgPath":  "main",
 			"incFlags": "-I " + testRoot,
@@ -766,7 +771,7 @@ func buildGoTest(ctx blueprint.ModuleContext, testRoot, testPkgArchive,
 		Rule:      link,
 		Outputs:   []string{testFile},
 		Inputs:    []string{testArchive},
-		Implicits: linkFlagsDeps,
+		Implicits: append(linkFlagsDeps, goToolchainPhony()),
 		Args: map[string]string{
 			"libDirFlags": strings.Join(linkFlags, " "),
 		},
@@ -801,6 +806,10 @@ func newSingletonFactory() func() blueprint.Singleton {
 }
 
 func (s *singleton) GenerateBuildActions(ctx blueprint.SingletonContext) {
+	// Create the go_toolchain phony rule in a singleton to ensure deterministic
+	// Ninja file generation regardless of parallel module evaluation order.
+	emitGoToolchainPhony(ctx)
+
 	// Find the module that's marked as the "primary builder", which means it's
 	// creating the binary that we'll use to generate the non-bootstrap
 	// build.ninja file.
@@ -937,4 +946,37 @@ func moduleSrcDir(ctx blueprint.ModuleContext) string {
 func moduleGenSrcDir(ctx blueprint.ModuleContext) string {
 	toolDir := ctx.Config().(BootstrapConfig).HostToolDir()
 	return filepath.Join(toolDir, "go", ctx.ModuleName(), ctx.ModuleSubDir(), "gen")
+}
+
+func goToolchainPhony() string {
+	return goToolchainTarget
+}
+
+func emitGoToolchainPhony(ctx blueprint.SingletonContext) {
+	goroot := runtime.GOROOT()
+	if cwd, err := os.Getwd(); err == nil {
+		if relpath, err := filepath.Rel(cwd, goroot); err == nil {
+			if !strings.HasPrefix(relpath, "../") {
+				goroot = relpath
+			}
+		}
+	}
+
+	files, err := ctx.GlobWithDeps(filepath.Join(goroot, "**/*"), nil)
+	if err != nil {
+		panic(fmt.Errorf("Failed to glob GOROOT %q: %s", goroot, err))
+	}
+
+	var inputs []string
+	for _, f := range files {
+		if !strings.HasSuffix(f, "/") {
+			inputs = append(inputs, f)
+		}
+	}
+
+	ctx.Build(pctx, blueprint.BuildParams{
+		Rule:    blueprint.Phony,
+		Outputs: []string{goToolchainTarget},
+		Inputs:  inputs,
+	})
 }

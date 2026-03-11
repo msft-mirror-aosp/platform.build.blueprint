@@ -211,7 +211,7 @@ func assertModule(t *testing.T, ctx *blueprint.Context, config *testConfig, expe
 		t.Errorf("expected %s incFlags %q, got %q", expected.name, w, g)
 	}
 
-	if g, w := compile.Implicits, pathtools.PrefixPaths(expected.compileDeps, goDir); !slices.Equal(g, w) {
+	if g, w := compile.Implicits, append(pathtools.PrefixPaths(expected.compileDeps, goDir), "go_toolchain"); !slices.Equal(g, w) {
 		t.Errorf("expected %s compile deps %q, got %q", expected.name, w, g)
 	}
 
@@ -219,8 +219,10 @@ func assertModule(t *testing.T, ctx *blueprint.Context, config *testConfig, expe
 		t.Errorf("expected %s link flags %q, got %q", expected.name, w, g)
 	}
 
-	if g, w := link.Implicits, pathtools.PrefixPaths(expected.linkDeps, goDir); !slices.Equal(g, w) {
-		t.Errorf("expected %s link deps %q, got %q", expected.name, w, g)
+	if link.Rule != nil {
+		if g, w := link.Implicits, append(pathtools.PrefixPaths(expected.linkDeps, goDir), "go_toolchain"); !slices.Equal(g, w) {
+			t.Errorf("expected %s link deps %q, got %q", expected.name, w, g)
+		}
 	}
 
 	if g, w := test.Validations, pathtools.PrefixPaths(expected.testValidationDeps, goDir); !slices.Equal(g, w) {
