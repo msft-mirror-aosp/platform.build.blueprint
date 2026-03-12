@@ -46,6 +46,7 @@ type Args struct {
 	IncrementalBuildActions bool
 	IncrementalProviderTest bool
 	IncrementalDebugFile    string
+	PartialAnalysisTargets  string
 }
 
 // RegisterGoModuleTypes adds module types to build tools written in golang
