@@ -252,7 +252,9 @@ type Context struct {
 	// If splitAllVariants is true, all variants will be created upfront rather than on-demand.
 	splitAllVariants bool
 
-	partialAnalysisTargets []string
+	// index of the first mutator that supports partial analysis.
+	mutatorIndexPartialAnalysis int
+	partialAnalysisTargets      []string
 }
 
 type orderOnlyStringsInfo struct {
@@ -918,6 +920,7 @@ type mutatorInfo struct {
 	usesCreateModule        bool
 	mutatesDependencies     bool
 	mutatesGlobalState      bool
+	prePartial              bool
 }
 
 func newContext() *Context {
@@ -1295,6 +1298,8 @@ type MutatorHandle interface {
 	// adjacent mutators into a single mutator pass.
 	MutatesGlobalState() MutatorHandle
 
+	PrePartial() MutatorHandle
+
 	setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle
 }
 
@@ -1325,6 +1330,11 @@ func (mutator *mutatorInfo) MutatesDependencies() MutatorHandle {
 
 func (mutator *mutatorInfo) MutatesGlobalState() MutatorHandle {
 	mutator.mutatesGlobalState = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) PrePartial() MutatorHandle {
+	mutator.prePartial = true
 	return mutator
 }
 
@@ -2291,7 +2301,9 @@ func coalesceMutators(mutators []*mutatorInfo) [][]*mutatorInfo {
 			!m.usesReverseDependencies &&
 			!m.usesRename &&
 			!m.mutatesGlobalState &&
-			!m.mutatesDependencies
+			!m.mutatesDependencies &&
+			// No mix of pre partial marker mutator with others.
+			!m.prePartial
 	}
 
 	for _, mutator := range mutators {
@@ -3426,13 +3438,17 @@ func (c *Context) runMutators(ctx context.Context, config interface{}, mutatorGr
 
 	pprof.Do(ctx, pprof.Labels("blueprint", "runMutators"), func(ctx context.Context) {
 		mutatorIndexAfterLastCreateModule := -1
+		mutatorIndexPartialAnalysis := -1
 		for i := len(mutatorGroups) - 1; i >= 0; i-- {
-			if mutatorGroups[i][0].usesCreateModule {
+			if mutatorIndexAfterLastCreateModule == -1 && mutatorGroups[i][0].usesCreateModule {
 				mutatorIndexAfterLastCreateModule = mutatorGroups[i][0].index
-				break
+			}
+			if mutatorIndexPartialAnalysis == -1 && mutatorGroups[i][0].prePartial {
+				mutatorIndexPartialAnalysis = mutatorGroups[i][0].index
 			}
 		}
 		c.mutatorIndexAfterLastCreateModule = mutatorIndexAfterLastCreateModule + 1
+		c.mutatorIndexPartialAnalysis = mutatorIndexPartialAnalysis + 1
 
 		for _, mutatorGroup := range mutatorGroups {
 			name := mutatorGroup[0].name
