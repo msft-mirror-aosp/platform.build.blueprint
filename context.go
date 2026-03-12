@@ -3831,6 +3831,10 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	for _, module := range onDemandModules {
 		moduleGroupToOnDemandModules[module.group] = append(moduleGroupToOnDemandModules[module.group], module)
 	}
+	for moduleGroup := range moduleGroupToOnDemandModules {
+		// TODO (b/448182248): Handle earlier variant creating transition mutators.
+		slices.SortFunc(moduleGroupToOnDemandModules[moduleGroup], moduleLess)
+	}
 
 	for _, modules := range moduleGroupToOnDemandModules {
 		for _, module := range modules {
@@ -3858,10 +3862,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			module.createdOnDemandSupportedSplits = nil
 			module.group.cachedVariantsOnDemand = nil
 		}
-	}
-
-	for moduleGroup := range moduleGroupToOnDemandModules {
-		slices.SortFunc(moduleGroupToOnDemandModules[moduleGroup], moduleLess)
 	}
 
 	return deps, errs
