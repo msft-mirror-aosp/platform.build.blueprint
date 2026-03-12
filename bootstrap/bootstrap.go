@@ -962,7 +962,7 @@ func emitGoToolchainPhony(ctx blueprint.SingletonContext) {
 		}
 	}
 
-	files, err := ctx.GlobWithDeps(filepath.Join(goroot, "**/*"), nil)
+	files, err := ctx.GlobWithDeps(filepath.Join(goroot, "pkg/**/*"), nil)
 	if err != nil {
 		panic(fmt.Errorf("Failed to glob GOROOT %q: %s", goroot, err))
 	}
