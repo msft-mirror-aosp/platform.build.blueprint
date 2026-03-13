@@ -411,6 +411,9 @@ type moduleGroup struct {
 	// Map of requested variation map to on-demand variants.
 	// Set to empty at the end of mutator.
 	cachedVariantsOnDemand map[string]*moduleInfo
+
+	// Indicates the module group is not yet in the build graph.
+	passive bool
 }
 
 func (group *moduleGroup) moduleByVariantName(name string) *moduleInfo {
@@ -3451,6 +3454,35 @@ func (c *Context) runMutators(ctx context.Context, config interface{}, mutatorGr
 		c.mutatorIndexPartialAnalysis = mutatorIndexPartialAnalysis + 1
 
 		for _, mutatorGroup := range mutatorGroups {
+			if mutatorGroup[0].index == c.mutatorIndexPartialAnalysis && len(c.partialAnalysisTargets) > 0 {
+				targetMap := make(map[string]bool, len(c.partialAnalysisTargets))
+				for _, t := range c.partialAnalysisTargets {
+					targetMap[t] = false
+				}
+
+				foundCount := 0
+				for _, m := range c.moduleGroups {
+					if alreadyFound, isTarget := targetMap[m.name]; isTarget {
+						m.passive = false
+						if !alreadyFound {
+							targetMap[m.name] = true
+							foundCount++
+						}
+					} else {
+						m.passive = true
+					}
+				}
+
+				if foundCount < len(targetMap) {
+					notFound := make([]string, 0, len(targetMap)-foundCount)
+					for target, found := range targetMap {
+						if !found {
+							notFound = append(notFound, target)
+						}
+					}
+					panic(fmt.Sprintf("the requested targets are not found: %v", notFound))
+				}
+			}
 			name := mutatorGroup[0].name
 			if len(mutatorGroup) > 1 {
 				name += "_plus_" + strconv.Itoa(len(mutatorGroup)-1)
