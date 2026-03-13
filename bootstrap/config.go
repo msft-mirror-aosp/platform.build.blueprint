@@ -48,16 +48,7 @@ var (
 		return c.OutDir()
 	})
 	goRootVariable = bootstrapVariable("goRoot", func(c BootstrapConfig) string {
-		goroot := runtime.GOROOT()
-		// Prefer to omit absolute paths from the ninja file
-		if cwd, err := os.Getwd(); err == nil {
-			if relpath, err := filepath.Rel(cwd, goroot); err == nil {
-				if !strings.HasPrefix(relpath, "../") {
-					goroot = relpath
-				}
-			}
-		}
-		return goroot
+		return goRoot()
 	})
 	compileCmdVariable = bootstrapVariable("compileCmd", func(c BootstrapConfig) string {
 		return "$goRoot/pkg/tool/" + runtime.GOOS + "_" + runtime.GOARCH + "/compile"
@@ -125,4 +116,17 @@ type PrimaryBuilderInvocation struct {
 	Console         bool
 	Description     string
 	Env             map[string]string
+}
+
+func goRoot() string {
+	goroot := runtime.GOROOT()
+	// Prefer to omit absolute paths from the ninja file
+	if cwd, err := os.Getwd(); err == nil {
+		if relpath, err := filepath.Rel(cwd, goroot); err == nil {
+			if !strings.HasPrefix(relpath, "../") {
+				goroot = relpath
+			}
+		}
+	}
+	return goroot
 }

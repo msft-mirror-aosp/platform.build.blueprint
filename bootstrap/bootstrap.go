@@ -17,7 +17,6 @@ package bootstrap
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -953,14 +952,7 @@ func goToolchainPhony() string {
 }
 
 func emitGoToolchainPhony(ctx blueprint.SingletonContext) {
-	goroot := runtime.GOROOT()
-	if cwd, err := os.Getwd(); err == nil {
-		if relpath, err := filepath.Rel(cwd, goroot); err == nil {
-			if !strings.HasPrefix(relpath, "../") {
-				goroot = relpath
-			}
-		}
-	}
+	goroot := goRoot()
 
 	files, err := ctx.GlobWithDeps(filepath.Join(goroot, "pkg/**/*"), nil)
 	if err != nil {
