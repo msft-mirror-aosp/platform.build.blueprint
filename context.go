@@ -251,6 +251,8 @@ type Context struct {
 
 	// If splitAllVariants is true, all variants will be created upfront rather than on-demand.
 	splitAllVariants bool
+
+	partialAnalysisTargets []string
 }
 
 type orderOnlyStringsInfo struct {
@@ -1078,6 +1080,20 @@ func (c *Context) GetIncrementalEnabled() bool {
 
 func (c *Context) SetIncrementalDebugFile(file string) {
 	c.incrementalDebugFile = file
+}
+
+func (c *Context) SetPartialAnalysisTargets(targets string) {
+	rawSlice := strings.Split(strings.TrimSpace(targets), ",")
+	for _, item := range rawSlice {
+		cleanItem := strings.TrimSpace(item)
+		if cleanItem != "" {
+			c.partialAnalysisTargets = append(c.partialAnalysisTargets, cleanItem)
+		}
+	}
+}
+
+func (c *Context) GetPartialAnalysisTargets() []string {
+	return c.partialAnalysisTargets
 }
 
 func (c *Context) GetSplitAllVariants() bool {
@@ -3831,6 +3847,10 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 	for _, module := range onDemandModules {
 		moduleGroupToOnDemandModules[module.group] = append(moduleGroupToOnDemandModules[module.group], module)
 	}
+	for moduleGroup := range moduleGroupToOnDemandModules {
+		// TODO (b/448182248): Handle earlier variant creating transition mutators.
+		slices.SortFunc(moduleGroupToOnDemandModules[moduleGroup], moduleLess)
+	}
 
 	for _, modules := range moduleGroupToOnDemandModules {
 		for _, module := range modules {
@@ -3858,10 +3878,6 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 			module.createdOnDemandSupportedSplits = nil
 			module.group.cachedVariantsOnDemand = nil
 		}
-	}
-
-	for moduleGroup := range moduleGroupToOnDemandModules {
-		slices.SortFunc(moduleGroupToOnDemandModules[moduleGroup], moduleLess)
 	}
 
 	return deps, errs
