@@ -953,16 +953,32 @@ func goToolchainPhony() string {
 
 func emitGoToolchainPhony(ctx blueprint.SingletonContext) {
 	goroot := goRoot()
+	osArch := runtime.GOOS + "_" + runtime.GOARCH
 
-	files, err := ctx.GlobWithDeps(filepath.Join(goroot, "pkg/**/*"), nil)
-	if err != nil {
-		panic(fmt.Errorf("Failed to glob GOROOT %q: %s", goroot, err))
+	// Exclude Go race detector precompiled objects (e.g. linux_amd64_race)
+	// which are not needed for standard bootstrap builds. We also exclude
+	// pkg/tool here since specific rules add the exact binary as an implicit dep.
+	//
+	// The expected structure of GOROOT/pkg is:
+	//   include/        <-- Headers
+	//   linux_amd64/    <-- Standard library .a files
+	//   linux_amd64_race/ (Excluded)
+	//   tool/           (Excluded)
+	pathsToGlob := []string{
+		"pkg/include/**/*",
+		"pkg/" + osArch + "/**/*",
 	}
 
 	var inputs []string
-	for _, f := range files {
-		if !strings.HasSuffix(f, "/") {
-			inputs = append(inputs, f)
+	for _, p := range pathsToGlob {
+		files, err := ctx.GlobWithDeps(filepath.Join(goroot, p), nil)
+		if err != nil {
+			panic(fmt.Errorf("Failed to glob GOROOT %q subpath %q: %s", goroot, p, err))
+		}
+		for _, f := range files {
+			if !strings.HasSuffix(f, "/") {
+				inputs = append(inputs, f)
+			}
 		}
 	}
 
