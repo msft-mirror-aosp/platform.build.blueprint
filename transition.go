@@ -431,6 +431,11 @@ func (t *transitionMutatorImpl) bottomUpMutator(mctx BottomUpMutatorContext) {
 		mc.module.variant = newVariant(mc.module, t.name, variant)
 		onDemandVariantInfo := t.mutator.TransitionInfoFromVariation(variant)
 		mc.context.setModuleTransitionInfo(mc.module, t, onDemandVariantInfo)
+		// TODO (b/448182248): remove the image special case.
+		if t.name == "image" {
+			splits := append(t.mutator.Split(mctx), t.mutator.SplitOnDemand(mctx)...)
+			mc.module.sortIndex = slices.Index(splits, onDemandVariantInfo)
+		}
 		return
 	}
 	// Fetch and clean up transition mutator state. No locking needed since the
@@ -461,6 +466,10 @@ func (t *transitionMutatorImpl) bottomUpMutator(mctx BottomUpMutatorContext) {
 	} else {
 		modules := mc.createVariationsWithTransition(variations, outgoingTransitionCache)
 		for i, module := range modules {
+			if t.name == "image" {
+				// TODO (b/448182248): remove the image special case.
+				module.sortIndex = i
+			}
 			mc.context.setModuleTransitionInfo(module, t, transitionInfos[i])
 		}
 	}
