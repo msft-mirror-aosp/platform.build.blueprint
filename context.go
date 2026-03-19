@@ -683,6 +683,8 @@ type moduleInfo struct {
 	// Properties used to determine whether a requested on-demand variant can be created.
 	createdOnDemandIncompatible    bool
 	createdOnDemandSupportedSplits []TransitionInfo
+	// Index used for sorting primary and on-demand variants. Special-cased to android's image mutator for now.
+	sortIndex int
 }
 
 type providerInfo struct {
@@ -3818,7 +3820,10 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		module.group.modules = slices.Insert(module.group.modules, insertIndex, module)
 	}
 
+	moduleGroupsWithOnDemandModules := make(map[*moduleGroup]bool)
+
 	for _, module := range onDemandModules {
+		moduleGroupsWithOnDemandModules[module.group] = true
 		insertIntoModuleGroup(module)
 		for _, fd := range module.newDirectDeps {
 			fd.reverseDeps = append(fd.reverseDeps, module)
@@ -3842,6 +3847,12 @@ func (c *Context) runMutator(config interface{}, mutatorGroup []*mutatorInfo,
 		module.newOnDemandReverseDeps = nil
 		module.createdOnDemandSupportedSplits = nil
 		module.group.cachedVariantsOnDemand = nil
+	}
+
+	for g := range moduleGroupsWithOnDemandModules {
+		slices.SortStableFunc(g.modules, func(a, b *moduleInfo) int {
+			return cmp.Compare(a.sortIndex, b.sortIndex)
+		})
 	}
 
 	return deps, errs
