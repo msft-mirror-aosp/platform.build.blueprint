@@ -252,7 +252,9 @@ type Context struct {
 	// If splitAllVariants is true, all variants will be created upfront rather than on-demand.
 	splitAllVariants bool
 
-	partialAnalysisTargets []string
+	// index of the first mutator that supports partial analysis.
+	mutatorIndexPartialAnalysis int
+	partialAnalysisTargets      []string
 }
 
 type orderOnlyStringsInfo struct {
@@ -409,6 +411,9 @@ type moduleGroup struct {
 	// Map of requested variation map to on-demand variants.
 	// Set to empty at the end of mutator.
 	cachedVariantsOnDemand map[string]*moduleInfo
+
+	// Indicates the module group is not yet in the build graph.
+	passive bool
 }
 
 func (group *moduleGroup) moduleByVariantName(name string) *moduleInfo {
@@ -926,6 +931,7 @@ type mutatorInfo struct {
 	usesCreateModule        bool
 	mutatesDependencies     bool
 	mutatesGlobalState      bool
+	prePartial              bool
 }
 
 func newContext() *Context {
@@ -1303,6 +1309,8 @@ type MutatorHandle interface {
 	// adjacent mutators into a single mutator pass.
 	MutatesGlobalState() MutatorHandle
 
+	PrePartial() MutatorHandle
+
 	setTransitionMutator(impl *transitionMutatorImpl) MutatorHandle
 }
 
@@ -1333,6 +1341,11 @@ func (mutator *mutatorInfo) MutatesDependencies() MutatorHandle {
 
 func (mutator *mutatorInfo) MutatesGlobalState() MutatorHandle {
 	mutator.mutatesGlobalState = true
+	return mutator
+}
+
+func (mutator *mutatorInfo) PrePartial() MutatorHandle {
+	mutator.prePartial = true
 	return mutator
 }
 
@@ -2299,7 +2312,9 @@ func coalesceMutators(mutators []*mutatorInfo) [][]*mutatorInfo {
 			!m.usesReverseDependencies &&
 			!m.usesRename &&
 			!m.mutatesGlobalState &&
-			!m.mutatesDependencies
+			!m.mutatesDependencies &&
+			// No mix of pre partial marker mutator with others.
+			!m.prePartial
 	}
 
 	for _, mutator := range mutators {
@@ -3438,15 +3453,48 @@ func (c *Context) runMutators(ctx context.Context, config interface{}, mutatorGr
 
 	pprof.Do(ctx, pprof.Labels("blueprint", "runMutators"), func(ctx context.Context) {
 		mutatorIndexAfterLastCreateModule := -1
+		mutatorIndexPartialAnalysis := -1
 		for i := len(mutatorGroups) - 1; i >= 0; i-- {
-			if mutatorGroups[i][0].usesCreateModule {
+			if mutatorIndexAfterLastCreateModule == -1 && mutatorGroups[i][0].usesCreateModule {
 				mutatorIndexAfterLastCreateModule = mutatorGroups[i][0].index
-				break
+			}
+			if mutatorIndexPartialAnalysis == -1 && mutatorGroups[i][0].prePartial {
+				mutatorIndexPartialAnalysis = mutatorGroups[i][0].index
 			}
 		}
 		c.mutatorIndexAfterLastCreateModule = mutatorIndexAfterLastCreateModule + 1
+		c.mutatorIndexPartialAnalysis = mutatorIndexPartialAnalysis + 1
 
 		for _, mutatorGroup := range mutatorGroups {
+			if mutatorGroup[0].index == c.mutatorIndexPartialAnalysis && len(c.partialAnalysisTargets) > 0 {
+				targetMap := make(map[string]bool, len(c.partialAnalysisTargets))
+				for _, t := range c.partialAnalysisTargets {
+					targetMap[t] = false
+				}
+
+				foundCount := 0
+				for _, m := range c.moduleGroups {
+					if alreadyFound, isTarget := targetMap[m.name]; isTarget {
+						m.passive = false
+						if !alreadyFound {
+							targetMap[m.name] = true
+							foundCount++
+						}
+					} else {
+						m.passive = true
+					}
+				}
+
+				if foundCount < len(targetMap) {
+					notFound := make([]string, 0, len(targetMap)-foundCount)
+					for target, found := range targetMap {
+						if !found {
+							notFound = append(notFound, target)
+						}
+					}
+					panic(fmt.Sprintf("the requested targets are not found: %v", notFound))
+				}
+			}
 			name := mutatorGroup[0].name
 			if len(mutatorGroup) > 1 {
 				name += "_plus_" + strconv.Itoa(len(mutatorGroup)-1)
